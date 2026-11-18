@@ -1,0 +1,47 @@
+[
+    {
+        "id": "u_e064840d1724",
+        "login": "sasha",
+        "password_hash": "$2y$10$0m66kcjfy0jY2ov3DJ1fMutaxnYaEcYCo1F9Jum9xf2SaPqEiSQz6",
+        "name": "Саша",
+        "playlists": [
+            "pqtv"
+        ],
+        "enabled": true,
+        "created_at": 1791276871
+    },
+    {
+        "id": "u_a57080f275d2",
+        "login": "arpi",
+        "password_hash": "$2y$10$FpDEa6NFm9X4Zgc9eyOhHOIIx3WSc/BGtcCqh88Oi4wIXdvJXtFJG",
+        "name": "Аркадий",
+        "playlists": [
+            "pqtv"
+        ],
+        "enabled": true,
+        "created_at": 1791314698
+    },
+    {
+        "id": "u_d67708de1838",
+        "login": "ira",
+        "password_hash": "$2y$10$k2KqkIRORcKDdXr657/mrOb8Ih4OEwEWA7mEFZAjc9UC1SfgKf27.",
+        "name": "Ирина",
+        "playlists": [
+            "pqtv"
+        ],
+        "enabled": true,
+        "created_at": 1791318916
+    },
+    {
+        "id": "u_b56db817df78",
+        "login": "xxx",
+        "password_hash": "$2y$10$OWPKmHhXaxvq4TcQbuMon.zIZvRSXVEnO2BSILf.lHgbs33N1UAOi",
+        "name": "xxx",
+        "playlists": [
+            "adult",
+            "xxx"
+        ],
+        "enabled": true,
+        "created_at": 1791364484
+    }
+]

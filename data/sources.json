@@ -1,0 +1,37 @@
+[
+    {
+        "id": "iptvorg_ru",
+        "name": "IPTV-org · Россия",
+        "type": "m3u",
+        "url": "https://iptv-org.github.io/iptv/countries/ru.m3u",
+        "enabled": true
+    },
+    {
+        "id": "iptvorg_rus",
+        "name": "IPTV-org · Русский язык",
+        "type": "m3u",
+        "url": "https://iptv-org.github.io/iptv/languages/rus.m3u",
+        "enabled": true
+    },
+    {
+        "id": "iptvorg_movies",
+        "name": "IPTV-org · Фильмы",
+        "type": "m3u",
+        "url": "https://iptv-org.github.io/iptv/categories/movies.m3u",
+        "enabled": true
+    },
+    {
+        "id": "src_1791356029939",
+        "name": "IPTVMIR",
+        "type": "m3u",
+        "url": "https://raw.githubusercontent.com/IPTVRU2026/IPTVMIR/main/IPTV_MEGA_PLAYLIST.m3u",
+        "enabled": true
+    },
+    {
+        "id": "src_1791356495339",
+        "name": "smolnp",
+        "type": "m3u",
+        "url": "https://raw.githubusercontent.com/smolnp/IPTVru/refs/heads/gh-pages/IPTVstable.m3u8",
+        "enabled": true
+    }
+]

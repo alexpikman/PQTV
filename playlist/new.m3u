@@ -1,0 +1,7 @@
+#EXTM3U
+#EXTINF:-1 group-title="Общие",x
+https://bl.rutube.ru/livestream/392b4686b770bae2da6bf5ac4574add5/index.m3u8?e=2068731801&s=tenr-yHXUv1wibfka78s2A&scheme=https
+#EXTINF:-1 tvg-logo="https://i.imgur.com/nSSUHcg.png" group-title="Импорт",.sci-fi (576p)
+http://stream.mcquack.net/180/index.m3u8
+#EXTINF:-1,Discovery
+http://5.188.159.128:8070/DiscoveryChannel/index.m3u8

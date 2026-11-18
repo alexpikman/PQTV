@@ -1,0 +1,14 @@
+[
+    {
+        "id": "epg_one_ru",
+        "name": "EPG.ONE (RU)",
+        "url": "http://epg.one/ru.xml.gz",
+        "enabled": true
+    },
+    {
+        "id": "epg_pw_ru",
+        "name": "EPG.PW (RU)",
+        "url": "https://epg.pw/xmltv/epg_RU.xml.gz",
+        "enabled": true
+    }
+]

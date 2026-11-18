@@ -1,0 +1,57 @@
+name: Build PQTV Android TV APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_name:
+        description: "Version Name (e.g. 1.0.1)"
+        required: true
+        default: "1.0.1"
+      version_code:
+        description: "Integer Version Code"
+        required: true
+        default: "2"
+      server_url:
+        description: "PQTV Server URL"
+        required: true
+      changelog:
+        description: "Release notes"
+        required: false
+        default: "Обновление приложения для Android TV"
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+      - name: Build Release APK
+        working-directory: android-tv
+        run: |
+          gradle assembleRelease \
+            -PPQTV_SERVER_URL="${{ inputs.server_url }}" \
+            -Pandroid.injected.version.code=${{ inputs.version_code }} \
+            -Pandroid.injected.version.name="${{ inputs.version_name }}"
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pqtv-android-tv-apk
+          path: android-tv/app/build/outputs/apk/release/*.apk
+      - name: Publish OTA directly to PQTV Server
+        if: ${{ secrets.PQTV_UPLOAD_TOKEN != '' }}
+        run: |
+          APK_FILE=$(ls android-tv/app/build/outputs/apk/release/*.apk | head -n 1)
+          curl -f -X POST "${{ inputs.server_url }}/api/admin/apk-upload" \
+            -H "Authorization: Bearer ${{ secrets.PQTV_UPLOAD_TOKEN }}" \
+            -H "Content-Type: application/vnd.android.package-archive" \
+            -H "X-Version-Code: ${{ inputs.version_code }}" \
+            -H "X-Version-Name: ${{ inputs.version_name }}" \
+            -H "X-Changelog: ${{ inputs.changelog }}" \
+            --data-binary "@${APK_FILE}"

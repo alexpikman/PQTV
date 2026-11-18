@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PQTV & Parser</title>
+    <link rel="stylesheet" href="/assets/css/style.css?v=<%= assetVersion('/assets/css/style.css') %>">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+</head>
+<body>
+    <div class="app-shell">
+        <div class="top-bar">
+            <div class="brand">
+                <div class="brand-mark"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+  <defs>
+    <linearGradient id="LGRAD4" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4A0E4E"/>
+      <stop offset="25%" stop-color="#673AB7"/>
+      <stop offset="55%" stop-color="#311B92"/>
+      <stop offset="80%" stop-color="#1A237E"/>
+      <stop offset="100%" stop-color="#00BCD4"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="180" rx="20" fill="url(#LGRAD4)"/>
+  <g stroke="#FFFFFF" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="30" y="35" width="260" height="110" rx="12" stroke-width="7"/>
+    <line x1="145" y1="12" x2="160" y2="35" stroke-width="3"/>
+    <circle cx="144" cy="10" r="2.5" fill="#FFFFFF" stroke="none"/>
+    <line x1="175" y1="12" x2="160" y2="35" stroke-width="3"/>
+    <circle cx="176" cy="10" r="2.5" fill="#FFFFFF" stroke="none"/>
+    <line x1="130" y1="158" x2="190" y2="158" stroke-width="6"/>
+    <g stroke-width="6">
+      <path d="M83,102 L83,64 L103,64 Q117,64 117,75 Q117,86 103,86 L83,86"/>
+      <ellipse cx="140" cy="83" rx="18" ry="19"/>
+      <line x1="148" y1="95" x2="158" y2="105"/>
+      <line x1="163" y1="64" x2="197" y2="64"/>
+      <line x1="180" y1="64" x2="180" y2="102"/>
+      <path d="M202,64 L219,102 L236,64"/>
+    </g>
+  </g>
+</svg></div>
+                <h1>PQ<span>TV</span></h1>
+            </div>
+            <div style="display:flex; align-items:center; gap:10px;">
+                <a href="/watch" class="logout-link" title="Открыть просмотр ТВ">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/>
+                    </svg>
+                    Смотреть ТВ
+                </a>
+                <button type="button" id="btn-admin-password" class="logout-link" style="background:transparent; cursor:pointer;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                    </svg>
+                    Пароль
+                </button>
+                <a href="/logout" id="btn-admin-logout" class="logout-link">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                        <polyline points="16 17 21 12 16 7"/>
+                        <line x1="21" y1="12" x2="9" y2="12"/>
+                    </svg>
+                    Выход
+                </a>
+            </div>
+        </div>
+
+        <div class="app-layout">
+            <div class="col-left">
+                <div class="side-nav">
+                    <button id="nav-btn-catalog" class="nav-item active" data-screen="catalog">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+                            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+                        </svg>
+                        Каталог каналов
+                    </button>
+                    <button id="nav-btn-users" class="nav-item" data-screen="users">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                            <circle cx="9" cy="7" r="4"/>
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                        </svg>
+                        Пользователи
+                    </button>
+                    <button id="nav-btn-editor" class="nav-item" data-screen="editor">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="8" y1="6" x2="21" y2="6"/>
+                            <line x1="8" y1="12" x2="21" y2="12"/>
+                            <line x1="8" y1="18" x2="21" y2="18"/>
+                            <line x1="3" y1="6" x2="3.01" y2="6"/>
+                            <line x1="3" y1="12" x2="3.01" y2="12"/>
+                            <line x1="3" y1="18" x2="3.01" y2="18"/>
+                        </svg>
+                        Плейлисты
+                    </button>
+                    <button id="nav-btn-sources" class="nav-item" data-screen="sources">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                        </svg>
+                        Источники
+                    </button>
+                    <button id="nav-btn-parser" class="nav-item" data-screen="parser">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <circle cx="11" cy="11" r="8"/>
+                            <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                        </svg>
+                        Парсинг каналов
+                    </button>
+                    <button id="nav-btn-epg" class="nav-item" data-screen="epg">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                            <line x1="16" y1="2" x2="16" y2="6"/>
+                            <line x1="8" y1="2" x2="8" y2="6"/>
+                            <line x1="3" y1="10" x2="21" y2="10"/>
+                        </svg>
+                        Телепрограмма
+                    </button>
+                    <button id="nav-btn-apk" class="nav-item" data-screen="apk">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="2" y="7" width="20" height="14" rx="2"/>
+                            <polyline points="17 2 12 7 7 2"/>
+                            <path d="M12 11v6"/><polyline points="9.5 14.5 12 17 14.5 14.5"/>
+                        </svg>
+                        Android TV APK
+                    </button>
+                </div>
+
+                <div class="sidebar-head">
+                    <span>Плейлисты</span>
+                    <button id="btn-add-playlist" class="btn-icon" title="Создать плейлист">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="12" y1="5" x2="12" y2="19"/>
+                            <line x1="5" y1="12" x2="19" y2="12"/>
+                        </svg>
+                    </button>
+                </div>
+                <ul id="playlist-list" class="nav-list"></ul>
+            </div>
+
+            <div class="col-center">
+                <div id="screen-editor" class="hidden">
+                    <div class="col-header">
+                        <h2 id="current-playlist-title">Выберите плейлист</h2>
+                        <div class="header-actions">
+                            <button id="btn-check-all" class="btn btn-secondary hidden">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                                </svg>
+                                Проверить всё
+                            </button>
+                            <button id="btn-add-channel" class="btn btn-primary hidden">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"/>
+                                    <line x1="5" y1="12" x2="19" y2="12"/>
+                                </svg>
+                                Добавить канал
+                            </button>
+                        </div>
+                    </div>
+
+                    <div id="direct-link-box" class="direct-link hidden">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+                        </svg>
+                        <span>Прямая ссылка:</span>
+                        <a id="direct-link-url" href="#" target="_blank"></a>
+                    </div>
+
+                    <div id="channels-container">
+                        <p class="placeholder-text">Выберите плейлист слева<br>или откройте «Парсинг каналов»</p>
+                    </div>
+                </div>
+
+                <div id="screen-parser" class="hidden">
+                    <div class="col-header">
+                        <h2>Парсинг и поиск каналов</h2>
+                    </div>
+
+                    <div class="search-bar">
+                        <input type="text" id="parse-search-input" placeholder="Введите название канала...">
+                        <button id="btn-start-parse" class="btn btn-primary">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="11" cy="11" r="8"/>
+                                <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                            </svg>
+                            Искать и проверить
+                        </button>
+                    </div>
+
+                    <div class="target-select">
+                        <label>Добавлять в плейлист:</label>
+                        <select id="parse-target-playlist"></select>
+                    </div>
+
+                    <div id="parse-target-info" class="info-box hidden">
+                        Контекст: замена для канала <b id="parse-target-channel-name"></b> в плейлисте <b id="parse-target-playlist-name"></b>
+                    </div>
+
+                    <div id="parse-progress-box" class="progress-box hidden">
+                        <div class="spinner"></div>
+                        <div style="flex:1;">
+                            <div id="parse-progress-status" style="font-size:13px; font-weight:600; margin-bottom:3px;">Инициализация поиска...</div>
+                            <div id="parse-progress-log" style="font-size:12px; color:var(--muted);">Сканирование активных источников...</div>
+                        </div>
+                    </div>
+
+                    <div id="parse-results-container">
+                        <p class="placeholder-text">Введите имя канала и нажмите «Искать и проверить»</p>
+                    </div>
+                </div>
+
+                <div id="screen-sources" class="hidden">
+                    <div class="col-header">
+                        <h2>Источники для парсинга</h2>
+                        <div style="display:flex; gap:8px;">
+                            <button id="btn-refresh-index" class="btn btn-primary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="23 4 23 10 17 10"/>
+                                    <polyline points="1 20 1 14 7 14"/>
+                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                                </svg>
+                                <span id="btn-refresh-text">Обновить индекс</span>
+                            </button>
+                            <button id="btn-add-source" class="btn btn-primary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"/>
+                                    <line x1="5" y1="12" x2="19" y2="12"/>
+                                </svg>
+                                Добавить источник
+                            </button>
+                        </div>
+                    </div>
+                    <p style="color:var(--muted); font-size:12.5px; margin-bottom:8px;">
+                        Источники скачиваются один раз и сохраняются локально. Поиск идёт по индексу — мгновенно. Обновление раз в 6 часов автоматически.
+                    </p>
+                    <div id="sources-list-container"></div>
+                </div>
+
+                <div id="screen-epg" class="hidden">
+                    <div class="col-header">
+                        <h2>Телепрограмма (EPG)</h2>
+                        <button id="btn-add-epg" class="btn btn-primary">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            Добавить ссылку
+                        </button>
+                    </div>
+                    <p style="color:var(--muted); font-size:12.5px; margin-bottom:12px;">Источники телепрограммы в формате XMLTV (.xml / .xml.gz). Ссылки можно раздавать пользователям.</p>
+                    <div id="epg-list-container"></div>
+                </div>
+
+                <div id="screen-users" class="hidden">
+                    <div class="col-header">
+                        <h2>Пользователи</h2>
+                        <button id="btn-add-user" class="btn btn-primary">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="12" y1="5" x2="12" y2="19"/>
+                                <line x1="5" y1="12" x2="19" y2="12"/>
+                            </svg>
+                            Добавить пользователя
+                        </button>
+                    </div>
+                    <p style="color:var(--muted); font-size:12.5px; margin-bottom:12px;">
+                        Пользователи входят по адресу <b style="color:var(--primary-hi);">/watch</b> и видят только те каналы, которые вы им разрешите. Никаких плейлистов и админ-функций.
+                    </p>
+                    <div id="firebase-users-bar" class="info-box" style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+                        <div style="font-size:12.5px;">
+                            <strong style="color:#fff;">Firebase Firestore:</strong>
+                            <span id="fb-status-text" style="color:var(--muted);">Проверка подключения...</span>
+                        </div>
+                        <div style="display:flex; gap:8px; align-items:center;">
+                            <button type="button" id="btn-fb-connect" class="btn btn-secondary" style="padding:7px 12px; font-size:12px;">Войти в Google (Firebase)</button>
+                            <button type="button" id="btn-fb-sync" class="btn btn-secondary hidden" style="padding:7px 12px; font-size:12px;">Импортировать локальных в Firestore</button>
+                        </div>
+                    </div>
+                    <div id="users-fb-error" class="error-msg hidden" style="margin-bottom:12px;"></div>
+                    <div id="users-list-container"></div>
+                </div>
+
+                <div id="screen-catalog">
+                    <div class="col-header">
+                        <h2>Каталог каналов</h2>
+                        <div style="display:flex; gap:8px;">
+                            <button id="btn-catalog-check" class="btn btn-secondary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                                </svg>
+                                <span id="btn-catalog-check-text">Проверить потоки</span>
+                            </button>
+                            <button id="btn-catalog-aggregate" class="btn btn-secondary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                <span id="btn-catalog-aggregate-text">Собрать из источников</span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="catalog-stats" id="catalog-stats">
+                        <!-- JS заполнит -->
+                    </div>
+                    <div class="catalog-toolbar">
+                        <div class="pl-dropdown" id="pl-dropdown">
+                            <button type="button" class="pl-dropdown-toggle" id="pl-dropdown-toggle">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
+                                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                                </svg>
+                                <span id="pl-dropdown-label">Все плейлисты</span>
+                                <svg class="pl-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
+                                    <polyline points="6 9 12 15 18 9"/>
+                                </svg>
+                            </button>
+                            <div class="pl-dropdown-menu hidden" id="pl-dropdown-menu">
+                                <div class="pl-dropdown-head">
+                                    <button type="button" class="pl-dropdown-toggle-all" id="pl-dropdown-toggle-all">Выбрать все</button>
+                                </div>
+                                <div class="pl-dropdown-list" id="pl-dropdown-list">
+                                    <!-- JS заполнит -->
+                                </div>
+                            </div>
+                        </div>
+
+                        <input type="text" id="catalog-search" placeholder="Поиск по названию..." style="flex:1; padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none;">
+                        <button type="button" id="catalog-find-btn" class="btn btn-primary" style="padding:10px 20px;">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;">
+                                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                            </svg>
+                            Найти
+                        </button>
+                        <select id="catalog-filter" style="padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none; min-width:160px;">
+                            <option value="">Любой статус</option>
+                            <option value="online">● Online</option>
+                            <option value="offline">● Offline</option>
+                            <option value="no_streams">Без потоков</option>
+                        </select>
+                    </div>
+
+                    <div id="catalog-list-container"></div>
+                    <div style="text-align:center; padding:14px;"><button id="catalog-show-more" class="btn btn-secondary hidden">Показать ещё</button></div>
+                </div>
+
+                <div id="screen-apk" class="hidden">
+                    <div class="col-header">
+                        <h2>Android TV APK и OTA-обновления</h2>
+                        <div class="header-actions">
+                            <button type="button" id="btn-download-android-project" class="btn btn-primary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                                </svg>
+                                Скачать Android TV проект (.zip)
+                            </button>
+                        </div>
+                    </div>
+                    <div id="apk-screen-scroll">
+                        <div class="apk-grid">
+                            <div class="apk-panel">
+                                <h3>Текущий OTA-релиз для ТВ</h3>
+                                <div id="apk-status-box" style="font-size:13px; color:var(--text-dim); line-height:1.6;">
+                                    Загрузка статуса релизов...
+                                </div>
+                                <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+                                    <a id="apk-latest-download" href="/apk/latest.apk" class="btn btn-secondary hidden">Скачать latest.apk</a>
+                                    <a href="/api/app/version" target="_blank" rel="noopener noreferrer" class="btn btn-secondary">JSON /api/app/version</a>
+                                </div>
+                            </div>
+
+                            <div class="apk-panel">
+                                <h3>Опубликовать новый .apk на сервер</h3>
+                                <form id="apk-upload-form">
+                                    <div class="form-group">
+                                        <label>Подписанный APK файл (.apk)</label>
+                                        <input type="file" id="apk-file" accept=".apk,application/vnd.android.package-archive" required style="padding:8px;">
+                                    </div>
+                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                                        <div class="form-group">
+                                            <label>Version Name (напр. 1.0.2)</label>
+                                            <input type="text" id="apk-ver-name" required placeholder="1.0.1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Version Code (целое)</label>
+                                            <input type="number" id="apk-ver-code" min="1" required placeholder="2">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Описание изменений (покажется на ТВ)</label>
+                                        <input type="text" id="apk-changelog" placeholder="Улучшена навигация с пульта и автообновление">
+                                    </div>
+                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="apk-mandatory">
+                                        <label for="apk-mandatory" style="margin:0; cursor:pointer;">Обязательное обновление при запуске на ТВ</label>
+                                    </div>
+                                    <button type="submit" id="btn-apk-upload" class="btn btn-primary" style="width:100%;">Загрузить APK для OTA</button>
+                                </form>
+                            </div>
+                        </div>
+
+                        <div class="apk-panel" style="margin-bottom:16px;">
+                            <h3>Опубликованные версии APK</h3>
+                            <div id="apk-releases-container">
+                                <p class="placeholder-text" style="margin:20px 0;">Нет опубликованных APK</p>
+                            </div>
+                        </div>
+
+                        <div class="apk-panel">
+                            <h3>Сборка APK и автоматическая выгрузка на ТВ (GitHub Actions / CLI)</h3>
+                            <p style="font-size:12.5px; color:var(--muted); line-height:1.5;">
+                                Проект <code>android-tv/</code> включает WebView-оболочку для Android TV (Leanback Launcher), поддержку пульта D-pad, вход через Google и встроенный загрузчик обновлений (<code>FileProvider</code> + <code>REQUEST_INSTALL_PACKAGES</code>). Скачайте готовый ZIP с вшитым адресом этого сервера или соберите через GitHub Actions:
+                            </p>
+                            <pre class="apk-code" id="apk-ci-snippet">Загрузка параметров...</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="col-right" class="col-right hidden">
+                <div id="form-channel-container">
+                    <div class="col-header">
+                        <h3 id="form-title">Канал</h3>
+                        <button class="btn-close-form btn-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <form id="channel-form">
+                        <input type="hidden" id="channel-index" value="-1">
+                        <div class="form-group">
+                            <label>Название канала</label>
+                            <input type="text" id="ch-name" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Группа (Категория)</label>
+                            <input type="text" id="ch-group" placeholder="Общие">
+                        </div>
+                        <div class="form-group">
+                            <label>URL логотипа</label>
+                            <input type="url" id="ch-logo" placeholder="https://...">
+                        </div>
+                        <div id="logo-preview-box" class="logo-preview hidden">
+                            <img id="logo-preview-img" src="" alt="Logo">
+                        </div>
+                        <div class="form-group" style="margin-top: 12px;">
+                            <label>URL потока (.m3u8 / .ts)</label>
+                            <input type="url" id="ch-url" required placeholder="http://...">
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" style="flex: 1;">Сохранить</button>
+                            <button type="button" class="btn-cancel-form btn btn-secondary">Отмена</button>
+                        </div>
+
+                        <div style="margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--border);">
+                            <label style="display:block; font-size:12px; color:var(--muted); margin-bottom:8px; font-weight:600; letter-spacing:0.02em;">Скопировать в другой плейлист</label>
+                            <select id="copy-target-playlist" style="width:100%; padding:10px 12px; background:var(--bg-1); border:1px solid var(--border); color:#fff; border-radius:var(--radius-sm); font-size:13.5px; margin-bottom:10px; outline:none; transition: var(--t);">
+                                <option value="">— выберите плейлист —</option>
+                            </select>
+                            <button type="button" id="btn-copy-channel" class="btn btn-secondary" style="width:100%; padding:10px;">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                                </svg>
+                                <span id="btn-copy-channel-text">Копировать</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="form-source-container" class="hidden">
+                    <div class="col-header">
+                        <h3 id="src-form-title">Источник</h3>
+                        <button class="btn-close-form btn-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <form id="source-form">
+                        <input type="hidden" id="src-id" value="">
+                        <div class="form-group">
+                            <label>Название источника</label>
+                            <input type="text" id="src-name" required placeholder="Например: IPTV-org Russia">
+                        </div>
+                        <div class="form-group">
+                            <label>Тип парсера</label>
+                            <select id="src-type">
+                                <option value="m3u">M3U Плейлист (URL)</option>
+                                <option value="github">GitHub Code Search API</option>
+                                <option value="json">JSON (список каналов)</option>
+                                <option value="xtream">Xtream Codes (M3U Plus)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>URL источника</label>
+                            <input type="url" id="src-url" required placeholder="https://...">
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap: 8px; margin-top: 10px;">
+                            <input type="checkbox" id="src-enabled" checked>
+                            <label for="src-enabled" style="margin:0; cursor:pointer;">Включен</label>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" style="flex: 1;">Сохранить</button>
+                            <button type="button" class="btn-cancel-form btn btn-secondary">Отмена</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="form-epg-container" class="hidden">
+                    <div class="col-header">
+                        <h3 id="epg-form-title">Ссылка на телепрограмму</h3>
+                        <button class="btn-close-form btn-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <form id="epg-form">
+                        <input type="hidden" id="epg-id" value="">
+                        <div class="form-group">
+                            <label>Название</label>
+                            <input type="text" id="epg-name" required placeholder="Например: Основной EPG">
+                        </div>
+                        <div class="form-group">
+                            <label>URL (XMLTV)</label>
+                            <input type="url" id="epg-url" required placeholder="https://.../epg.xml">
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap: 8px; margin-top: 10px;">
+                            <input type="checkbox" id="epg-enabled" checked>
+                            <label for="epg-enabled" style="margin:0; cursor:pointer;">Включен</label>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" style="flex: 1;">Сохранить</button>
+                            <button type="button" class="btn-cancel-form btn btn-secondary">Отмена</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="form-user-container" class="hidden">
+                    <div class="col-header">
+                        <h3 id="user-form-title">Новый пользователь</h3>
+                        <button class="btn-close-form btn-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <form id="user-form">
+                        <input type="hidden" id="user-id" value="">
+                        <div class="form-group">
+                            <label>Логин</label>
+                            <input type="text" id="user-login" required placeholder="sasha" pattern="[-a-zA-Z0-9_.]{3,32}">
+                        </div>
+                        <div class="form-group">
+                            <label>Пароль <span id="user-pwd-hint" style="color:var(--muted-2); font-weight:400;"></span></label>
+                            <input type="text" id="user-password" placeholder="минимум 4 символа" autocomplete="new-password">
+                        </div>
+                        <div class="form-group">
+                            <label>Имя (показывается пользователю)</label>
+                            <input type="text" id="user-name" placeholder="Саша">
+                        </div>
+                        <div class="form-group">
+                            <label>Доступные плейлисты</label>
+                            <div id="user-playlists-box" style="max-height:180px; overflow-y:auto; padding:8px; background:var(--bg-1); border:1px solid var(--border); border-radius:var(--radius-sm);">
+                            </div>
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap: 8px; margin-top: 10px;">
+                            <input type="checkbox" id="user-enabled" checked>
+                            <label for="user-enabled" style="margin:0; cursor:pointer;">Включен</label>
+                        </div>
+                        <div id="user-form-error" class="error-msg hidden" style="margin-top:10px;"></div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" style="flex: 1;">Сохранить</button>
+                            <button type="button" class="btn-cancel-form btn btn-secondary">Отмена</button>
+                        </div>
+                    </form>
+                </div>
+
+                <div id="form-catalog-source-container" class="hidden">
+                    <div class="col-header">
+                        <h3 id="catalog-source-form-title">Новый источник каталога</h3>
+                        <button class="btn-close-form btn-icon">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                    <form id="catalog-source-form">
+                        <input type="hidden" id="cat-src-id" value="">
+                        <div class="form-group">
+                            <label>Название источника</label>
+                            <input type="text" id="cat-src-name" required placeholder="Например: Тема на форуме">
+                        </div>
+                        <div class="form-group">
+                            <label>Тип</label>
+                            <select id="cat-src-type">
+                                <option value="m3u">M3U Плейлист (URL)</option>
+                                <option value="site">Сайт (парсинг страниц)</option>
+                                <option value="forum">Форум (парсинг сообщений)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>URL</label>
+                            <input type="url" id="cat-src-url" required placeholder="https://...">
+                        </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+                            <input type="checkbox" id="cat-src-enabled" checked>
+                            <label for="cat-src-enabled" style="margin:0; cursor:pointer;">Включён</label>
+                        </div>
+                        <div class="form-actions">
+                            <button type="submit" class="btn btn-primary" style="flex:1;">Сохранить</button>
+                            <button type="button" class="btn-cancel-form btn btn-secondary">Отмена</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- PLAYER MODAL -->
+    <div id="player-modal" class="player-modal hidden">
+        <div class="player-backdrop" data-close-player></div>
+        <div class="player-window">
+            <div class="player-head">
+                <div class="player-info">
+                    <div class="player-logo-wrap">
+                        <img id="player-logo" class="player-logo" alt="" style="display:none;">
+                        <svg id="player-logo-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="2" y="7" width="20" height="15" rx="2"/>
+                            <polyline points="17 2 12 7 7 2"/>
+                        </svg>
+                    </div>
+                    <div class="player-meta">
+                        <div id="player-title" class="player-title">—</div>
+                        <div id="player-url" class="player-url">—</div>
+                    </div>
+                </div>
+                <div class="player-actions">
+                    <button id="player-reload" class="btn-icon" title="Перезагрузить">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="23 4 23 10 17 10"/>
+                            <polyline points="1 20 1 14 7 14"/>
+                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                        </svg>
+                    </button>
+                    <button id="player-close" class="btn-icon" title="Закрыть">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div class="player-body">
+                <video id="player-video" controls playsinline></video>
+                <div id="player-overlay" class="player-overlay">
+                    <div class="spinner"></div>
+                    <div id="player-overlay-text" style="margin-top:12px; color:var(--muted);">Загрузка потока...</div>
+                </div>
+                <div id="player-toast" class="player-toast"></div>
+            </div>
+            <div class="player-foot" id="player-footer">
+                <div class="epg-row">
+                    <div class="epg-col">
+                        <span class="epg-label">Сейчас</span>
+                        <span class="epg-value" id="epg-current">—</span>
+                    </div>
+                    <div class="epg-sep"></div>
+                    <div class="epg-col">
+                        <span class="epg-label">Далее</span>
+                        <span class="epg-value" id="epg-next">—</span>
+                    </div>
+                    <div class="epg-loading" id="epg-loading">
+                        <div class="spinner" style="width:12px; height:12px; border-width:2px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ADMIN PASSWORD MODAL -->
+    <div id="admin-password-modal" class="player-modal hidden">
+        <div class="player-backdrop" id="admin-pwd-backdrop"></div>
+        <div class="player-window" style="max-width:420px; width:100%;">
+            <div class="player-head">
+                <div class="player-meta">
+                    <div class="player-title">Пароль администратора</div>
+                    <div class="player-url">Для входа по email (alexpqtr@gmail.com, alex.pikman@gmail.com)</div>
+                </div>
+                <div class="player-actions">
+                    <button type="button" id="admin-pwd-close" class="btn-icon" title="Закрыть">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <form id="admin-password-form" style="padding:20px;">
+                <div class="form-group">
+                    <label>Новый пароль (минимум 6 символов)</label>
+                    <input type="password" id="admin-new-password" minlength="6" required autocomplete="new-password" placeholder="••••••••">
+                </div>
+                <div id="admin-pwd-msg" class="error-msg hidden" style="margin-top:10px;"></div>
+                <div class="form-actions" style="margin-top:14px;">
+                    <button type="submit" class="btn btn-primary" style="flex:1;">Сохранить пароль</button>
+                    <button type="button" id="admin-pwd-cancel" class="btn btn-secondary">Отмена</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- IN-APP CONFIRM / PROMPT MODAL -->
+    <div id="pqtv-dialog-modal" class="player-modal hidden" style="z-index:15000;">
+        <div class="player-backdrop" id="pqtv-dialog-backdrop"></div>
+        <div class="player-window" style="max-width:420px; width:100%;">
+            <div class="player-head">
+                <div class="player-meta">
+                    <div class="player-title" id="pqtv-dialog-title">Подтверждение</div>
+                </div>
+            </div>
+            <form id="pqtv-dialog-form" style="padding:20px;">
+                <p id="pqtv-dialog-msg" style="font-size:13.5px; color:var(--text-dim); line-height:1.5; margin-bottom:14px;"></p>
+                <div class="form-group hidden" id="pqtv-dialog-input-wrap">
+                    <input type="text" id="pqtv-dialog-input" autocomplete="off">
+                </div>
+                <div class="form-actions" style="margin-top:14px;">
+                    <button type="submit" class="btn btn-primary" id="pqtv-dialog-ok" style="flex:1;">ОК</button>
+                    <button type="button" class="btn btn-secondary" id="pqtv-dialog-cancel">Отмена</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="pqtv-toast-stack" class="pqtv-toast-stack"></div>
+
+    <script>
+        window.CSRF_TOKEN = <%- JSON.stringify(csrfToken) %>;
+        window.ADMIN_TOKEN = <%- JSON.stringify(typeof adminToken === 'string' ? adminToken : '') %>;
+        try {
+            if (window.ADMIN_TOKEN) sessionStorage.setItem('pqtv_admin_token', window.ADMIN_TOKEN);
+            if (window.location.pathname !== '/editor') history.replaceState(null, '', '/editor');
+        } catch {}
+    </script>
+    <script src="/assets/js/firebase-users.js?v=<%= assetVersion('/assets/js/firebase-users.js') %>"></script>
+    <script src="/assets/js/app.js?v=<%= assetVersion('/assets/js/app.js') %>"></script>
+</body>
+</html>

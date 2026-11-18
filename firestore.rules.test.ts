@@ -1,0 +1,96 @@
+/**
+ * Dirty Dozen Security Rules Verification Specification for PQTV Firestore.
+ * Run against Firebase Emulator Suite when available.
+ */
+export const dirtyDozenCases = [
+  {
+    name: '1. Unauthenticated read on /users/{userId}',
+    auth: null,
+    op: 'get',
+    path: 'users/u_1',
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '2. Unauthenticated write on /users/{userId}',
+    auth: null,
+    op: 'create',
+    path: 'users/u_1',
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '3. Unverified email write on /users/{uid}',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: false },
+    op: 'create',
+    path: 'users/user1',
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '4. Self-assigned admin role',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'create',
+    path: 'users/user1',
+    payload: { role: 'admin', enabled: false, playlists: [] },
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '5. Self-enabled account without admin approval',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'create',
+    path: 'users/user1',
+    payload: { role: 'user', enabled: true, playlists: [] },
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '6. Self-granted playlists on signup',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'create',
+    path: 'users/user1',
+    payload: { role: 'user', enabled: false, playlists: ['pqtv'] },
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '7. Shadow / ghost field injection',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'create',
+    path: 'users/user1',
+    payload: { isSuperAdmin: true },
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '8. Cross-user PII read on /users/{otherUid}/private/info',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'get',
+    path: 'users/user2/private/info',
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '9. Blanket user list scraping without uid filter',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'list',
+    path: 'users',
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '10. Immutable uid / createdAt mutation',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'update',
+    path: 'users/user1',
+    payload: { uid: 'other' },
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '11. Oversized ID / string poisoning',
+    auth: { uid: 'alexpqtr', email: 'alexpqtr@gmail.com', email_verified: true },
+    op: 'create',
+    path: `users/${'a'.repeat(200)}`,
+    expect: 'PERMISSION_DENIED',
+  },
+  {
+    name: '12. Client-forged createdAt timestamp',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'create',
+    path: 'users/user1',
+    payload: { createdAt: '2020-01-01T00:00:00Z' },
+    expect: 'PERMISSION_DENIED',
+  },
+];

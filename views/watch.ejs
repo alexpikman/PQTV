@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <script>
+    (function forceTVViewport() {
+        var ua = navigator.userAgent || '';
+        var isTV = /Android TV|GoogleTV|BRAVIA|AFT[BM]|SmartTV|Smart-TV|Tizen|Web0S|WebOS|HbbTV|NetCast|Roku|AppleTV|CrKey|PQTV-APK/i.test(ua);
+        var needsFix = isTV || (screen.width >= 1280 && window.innerWidth < 1000);
+        if (needsFix) {
+            var m = document.querySelector('meta[name="viewport"]');
+            if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
+            m.content = 'width=1280, initial-scale=1.0, user-scalable=no, viewport-fit=cover';
+            document.documentElement.classList.add('is-tv');
+        }
+    })();
+    </script>
+    <title>PQTV</title>
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#0a0e1a">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-title" content="PQTV">
+    <link rel="apple-touch-icon" href="/assets/icons/icon-192.png">
+    <link rel="icon" type="image/svg+xml" href="/assets/icons/icon.svg">
+    <link rel="stylesheet" href="/assets/css/style.css?v=<%= assetVersion('/assets/css/style.css') %>">
+    <link rel="stylesheet" href="/assets/css/watch.css?v=<%= assetVersion('/assets/css/watch.css') %>">
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+</head>
+<body class="watch-body">
+    <div class="watch-shell">
+        <!-- ============ TOP BAR ============ -->
+        <header class="top-bar">
+            <div class="tb-left">
+                <div class="tb-brand">
+                    <div class="tb-logo"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180">
+  <defs>
+    <linearGradient id="LGRAD1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#4A0E4E"/>
+      <stop offset="25%" stop-color="#673AB7"/>
+      <stop offset="55%" stop-color="#311B92"/>
+      <stop offset="80%" stop-color="#1A237E"/>
+      <stop offset="100%" stop-color="#00BCD4"/>
+    </linearGradient>
+  </defs>
+  <rect width="320" height="180" rx="20" fill="url(#LGRAD1)"/>
+  <g stroke="#FFFFFF" fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="30" y="35" width="260" height="110" rx="12" stroke-width="7"/>
+    <line x1="145" y1="12" x2="160" y2="35" stroke-width="3"/>
+    <circle cx="144" cy="10" r="2.5" fill="#FFFFFF" stroke="none"/>
+    <line x1="175" y1="12" x2="160" y2="35" stroke-width="3"/>
+    <circle cx="176" cy="10" r="2.5" fill="#FFFFFF" stroke="none"/>
+    <line x1="130" y1="158" x2="190" y2="158" stroke-width="6"/>
+    <g stroke-width="6">
+      <path d="M83,102 L83,64 L103,64 Q117,64 117,75 Q117,86 103,86 L83,86"/>
+      <ellipse cx="140" cy="83" rx="18" ry="19"/>
+      <line x1="148" y1="95" x2="158" y2="105"/>
+      <line x1="163" y1="64" x2="197" y2="64"/>
+      <line x1="180" y1="64" x2="180" y2="102"/>
+      <path d="M202,64 L219,102 L236,64"/>
+    </g>
+  </g>
+</svg></div>
+                    <span class="tb-title">PQTV</span>
+                </div>
+                <div class="tb-clock" id="clock">--:--</div>
+            </div>
+            <div class="tb-right">
+                <button class="tb-btn tb-btn-big" id="btn-view-mode" title="Вид списка">
+                    <svg class="icon-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                        <rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>
+                    </svg>
+                    <svg class="icon-list" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                        <line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/>
+                        <line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>
+                    </svg>
+                </button>
+                <button class="tb-btn" id="btn-refresh" title="Обновить плейлист">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="23 4 23 10 17 10"/>
+                        <polyline points="1 20 1 14 7 14"/>
+                        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                </button>
+                <button class="tb-btn" id="btn-settings" title="Настройки и обновления ТВ">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="3"/>
+                        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+                    </svg>
+                </button>
+                <div class="tb-profile" id="tb-profile" tabindex="0" title="Профиль и версия ТВ">
+                    <div class="tb-profile-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+                        </svg>
+                    </div>
+                    <span class="tb-profile-name"><%= uName %></span>
+                </div>
+                <div class="tb-search">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                    <input id="watch-search" type="text" placeholder="Поиск канала..." autocomplete="off">
+                </div>
+                <button class="tb-update-btn hidden" id="tv-update-btn" title="Обновить приложение на ТВ">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    <span id="tv-update-btn-text">Обновить ТВ</span>
+                </button>
+                <button class="tb-install" id="pwa-install-btn" title="Установить приложение" style="display:none;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                        <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                    <span>Установить</span>
+                </button>
+                <% if (isAdminViewer) { %>
+                <a class="tb-btn" href="/editor" title="Панель администратора">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/>
+                        <rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
+                    </svg>
+                </a>
+                <% } %>
+                <a class="tb-btn tb-btn-exit" href="/watch/logout" title="Выход">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                        <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+                    </svg>
+                </a>
+            </div>
+        </header>
+
+        <!-- ============ MAIN ============ -->
+        <div class="watch-main">
+            <aside class="watch-sidebar">
+                <div class="sidebar-scroll">
+                    <!-- PREVIEW -->
+                    <div class="preview-card">
+                        <div class="preview-screen" id="preview-screen">
+                            <div class="preview-video-host" id="preview-video-host">
+                                <video id="preview-video" playsinline></video>
+                            </div>
+                            <div class="preview-logo-wrap" id="preview-logo-wrap">
+                                <img id="preview-logo" alt="" style="display:none;">
+                                <svg id="preview-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/>
+                                </svg>
+                            </div>
+                            <div class="preview-controls">
+                                <button class="preview-btn" id="preview-mute-btn" title="Звук" type="button">
+                                    <svg class="ico-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none;">
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                                        <line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>
+                                    </svg>
+                                    <svg class="ico-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/>
+                                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"/>
+                                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>
+                                    </svg>
+                                </button>
+                                <button class="preview-btn" id="preview-fs-btn" title="Смотреть во весь экран" type="button">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                        <path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/>
+                                        <path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/>
+                                    </svg>
+                                </button>
+                            </div>
+                            <div class="preview-loading hidden" id="preview-loading">
+                                <div class="spinner"></div>
+                            </div>
+                        </div>
+                        <div class="preview-info">
+                            <div class="preview-cat" id="preview-cat">Канал</div>
+                            <div class="preview-name" id="preview-name">—</div>
+                            <div class="preview-epg" id="preview-epg">
+                                <div class="epg-current" id="epg-current">Телепрограмма не найдена</div>
+                                <div class="epg-progress" id="epg-progress" style="display:none;">
+                                    <span class="epg-time" id="epg-start">--:--</span>
+                                    <div class="epg-bar"><div class="epg-bar-fill" id="epg-bar-fill"></div></div>
+                                    <span class="epg-time" id="epg-stop">--:--</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- CATEGORIES -->
+                    <nav class="categories-grid" id="categories-grid"></nav>
+                </div>
+            </aside>
+
+            <section class="watch-content" id="watch-content">
+                <div class="channel-grid grid-mode" id="watch-grid">
+                    <div class="watch-empty"><div class="spinner" style="margin: 0 auto 16px;"></div><div>Загрузка...</div></div>
+                </div>
+            </section>
+        </div>
+    </div>
+
+    <!-- ============ SETTINGS & TV OTA UPDATE MODAL ============ -->
+    <div id="settings-modal" class="ch-menu hidden">
+        <div class="ch-menu-backdrop" data-settings-close></div>
+        <div class="ch-menu-window" style="max-width:440px;">
+            <div class="ch-menu-head">
+                <div class="ch-menu-logo-wrap" style="background:linear-gradient(135deg,var(--primary),var(--violet)); color:#fff;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:1;">
+                        <rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/>
+                    </svg>
+                </div>
+                <div class="ch-menu-info">
+                    <div class="ch-menu-title">Настройки и обновление ТВ</div>
+                    <div class="ch-menu-cat" id="set-platform-label">Определение устройства...</div>
+                </div>
+            </div>
+            <div class="tv-modal-list">
+                <div class="tv-info-row"><span>Профиль</span><strong id="set-user-label"><%= uName %> (<%= uLogin %>)</strong></div>
+                <div class="tv-info-row"><span>Текущая версия</span><strong id="set-current-ver">v<%= appVersionName %></strong></div>
+                <div class="tv-info-row"><span>Версия APK на сервере</span><strong id="set-remote-ver">Проверка...</strong></div>
+                <div id="set-changelog-box" class="hidden" style="padding:10px 12px; background:var(--bg-1); border:1px solid var(--border); border-radius:10px; font-size:12.5px; color:var(--text-dim);"></div>
+                <div id="tv-update-progress-wrap" class="hidden" style="padding:8px 2px;">
+                    <div id="tv-update-progress-label" style="font-size:12px; color:#c7d2fe;">Загрузка APK: 0%</div>
+                    <div class="tv-progress-track"><div id="tv-update-progress-fill" class="tv-progress-fill"></div></div>
+                </div>
+            </div>
+            <div class="ch-menu-actions" style="margin-top:14px;">
+                <button type="button" class="ch-menu-btn" id="set-btn-check-update">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <span>Проверить обновление</span>
+                </button>
+                <button type="button" class="ch-menu-btn ch-menu-watch hidden" id="set-btn-install-apk">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    <span>Установить APK</span>
+                </button>
+                <button type="button" class="ch-menu-btn" id="set-btn-toggle-view">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                    <span id="set-view-label">Вид: Сетка</span>
+                </button>
+                <button type="button" class="ch-menu-btn" data-settings-close>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <span>Закрыть</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ CHANNEL ACTION MENU ============ -->
+    <div id="channel-menu" class="ch-menu hidden">
+        <div class="ch-menu-backdrop" data-menu-close></div>
+        <div class="ch-menu-window">
+            <div class="ch-menu-head">
+                <div class="ch-menu-logo-wrap">
+                    <img id="ch-menu-logo" alt="" style="display:none;">
+                    <svg id="ch-menu-ph" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="2" y="7" width="20" height="15" rx="2"/><polyline points="17 2 12 7 7 2"/>
+                    </svg>
+                </div>
+                <div class="ch-menu-info">
+                    <div class="ch-menu-title" id="ch-menu-title">—</div>
+                    <div class="ch-menu-cat" id="ch-menu-cat">—</div>
+                </div>
+            </div>
+            <div class="ch-menu-actions">
+                <button class="ch-menu-btn ch-menu-watch" data-ch-action="watch">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/><polygon points="10 8 16 12 10 16 10 8" fill="currentColor"/>
+                    </svg>
+                    <span>Смотреть</span>
+                </button>
+                <button class="ch-menu-btn" data-ch-action="program">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect x="3" y="4" width="18" height="18" rx="2"/>
+                        <line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/>
+                        <line x1="3" y1="10" x2="21" y2="10"/>
+                    </svg>
+                    <span>Программа</span>
+                </button>
+                <button class="ch-menu-btn" data-ch-action="fav">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+                    </svg>
+                    <span id="ch-menu-fav-text">В избранное</span>
+                </button>
+                <button class="ch-menu-btn ch-menu-hide" data-ch-action="hide">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                    </svg>
+                    <span id="ch-menu-hide-text">Скрыть из списка</span>
+                </button>
+            </div>
+            <div class="ch-menu-program hidden" id="ch-menu-program">
+                <div class="cmp-row"><span class="cmp-label">Сейчас</span><span class="cmp-value" id="cmp-current">—</span></div>
+                <div class="cmp-row"><span class="cmp-label">Далее</span><span class="cmp-value" id="cmp-next">—</span></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ FULLSCREEN PLAYER ============ -->
+    <div id="player-modal" class="player-modal hidden">
+        <div class="player-video-host" id="player-video-host"></div>
+        <div id="player-overlay" class="player-overlay">
+            <div class="spinner"></div>
+            <div id="player-overlay-text" style="margin-top:12px; color:#94a3b8;">Загрузка потока...</div>
+        </div>
+        <div id="player-toast" class="player-toast"></div>
+        <div class="player-tools">
+            <button id="player-reload" class="player-tool-btn" title="Перезагрузить">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+            </button>
+            <button id="player-close" class="player-tool-btn player-tool-close" title="Закрыть (Esc)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        window.USER_NAME = <%- JSON.stringify(uName) %>;
+        window.USER_LOGIN = <%- JSON.stringify(uLogin) %>;
+        window.IS_ADMIN_VIEWER = <%- JSON.stringify(Boolean(isAdminViewer)) %>;
+        window.WATCH_TOKEN = <%- JSON.stringify(typeof watchToken === 'string' ? watchToken : '') %>;
+        window.APP_VERSION = <%- JSON.stringify(appVersionName) %>;
+        window.APP_VERSION_CODE = <%- JSON.stringify(appVersionCode) %>;
+        try {
+            if (window.WATCH_TOKEN) sessionStorage.setItem('pqtv_watch_token', window.WATCH_TOKEN);
+            if (window.location.pathname !== '/watch') history.replaceState(null, '', '/watch');
+        } catch {}
+    </script>
+    <script src="/assets/js/watch.js?v=<%= assetVersion('/assets/js/watch.js') %>"></script>
+    <script src="/assets/js/firebase-users.js?v=<%= assetVersion('/assets/js/firebase-users.js') %>"></script>
+    <script>
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js', {scope:'/'}).catch(()=>{}));
+        }
+        let deferredPrompt = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault(); deferredPrompt = e;
+            const b = document.getElementById('pwa-install-btn');
+            if (b && !(window.PQTVAndroid && window.PQTVAndroid.isAndroidTV && window.PQTVAndroid.isAndroidTV())) {
+                b.style.display = 'flex';
+            }
+        });
+        document.addEventListener('click', async (e) => {
+            if (e.target.closest('#pwa-install-btn') && deferredPrompt) {
+                deferredPrompt.prompt(); await deferredPrompt.userChoice;
+                deferredPrompt = null;
+                const b = document.getElementById('pwa-install-btn');
+                if (b) b.style.display = 'none';
+            }
+        });
+        (function () {
+            const exitBtn = document.querySelector('.tb-btn-exit');
+            if (exitBtn) {
+                exitBtn.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    try {
+                        sessionStorage.removeItem('pqtv_watch_token');
+                        sessionStorage.removeItem('pqtv_admin_token');
+                    } catch {}
+                    if (window.PQTVFirebase) {
+                        await window.PQTVFirebase.signOutGoogle().catch(() => {});
+                    }
+                    window.location.href = '/watch/logout';
+                });
+            }
+        })();
+    </script>
+</body>
+</html>

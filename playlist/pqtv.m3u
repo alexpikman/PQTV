@@ -1,0 +1,19 @@
+#EXTM3U
+#EXTINF:-1 tvg-logo="https://i.imgur.com/Ge8vkQM.png" group-title="Фильмы",Кинохит
+http://stream.mcquack.net/126/index.m3u8
+#EXTINF:-1 tvg-logo="https://i.imgur.com/D4q2XUT.png" group-title="Фильмы",Киномикс
+http://93.170.254.17/Kinomiks/index.m3u8
+#EXTINF:-1 tvg-logo="https://i.imgur.com/s0UYT8T.png" group-title="Фильмы",Кинопремьера HD
+http://5.188.159.128:8070/KINOPREMIERA/index.m3u8
+#EXTINF:-1 tvg-logo="https://i.imgur.com/dVjtth0.png" group-title="Фильмы",Кинокомедия
+http://stream.mcquack.net/265/index.m3u8
+#EXTINF:-1 tvg-logo="https://tv.pqnet.ru/logo/4ever_Cinema.png" group-title="Фильмы",Cinema4ever
+http://stream.mcquack.net/258/index.m3u8
+#EXTINF:-1 tvg-logo="https://i.imgur.com/sMpamNO.png" group-title="Фильмы",КИНО ТВ HD
+http://176.118.197.101/KinoTvHD/playlist.m3u8
+#EXTINF:-1 tvg-logo="https://i.imgur.com/mAcAAQF.png" group-title="Фильмы",Киноужас
+http://stream.mcquack.net/278/index.m3u8
+#EXTINF:-1 tvg-logo="https://tv.pqnet.ru/logo/Discovery.jpg" group-title="Наука",Discovery
+http://5.188.159.128:8070/DiscoveryChannel/index.m3u8
+#EXTINF:-1 tvg-logo="https://tv.pqnet.ru/logo/NationalGeographic.jpg" group-title="Наука",National Geographic
+https://stream8.cinerama.uz/1041/tracks-v1a1/mono.m3u8

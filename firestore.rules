@@ -1,0 +1,172 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net: default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // ===== GLOBAL PRIMITIVES =====
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedEmail() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedEmail()
+        && request.auth.token.email in ['alexpqtr@gmail.com', 'alex.pikman@gmail.com'];
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin()
+        || (isVerifiedEmail() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    // ===== VALIDATION BLUEPRINTS =====
+    function isValidPlaylistsList(list) {
+      return list is list
+        && list.size() <= 20
+        && (list.size() == 0 || (list[0] is string && list[0].size() >= 1 && list[0].size() <= 64));
+    }
+
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'login', 'name', 'playlists', 'enabled', 'role', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'login', 'name', 'playlists', 'enabled', 'role', 'lastPing', 'lastUa', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.login is string && data.login.size() >= 3 && data.login.size() <= 32 && data.login.matches('^[a-zA-Z0-9_.-]{3,32}$')
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && isValidPlaylistsList(data.playlists)
+        && data.enabled is bool
+        && data.role is string && data.role in ['user', 'admin']
+        && (!('lastPing' in data) || data.lastPing is timestamp)
+        && (!('lastUa' in data) || (data.lastUa is string && data.lastUa.size() <= 120))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPrivateInfo(data) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminRole(data) {
+      return data.keys().hasAll(['uid', 'createdAt'])
+        && data.keys().hasOnly(['uid', 'createdAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp;
+    }
+
+    // ===== CONNECTION CHECK =====
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    // ===== ADMINS =====
+    match /admins/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isBootstrappedAdmin()
+        && isValidId(userId)
+        && isValidAdminRole(incoming())
+        && incoming().uid == userId
+        && incoming().createdAt == request.time;
+      allow update: if isBootstrappedAdmin()
+        && isValidId(userId)
+        && isValidAdminRole(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if isBootstrappedAdmin() && isValidId(userId);
+    }
+
+    // ===== USERS =====
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isSignedIn() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+
+      allow create: if isVerifiedEmail()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().uid == userId) ||
+          (
+            isOwner(userId)
+            && incoming().uid == request.auth.uid
+            && incoming().role == 'user'
+            && incoming().enabled == false
+            && incoming().playlists.size() == 0
+            && existsAfter(/databases/$(database)/documents/users/$(userId)/private/info)
+          )
+        );
+
+      allow update: if isVerifiedEmail()
+        && isValidId(userId)
+        && isValidUserProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['login', 'name', 'playlists', 'enabled', 'role', 'lastPing', 'lastUa', 'updatedAt'])) ||
+          (
+            isOwner(userId)
+            && incoming().role == existing().role
+            && incoming().enabled == existing().enabled
+            && incoming().playlists == existing().playlists
+            && incoming().login == existing().login
+            && (!('lastPing' in incoming()) || incoming().lastPing == request.time)
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'lastPing', 'lastUa', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isAdmin() && isValidId(userId);
+
+      // Isolated PII subcollection
+      match /private/info {
+        allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+        allow list: if false;
+        allow create: if isVerifiedEmail()
+          && isValidId(userId)
+          && isValidPrivateInfo(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && (isAdmin() || (isOwner(userId) && incoming().uid == request.auth.uid));
+        allow update: if isVerifiedEmail()
+          && isValidId(userId)
+          && isValidPrivateInfo(incoming())
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt'])) ||
+            (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']))
+          );
+        allow delete: if isAdmin() && isValidId(userId);
+      }
+    }
+  }
+}
