@@ -10,7 +10,7 @@ import { parseM3uFile, Channel } from './src/m3uParser.js';
 import { userAuth, hashEmailId, ChannelAlertIssue } from './src/userAuth.js';
 import { StreamParser, SourceItem } from './src/streamParser.js';
 import { EpgParser, EpgSource } from './src/epgParser.js';
-import { catalogStore, checkStreamUrl } from './src/catalogStore.js';
+import { catalogStore } from './src/catalogStore.js';
 import { verifyFirebaseIdToken } from './src/firebaseJwt.js';
 import { apkManager, buildAndroidTvProjectZip, isValidApkBuffer } from './src/apkManager.js';
 import {
@@ -2038,8 +2038,8 @@ app.post('/api/channels/save', (req, res) => {
 // Stream check & parse
 app.post('/api/stream/check', async (req, res) => {
   const url = String(req.body?.url || '').trim();
-  const result = await checkStreamUrl(url);
-  noCacheJson(res, { online: result.online, status: result.status, code: result.code, ms: result.ms, reason: result.reason });
+  const result = await catalogStore.checkStream(url, Boolean(req.body?.force));
+  noCacheJson(res, { online: result.online, status: result.status, code: result.code, ms: result.ms, reason: result.reason, checkedAt: result.checkedAt });
 });
 
 app.post('/api/stream/parse', (req, res) => {
