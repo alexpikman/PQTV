@@ -120,6 +120,23 @@ a:hover { text-decoration: underline; }
   display: flex; align-items: center; justify-content: space-between;
   padding: 0 24px; flex-shrink: 0;
 }
+
+.streaming-mode-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.streaming-mode-control select {
+  max-width: 190px;
+  padding: 7px 9px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius-sm);
+}
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand-mark {
   width: 56px; height: 32px;
