@@ -1091,7 +1091,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function playStream(url) {
         stopStream();
-        // Создаём новый video внутри playerVideoHost
         const v = document.createElement('video');
         v.id = 'player-video';
         v.controls = true;
@@ -1115,52 +1114,105 @@ document.addEventListener('DOMContentLoaded', () => {
         const low = url.split('?')[0].toLowerCase();
         const isM3u8 = low.includes('.m3u8');
         const isTs = low.endsWith('.ts');
-
         const ch = window.__playerChannel || previewChannel;
+        let attempts = [];
+        let attemptIndex = 0;
+        let attemptId = 0;
+
         const ready = () => {
             overlay.classList.add('hidden');
             clearRuntimeUnavailable(ch);
         };
-        const err = (m) => {
-            const msg = m || 'Ошибка воспроизведения';
+        const err = (message) => {
+            const msg = message || 'Ошибка воспроизведения';
             overlay.classList.remove('hidden');
             text.textContent = msg;
             recordRuntimeUnavailable(ch, msg);
         };
-        v.onloadeddata = ready;
-        v.oncanplay = ready;
-        v.onerror = () => err('Поток недоступен или формат не поддерживается');
 
-        if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-            hls = new Hls({
-                enableWorker: true,
-                lowLatencyMode: false,
-                manifestLoadingTimeOut: 15000,
-                manifestLoadingMaxRetry: 2,
-                fragLoadingTimeOut: 30000,
-                maxBufferLength: 30,
-                maxMaxBufferLength: 60
-            });
-            hls.loadSource(proxied);
-            hls.attachMedia(v);
-            hls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(()=>{}));
-            let ec = 0;
-            hls.on(Hls.Events.ERROR, (e, d) => {
-                if (!d) return;
-                const ig = ['bufferAppendError','bufferAppendingError','bufferStalledError','fragParsingError','fragLoadError','levelLoadError'];
-                if (ig.includes(d.details) && !d.fatal) { ec++; if (ec === 6) { try { hls.startLoad(); } catch(x){} } return; }
-                if (d.fatal) err('Ошибка HLS: ' + (d.details || 'unknown'));
-            });
-        } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
-            mpegtsP = mpegts.createPlayer({ type: 'mpegts', url: proxied, isLive: true }, { enableWorker: true, liveBufferLatencyChasing: true });
-            mpegtsP.attachMediaElement(v);
-            mpegtsP.load();
-            mpegtsP.play().catch(()=>{});
-            mpegtsP.on(mpegts.Events.ERROR, (t, d) => err('Ошибка TS: ' + d));
-        } else {
-            v.src = proxied;
-            v.play().catch(()=>{});
-        }
+        const attempt = (source) => {
+            const currentAttempt = ++attemptId;
+            if (hls) {
+                try { hls.destroy(); } catch (e) {}
+                hls = null;
+            }
+            if (mpegtsP) {
+                try { mpegtsP.destroy(); } catch (e) {}
+                mpegtsP = null;
+            }
+            try {
+                v.pause();
+                v.removeAttribute('src');
+                v.load();
+            } catch (e) {}
+
+            v.onloadeddata = ready;
+            v.oncanplay = ready;
+            v.onerror = () => {
+                if (currentAttempt !== attemptId) return;
+                if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
+                else err('Поток недоступен или формат не поддерживается');
+            };
+
+            if (isM3u8 && window.Hls && window.Hls.isSupported()) {
+                hls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: false,
+                    manifestLoadingTimeOut: 15000,
+                    manifestLoadingMaxRetry: 1,
+                    fragLoadingTimeOut: 30000,
+                    maxBufferLength: 30,
+                    maxMaxBufferLength: 60
+                });
+                hls.loadSource(source);
+                hls.attachMedia(v);
+                hls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    if (currentAttempt === attemptId) v.play().catch(() => {});
+                });
+                hls.on(Hls.Events.ERROR, (event, data) => {
+                    if (!data || !data.fatal || currentAttempt !== attemptId) return;
+                    if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
+                    else err('Ошибка HLS: ' + (data.details || 'unknown'));
+                });
+            } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+                mpegtsP = mpegts.createPlayer(
+                    { type: 'mpegts', url: source, isLive: true },
+                    { enableWorker: true, liveBufferLatencyChasing: true }
+                );
+                mpegtsP.attachMediaElement(v);
+                mpegtsP.load();
+                mpegtsP.play().catch(() => {});
+                mpegtsP.on(mpegts.Events.ERROR, (type, detail) => {
+                    if (currentAttempt !== attemptId) return;
+                    if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
+                    else err('Ошибка TS: ' + detail);
+                });
+            } else {
+                v.src = source;
+                v.play().catch(() => {});
+            }
+        };
+
+        const modes = {
+            auto_proxy_first: [proxied, url],
+            auto_direct_first: [url, proxied],
+            proxy_only: [proxied],
+            direct_only: [url]
+        };
+
+        void api('/watch/api/streaming-settings').then((result) => {
+            const mode = result && result.settings && modes[result.settings.mode]
+                ? result.settings.mode
+                : 'auto_proxy_first';
+            attempts = modes[mode].slice();
+            const first = attempts.shift();
+            attemptIndex = 0;
+            attempt(first);
+        }).catch(() => {
+            attempts = [url];
+            attemptIndex = 0;
+            attempt(proxied);
+        });
 
         setTimeout(() => {
             try {
@@ -1173,8 +1225,6 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch (e) {}
         }, 8000);
     }
-
-
 
     // ===== FULLSCREEN =====
     function requestFS() {
