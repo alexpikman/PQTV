@@ -207,7 +207,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error(`API ${res.status} ${url}`);
                 return data;
             }
-            if (['POST', 'PUT', 'DELETE'].includes(method) && fbAdminConnected) {
+            if (
+                fbAdminConnected &&
+                (['POST', 'PUT', 'DELETE'].includes(method) ||
+                    (method === 'GET' && url.startsWith('/api/source/rebuild')))
+            ) {
                 scheduleCloudSync();
             }
             return data;
@@ -3028,6 +3032,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const low = url.split('?')[0].toLowerCase();
         const isM3u8 = low.includes('.m3u8');
         const isTs = low.endsWith('.ts');
+        let attemptIndex = 0;
+        let attemptId = 0;
 
         const onReady = () => overlay.classList.add('hidden');
         const onErr = (msg) => {
@@ -3035,61 +3041,99 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             text.textContent = msg || 'Ошибка воспроизведения';
         };
 
-        v.onloadeddata = onReady;
-        v.oncanplay = onReady;
-        v.onerror = () => onErr('Поток недоступен или формат не поддерживается');
+        const attempt = (source) => {
+            const currentAttempt = ++attemptId;
+            if (playerHls) {
+                try { playerHls.destroy(); } catch (e) {}
+                playerHls = null;
+            }
+            if (playerMpegts) {
+                try { playerMpegts.destroy(); } catch (e) {}
+                playerMpegts = null;
+            }
+            try {
+                v.pause();
+                v.removeAttribute('src');
+                v.load();
+            } catch (e) {}
 
-        if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-            playerHls = new Hls({
-                enableWorker: true,
-                lowLatencyMode: false,
-                manifestLoadingTimeOut: 12000,
-                manifestLoadingMaxRetry: 2,
-                fragLoadingTimeOut: 25000
-            });
-            playerHls.loadSource(proxied);
-            playerHls.attachMedia(v);
-            playerHls.on(Hls.Events.MANIFEST_PARSED, () => v.play().catch(() => {}));
-            let hlsErrorCount = 0;
-            playerHls.on(Hls.Events.ERROR, (evt, data) => {
-                if (!data) return;
-                // Не критичные ошибки (битые сегменты, реклама) — просто пропускаем
-                const ignorable = [
-                    'bufferAppendError',
-                    'bufferAppendingError',
-                    'bufferStalledError',
-                    'fragParsingError',
-                    'fragLoadError',
-                    'levelLoadError'
-                ];
-                if (ignorable.includes(data.details) && !data.fatal) {
-                    hlsErrorCount++;
-                    // Если больше 5 нефатальных ошибок подряд — тихо перезапускаем поток
-                    if (hlsErrorCount === 6) {
-                        try { playerHls.startLoad(); } catch(e) {}
+            v.onloadeddata = onReady;
+            v.oncanplay = onReady;
+            v.onerror = () => {
+                if (currentAttempt !== attemptId) return;
+                if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
+                else onErr('Поток недоступен или формат не поддерживается');
+            };
+
+            if (isM3u8 && window.Hls && window.Hls.isSupported()) {
+                playerHls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: false,
+                    manifestLoadingTimeOut: 12000,
+                    manifestLoadingMaxRetry: 1,
+                    fragLoadingTimeOut: 25000
+                });
+                playerHls.loadSource(source);
+                playerHls.attachMedia(v);
+                playerHls.on(Hls.Events.MANIFEST_PARSED, () => {
+                    if (currentAttempt === attemptId) v.play().catch(() => {});
+                });
+                playerHls.on(Hls.Events.ERROR, (evt, data) => {
+                    if (!data || !data.fatal || currentAttempt !== attemptId) return;
+                    if (attemptIndex < attempts.length) {
+                        attempt(attempts[attemptIndex++]);
+                    } else {
+                        onErr('Ошибка HLS: ' + (data.details || 'unknown'));
                     }
-                    return;
-                }
-                // Показываем только реально фатальные
-                if (data.fatal) onErr('Ошибка HLS: ' + (data.details || 'unknown'));
-            });
-        } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
-            playerMpegts = mpegts.createPlayer({
-                type: 'mpegts',
-                url: proxied,
-                isLive: true
-            }, {
-                enableWorker: true,
-                liveBufferLatencyChasing: true
-            });
-            playerMpegts.attachMediaElement(v);
-            playerMpegts.load();
-            playerMpegts.play().catch(() => {});
-            playerMpegts.on(mpegts.Events.ERROR, (t, d) => onErr('Ошибка TS: ' + d));
-        } else {
-            v.src = proxied;
-            v.play().catch(() => {});
-        }
+                });
+            } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+                playerMpegts = mpegts.createPlayer({
+                    type: 'mpegts',
+                    url: source,
+                    isLive: true
+                }, {
+                    enableWorker: true,
+                    liveBufferLatencyChasing: true
+                });
+                playerMpegts.attachMediaElement(v);
+                playerMpegts.load();
+                playerMpegts.play().catch(() => {});
+                playerMpegts.on(mpegts.Events.ERROR, (t, d) => {
+                    if (currentAttempt !== attemptId) return;
+                    if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
+                    else onErr('Ошибка TS: ' + d);
+                });
+            } else {
+                v.src = source;
+                v.play().catch(() => {});
+            }
+        };
+
+        const modes = {
+            auto_proxy_first: [proxied, url],
+            auto_direct_first: [url, proxied],
+            proxy_only: [proxied],
+            direct_only: [url]
+        };
+
+        void apiRequest('/api/settings/streaming').then((result) => {
+            const mode = result && result.settings && modes[result.settings.mode]
+                ? result.settings.mode
+                : 'auto_proxy_first';
+            const attempts = modes[mode].slice();
+            const first = attempts.shift();
+            window.__pqtvPlaybackAttempts = attempts;
+            attemptIndex = 0;
+            const originalAttempts = attempts;
+            // The retry queue is scoped to this playback session.
+            attemptsRef = originalAttempts;
+            attempt(first);
+        }).catch(() => {
+            attemptsRef = [url];
+            attempt(proxied);
+        });
+
+        let attemptsRef = [url];
     }
 
     // ===== EPG IN PLAYER =====
