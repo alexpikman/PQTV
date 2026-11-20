@@ -588,7 +588,7 @@ class CatalogStore {
         ch: c,
         usedIn,
         inMyPl: usedIn.length > 0 ? 1 : 0,
-        counts: streamCounts.get(c.id) || { total: 0, online: 0 },
+        counts: streamCounts.get(c.id) || { total: 0, online: 0, offline: 0, unknown: 0 },
       };
     });
 
