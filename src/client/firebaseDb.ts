@@ -164,7 +164,8 @@ async function readManifest(): Promise<{
       catalogChannelChunks: Number(d.catalogChannelChunks) || 0,
       catalogStreamChunks: Number(d.catalogStreamChunks) || 0,
     };
-  } catch {
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, 'cloud_meta/manifest');
     return null;
   }
 }
