@@ -25,6 +25,13 @@ export interface CloudSourceItem {
   enabled: boolean;
 }
 
+export interface CloudEpgSourceItem {
+  id: string;
+  name: string;
+  url: string;
+  enabled: boolean;
+}
+
 export interface CloudIndexedItem {
   name: string;
   url: string;
@@ -43,7 +50,7 @@ export interface CloudExportPayload {
   playlists: Record<string, CloudChannelItem[]>;
   sources: CloudSourceItem[];
   sourceIndex: Record<string, { items: CloudIndexedItem[]; updatedAt: number }>;
-  epgSources: CloudSourceItem[];
+  epgSources: CloudEpgSourceItem[];
   catalog: {
     nextChannelId: number;
     nextStreamId: number;
@@ -460,7 +467,7 @@ export async function clearSourceIndexInCloud(sourceId?: string | null): Promise
 }
 
 export async function saveEpgToCloud(
-  epgList: CloudSourceItem[],
+  epgList: CloudEpgSourceItem[],
   updateManifest = true
 ): Promise<string[]> {
   const cur = await readManifest();
@@ -830,7 +837,7 @@ export async function loadFullCloudSnapshot(): Promise<{
   );
 
   // EPG Sources
-  const epgSources: CloudSourceItem[] = [];
+  const epgSources: CloudEpgSourceItem[] = [];
   await Promise.all(
     manifest.epgIds.map(async (eid) => {
       try {
