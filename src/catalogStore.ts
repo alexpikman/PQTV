@@ -48,7 +48,7 @@ const STREAM_STATUS_TTL_SECONDS = 15 * 60;
 
 export type StreamCheckStatus = 'online' | 'offline' | 'unknown';
 
-export async function checkStreamUrl(
+async function performStreamUrlCheck(
   url: string,
   timeoutMs = 8000
 ): Promise<{ online: boolean | null; status: StreamCheckStatus; code: number; ms: number; reason: string }> {
@@ -132,6 +132,68 @@ export async function checkStreamUrl(
       ? 'Таймаут проверки'
       : 'Сетевая ошибка проверки';
     return { online: null, status: 'unknown', code: 0, ms, reason };
+  }
+}
+
+type StreamCheckResult = {
+  online: boolean | null;
+  status: StreamCheckStatus;
+  code: number;
+  ms: number;
+  reason: string;
+  checkedAt: number;
+};
+
+const STREAM_CHECK_CACHE_TTL_MS: Record<StreamCheckStatus, number> = {
+  online: 5 * 60 * 1000,
+  offline: 60 * 1000,
+  unknown: 20 * 1000,
+};
+const STREAM_CHECK_CACHE_MAX = 10000;
+const streamCheckCache = new Map<string, { result: StreamCheckResult; expiresAt: number }>();
+const streamCheckInFlight = new Map<string, Promise<StreamCheckResult>>();
+
+export async function checkStreamUrl(
+  url: string,
+  timeoutMs = 8000,
+  force = false
+): Promise<StreamCheckResult> {
+  const key = String(url || '').trim();
+  const now = Date.now();
+  const cached = streamCheckCache.get(key);
+
+  if (!force && cached && cached.expiresAt > now) {
+    streamCheckCache.delete(key);
+    streamCheckCache.set(key, cached);
+    return cached.result;
+  }
+
+  const active = streamCheckInFlight.get(key);
+  if (active) return active;
+
+  const pending = (async (): Promise<StreamCheckResult> => {
+    const result = await performStreamUrlCheck(key, timeoutMs);
+    const checkedAt = Math.floor(Date.now() / 1000);
+    const sharedResult: StreamCheckResult = { ...result, checkedAt };
+
+    if (streamCheckCache.size >= STREAM_CHECK_CACHE_MAX) {
+      const oldestKey = streamCheckCache.keys().next().value;
+      if (oldestKey !== undefined) streamCheckCache.delete(oldestKey);
+    }
+    streamCheckCache.set(key, {
+      result: sharedResult,
+      expiresAt: Date.now() + STREAM_CHECK_CACHE_TTL_MS[sharedResult.status],
+    });
+    return sharedResult;
+  })();
+
+  streamCheckInFlight.set(key, pending);
+  try {
+    return await pending;
+  } finally {
+    if (streamCheckInFlight.get(key) === pending) {
+      streamCheckInFlight.delete(key);
+    }
   }
 }
 
@@ -596,28 +658,40 @@ class CatalogStore {
     this.saveToDisk();
   }
 
-  async checkStreams(limit = 500): Promise<{ checked: number; online: number; offline: number; unknown: number }> {
+  async checkStream(url: string, force = false, persist = true): Promise<StreamCheckResult> {
     this.ensureInit();
-    const target = this.streams.slice(0, limit);
+    const result = await checkStreamUrl(url, 8000, force);
+    const matching = this.streams.filter((stream) => stream.url === url);
+    for (const stream of matching) {
+      stream.online = result.status === 'online' ? 1 : result.status === 'offline' ? -1 : 0;
+      stream.http_code = result.code;
+      stream.response_ms = result.ms;
+      stream.checked_at = result.checkedAt;
+    }
+    if (persist && matching.length > 0) this.saveToDisk();
+    return result;
+  }
+
+  async checkStreams(limit = 500, force = true): Promise<{ checked: number; online: number; offline: number; unknown: number }> {
+    this.ensureInit();
+    const target = Array.from(new Set(
+      this.streams.slice(0, limit).map((stream) => stream.url).filter(Boolean)
+    ));
     let onlineCount = 0;
     let offlineCount = 0;
     let unknownCount = 0;
-    const batchSize = 15;
+    const batchSize = 6;
 
     for (let i = 0; i < target.length; i += batchSize) {
       const batch = target.slice(i, i + batchSize);
-      await Promise.all(
-        batch.map(async (s) => {
-          const res = await checkStreamUrl(s.url);
-          s.online = res.status === 'online' ? 1 : res.status === 'offline' ? -1 : 0;
-          s.http_code = res.code;
-          s.response_ms = res.ms;
-          s.checked_at = Math.floor(Date.now() / 1000);
-          if (res.status === 'online') onlineCount++;
-          else if (res.status === 'offline') offlineCount++;
-          else unknownCount++;
-        })
+      const results = await Promise.all(
+        batch.map((url) => this.checkStream(url, force, false))
       );
+      for (const result of results) {
+        if (result.status === 'online') onlineCount++;
+        else if (result.status === 'offline') offlineCount++;
+        else unknownCount++;
+      }
     }
     this.saveToDisk();
     return { checked: target.length, online: onlineCount, offline: offlineCount, unknown: unknownCount };
