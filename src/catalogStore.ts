@@ -44,9 +44,22 @@ export interface CatalogSource {
   total_found?: number;
 }
 
-const STREAM_STATUS_TTL_SECONDS = 15 * 60;
-
 export type StreamCheckStatus = 'online' | 'offline' | 'unknown';
+
+const STREAM_STATUS_TTL_SECONDS: Record<StreamCheckStatus, number> = {
+  online: 5 * 60,
+  offline: 60,
+  unknown: 20,
+};
+
+function isStreamStatusFresh(
+  stream: Pick<CatalogStream, 'online' | 'checked_at'>,
+  now = Math.floor(Date.now() / 1000)
+): boolean {
+  const status: StreamCheckStatus =
+    stream.online === 1 ? 'online' : stream.online === -1 ? 'offline' : 'unknown';
+  return stream.checked_at > 0 && now - stream.checked_at <= STREAM_STATUS_TTL_SECONDS[status];
+}
 
 async function performStreamUrlCheck(
   url: string,
@@ -152,6 +165,25 @@ const STREAM_CHECK_CACHE_TTL_MS: Record<StreamCheckStatus, number> = {
 const STREAM_CHECK_CACHE_MAX = 10000;
 const streamCheckCache = new Map<string, { result: StreamCheckResult; expiresAt: number }>();
 const streamCheckInFlight = new Map<string, Promise<StreamCheckResult>>();
+const STREAM_CHECK_MAX_CONCURRENCY = 6;
+let activeStreamChecks = 0;
+const streamCheckQueue: Array<() => void> = [];
+
+async function withStreamCheckSlot<T>(task: () => Promise<T>): Promise<T> {
+  if (activeStreamChecks >= STREAM_CHECK_MAX_CONCURRENCY) {
+    await new Promise<void>((resolve) => streamCheckQueue.push(resolve));
+  } else {
+    activeStreamChecks++;
+  }
+
+  try {
+    return await task();
+  } finally {
+    const next = streamCheckQueue.shift();
+    if (next) next();
+    else activeStreamChecks--;
+  }
+}
 
 export async function checkStreamUrl(
   url: string,
@@ -172,7 +204,7 @@ export async function checkStreamUrl(
   if (active) return active;
 
   const pending = (async (): Promise<StreamCheckResult> => {
-    const result = await performStreamUrlCheck(key, timeoutMs);
+    const result = await withStreamCheckSlot(() => performStreamUrlCheck(key, timeoutMs));
     const checkedAt = Math.floor(Date.now() / 1000);
     const sharedResult: StreamCheckResult = { ...result, checkedAt };
 
@@ -486,7 +518,7 @@ class CatalogStore {
       channels: this.channels.length,
       in_my_pl: inMyPlCount,
       streams: this.streams.length,
-      streams_online: this.streams.filter((s) => s.online === 1 && s.checked_at > 0 && now - s.checked_at <= STREAM_STATUS_TTL_SECONDS).length,
+      streams_online: this.streams.filter((s) => s.online === 1 && isStreamStatusFresh(s, now)).length,
       sources: this.sources.length,
       sources_enabled: this.sources.filter((s) => s.enabled === 1).length,
     };
@@ -533,7 +565,7 @@ class CatalogStore {
     for (const s of this.streams) {
       const entry = streamCounts.get(s.channel_id) || { total: 0, online: 0, offline: 0, unknown: 0 };
       entry.total++;
-      const fresh = s.checked_at > 0 && now - s.checked_at <= STREAM_STATUS_TTL_SECONDS;
+      const fresh = isStreamStatusFresh(s, now);
       if (!fresh || s.online === 0) entry.unknown++;
       else if (s.online === 1) entry.online++;
       else if (s.online === -1) entry.offline++;
@@ -602,7 +634,7 @@ class CatalogStore {
       used_in_list: usedIn,
       alt_names: JSON.stringify(ch.alt_names),
       streams: chStreams.map((stream) => {
-        const fresh = stream.checked_at > 0 && Math.floor(Date.now() / 1000) - stream.checked_at <= STREAM_STATUS_TTL_SECONDS;
+        const fresh = isStreamStatusFresh(stream);
         return {
           ...stream,
           status: !fresh || stream.online === 0
