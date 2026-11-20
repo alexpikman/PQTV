@@ -22,7 +22,10 @@ import {
   refreshGithubBuildStatus,
   listGithubWorkflowRuns,
   importApkFromGithubRun,
+  GithubWorkflowScopeError,
+  getWorkflowManualSetupInfo,
 } from './src/githubApkBuilder.js';
+import { getStreamingSettings, saveStreamingSettings } from './src/streamingSettings.js';
 
 const BOOTSTRAPPED_ADMIN_EMAILS = ['alexpqtr@gmail.com', 'alex.pikman@gmail.com'];
 
@@ -55,7 +58,7 @@ app.use(
 );
 app.use('/api/admin/apk-upload', express.json({ limit: '120mb' }));
 
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '25mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 app.use((req, res, next) => {
@@ -1215,11 +1218,48 @@ app.get('/watch/api/channels', (req, res) => {
       unavailable: unavailable.length,
     },
     playlists,
+    streaming: getStreamingSettings(),
     user: {
       name: viewer.name,
       login: viewer.login,
       isAdmin: viewer.isAdminViewer,
     },
+  });
+});
+
+app.get('/watch/api/streaming-settings', (_req, res) => {
+  noCacheJson(res, { ok: true, settings: getStreamingSettings() });
+});
+
+app.post('/watch/api/cloud/hydrate-playlists', (req, res) => {
+  const viewer = (
+    req as Request & { currentViewer: NonNullable<ReturnType<typeof getViewerFromRequest>> }
+  ).currentViewer;
+
+  if (req.body?.streaming) {
+    saveStreamingSettings(req.body.streaming);
+  }
+
+  const incomingPlaylists = Array.isArray(req.body?.playlists) ? req.body.playlists : [];
+  let restored = 0;
+  for (const item of incomingPlaylists) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as { name?: unknown; channels?: unknown };
+    const plName = String(raw.name || '')
+      .replace(/\.m3u$/i, '')
+      .trim();
+    if (!plName || !storage.isValidFilename(plName)) continue;
+    if (!viewer.isAdminViewer && !viewer.playlists.includes(plName)) continue;
+    const channels = Array.isArray(raw.channels) ? (raw.channels as Partial<Channel>[]) : [];
+    if (storage.saveChannels(plName, channels)) {
+      restored++;
+    }
+  }
+
+  noCacheJson(res, {
+    ok: true,
+    restored,
+    streaming: getStreamingSettings(),
   });
 });
 
@@ -1491,6 +1531,13 @@ function isBlockedProxyHostname(hostname: string): boolean {
   return false;
 }
 
+app.options('/api/stream/proxy', (_req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', '*');
+  res.status(204).end();
+});
+
 app.get('/api/stream/proxy', async (req, res) => {
   const rawUrl = String(req.query.url || '');
   let parsed: URL;
@@ -1509,12 +1556,15 @@ app.get('/api/stream/proxy', async (req, res) => {
     return;
   }
 
+  const streamCfg = getStreamingSettings();
+  const baseTimeoutMs = Math.max(5000, Math.min(60000, (streamCfg.proxyTimeoutSec || 15) * 1000));
   const isPlaylistHint = /\.m3u8?(\?|$)/i.test(rawUrl);
   const abortController = new AbortController();
   req.on('close', () => abortController.abort());
 
   const upstreamHeaders: Record<string, string> = {
     'User-Agent': String(req.headers['user-agent'] || 'Mozilla/5.0'),
+    Accept: '*/*',
   };
   if (typeof req.headers.range === 'string') {
     upstreamHeaders.Range = req.headers.range;
@@ -1526,7 +1576,7 @@ app.get('/api/stream/proxy', async (req, res) => {
       redirect: 'follow',
       signal: AbortSignal.any([
         abortController.signal,
-        AbortSignal.timeout(isPlaylistHint ? 15000 : 30000),
+        AbortSignal.timeout(isPlaylistHint ? baseTimeoutMs : Math.max(baseTimeoutMs, 30000)),
       ]),
     });
 
@@ -1628,6 +1678,163 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// ============ STREAMING SETTINGS & FULL CLOUD EXPORT / HYDRATION ============
+app.get('/api/settings/streaming', (_req, res) => {
+  noCacheJson(res, { ok: true, settings: getStreamingSettings() });
+});
+
+app.post('/api/settings/streaming', (req, res) => {
+  const saved = saveStreamingSettings(req.body || {});
+  noCacheJson(res, { ok: true, settings: saved });
+});
+
+app.get('/api/cloud/export', (_req, res) => {
+  const playlistNames = storage.getPlaylists();
+  const playlists: Record<string, Channel[]> = {};
+  for (const name of playlistNames) {
+    playlists[name] = parseM3uFile(storage.getPlaylistPath(name));
+  }
+  const ghCfg = getPublicGithubConfig();
+  noCacheJson(res, {
+    ok: true,
+    playlists,
+    sources: StreamParser.getSources(),
+    sourceIndex: StreamParser.exportIndexData(),
+    epgSources: EpgParser.getSources(),
+    catalog: catalogStore.exportRawState(),
+    streamingSettings: getStreamingSettings(),
+    users: userAuth.all().map((u) => ({
+      id: u.id,
+      login: u.login,
+      name: u.name,
+      playlists: u.playlists || [],
+      enabled: Boolean(u.enabled),
+      password_hash: u.password_hash || '',
+      created_at: u.created_at || 0,
+    })),
+    invites: userAuth.allInvites(),
+    alerts: userAuth.allAlerts(),
+    adminSettings: {
+      githubRepo: ghCfg.repoFullName || '',
+      githubBranch: ghCfg.branch || 'main',
+      adminPasswordHash: getAdminPasswordHashOverride(),
+    },
+  });
+});
+
+app.post('/api/cloud/hydrate', (req, res) => {
+  const body = (req.body || {}) as {
+    playlists?: Record<string, Partial<Channel>[]>;
+    replacePlaylists?: boolean;
+    sources?: SourceItem[];
+    sourceIndex?: Record<string, { items?: Array<{ name: string; url: string; logo: string; group: string; tvg_id: string }>; updatedAt?: number }>;
+    epgSources?: EpgSource[];
+    catalog?: {
+      nextChannelId?: number;
+      nextStreamId?: number;
+      nextSourceId?: number;
+      channels?: unknown[];
+      streams?: unknown[];
+      sources?: unknown[];
+    };
+    streamingSettings?: unknown;
+    users?: Array<{
+      id?: string;
+      login?: string;
+      name?: string;
+      playlists?: string[];
+      enabled?: boolean;
+      password_hash?: string;
+      created_at?: number;
+    }>;
+    invites?: Array<{
+      email?: string;
+      name?: string;
+      playlists?: string[];
+      enabled?: boolean;
+      claimed_uid?: string;
+    }>;
+    adminSettings?: {
+      adminPasswordHash?: string;
+    };
+  };
+
+  let playlistsRestored = 0;
+  if (body.playlists && typeof body.playlists === 'object' && !Array.isArray(body.playlists)) {
+    const cloudNames = new Set<string>();
+    for (const [rawName, channels] of Object.entries(body.playlists)) {
+      const cleanName = rawName.replace(/\.m3u$/i, '').trim();
+      if (!storage.isValidFilename(cleanName) || !Array.isArray(channels)) continue;
+      cloudNames.add(cleanName);
+      if (storage.saveChannels(cleanName, channels)) {
+        playlistsRestored++;
+      }
+    }
+    if (body.replacePlaylists && cloudNames.size > 0) {
+      for (const existingName of storage.getPlaylists()) {
+        if (!cloudNames.has(existingName)) {
+          storage.deletePlaylist(existingName);
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(body.sources)) {
+    StreamParser.saveSources(body.sources);
+  }
+  const sourceIndexRestored = body.sourceIndex
+    ? StreamParser.hydrateIndexData(body.sourceIndex)
+    : 0;
+  if (Array.isArray(body.epgSources)) {
+    EpgParser.saveSources(body.epgSources);
+  }
+  if (body.catalog && typeof body.catalog === 'object') {
+    catalogStore.hydrateRawState(body.catalog as Parameters<typeof catalogStore.hydrateRawState>[0]);
+  }
+  if (body.streamingSettings && typeof body.streamingSettings === 'object') {
+    saveStreamingSettings(body.streamingSettings);
+  }
+  if (Array.isArray(body.users)) {
+    for (const u of body.users) {
+      if (!u || !u.id || !u.login) continue;
+      userAuth.upsertSyncedUserWithHash({
+        id: String(u.id).trim(),
+        login: String(u.login).trim(),
+        name: String(u.name || u.login).trim(),
+        playlists: Array.isArray(u.playlists)
+          ? u.playlists.filter((p): p is string => typeof p === 'string')
+          : [],
+        enabled: Boolean(u.enabled),
+        password_hash: typeof u.password_hash === 'string' ? u.password_hash : undefined,
+        created_at: Number(u.created_at) || undefined,
+      });
+    }
+  }
+  if (Array.isArray(body.invites)) {
+    for (const inv of body.invites) {
+      if (!inv || !inv.email) continue;
+      userAuth.saveInvite({
+        email: String(inv.email).trim().toLowerCase(),
+        name: String(inv.name || '').trim(),
+        playlists: Array.isArray(inv.playlists)
+          ? inv.playlists.filter((p): p is string => typeof p === 'string')
+          : [],
+        enabled: inv.enabled !== undefined ? Boolean(inv.enabled) : true,
+        claimed_uid: typeof inv.claimed_uid === 'string' ? inv.claimed_uid : '',
+      });
+    }
+  }
+  if (body.adminSettings?.adminPasswordHash && typeof body.adminSettings.adminPasswordHash === 'string') {
+    saveAdminPasswordHashOverride(body.adminSettings.adminPasswordHash);
+  }
+
+  noCacheJson(res, {
+    ok: true,
+    playlistsRestored,
+    sourceIndexRestored,
+  });
+});
+
 // ============ ADMIN APK & SOURCE REBUILD ROUTES ============
 app.get('/api/source/rebuild', async (_req, res) => {
   const indexRes = await StreamParser.refreshAll();
@@ -1683,6 +1890,7 @@ app.get('/api/admin/github/config', (req, res) => {
   noCacheJson(res, {
     ok: true,
     config: cfg,
+    workflowManual: cfg.configured ? getWorkflowManualSetupInfo() : null,
     serverOrigin: getRequestOrigin(req),
   });
 });
@@ -1709,6 +1917,19 @@ app.post('/api/admin/github/sync', async (_req, res) => {
     const result = await syncAndroidProjectToGithub();
     noCacheJson(res, { ok: true, ...result });
   } catch (err) {
+    if (err instanceof GithubWorkflowScopeError) {
+      noCacheJson(
+        res,
+        {
+          error: err.message,
+          needsManualWorkflow: true,
+          manualCreateUrl: err.manualCreateUrl,
+          workflowYaml: err.workflowYaml,
+        },
+        400
+      );
+      return;
+    }
     noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
   }
 });
@@ -1735,6 +1956,19 @@ app.post('/api/admin/github/build', async (req, res) => {
     });
     noCacheJson(res, { ok: true, build });
   } catch (err) {
+    if (err instanceof GithubWorkflowScopeError) {
+      noCacheJson(
+        res,
+        {
+          error: err.message,
+          needsManualWorkflow: true,
+          manualCreateUrl: err.manualCreateUrl,
+          workflowYaml: err.workflowYaml,
+        },
+        400
+      );
+      return;
+    }
     noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
   }
 });

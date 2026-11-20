@@ -250,11 +250,118 @@ class CatalogStore {
     return true;
   }
 
+  private stripM3u(name: string): string {
+    return name.replace(/\.m3u$/i, '').trim();
+  }
+
+  private buildLivePlaylistOwnershipMap(): {
+    allPlaylists: string[];
+    byUrl: Map<string, Set<string>>;
+    byLowerName: Map<string, Set<string>>;
+    byNormName: Map<string, Set<string>>;
+  } {
+    const rawPlaylists = storage.getPlaylists();
+    const allPlaylists: string[] = [];
+    const byUrl = new Map<string, Set<string>>();
+    const byLowerName = new Map<string, Set<string>>();
+    const byNormName = new Map<string, Set<string>>();
+
+    const addTo = (map: Map<string, Set<string>>, key: string, plName: string) => {
+      if (!key) return;
+      let set = map.get(key);
+      if (!set) {
+        set = new Set<string>();
+        map.set(key, set);
+      }
+      set.add(plName);
+    };
+
+    for (const rawPl of rawPlaylists) {
+      const cleanPl = this.stripM3u(rawPl);
+      if (!cleanPl) continue;
+      if (!allPlaylists.includes(cleanPl)) allPlaylists.push(cleanPl);
+
+      const filePath = storage.getPlaylistPath(rawPl);
+      const items = parseM3uFile(filePath);
+      for (const ch of items) {
+        const chName = (ch.name || '').trim();
+        const chUrl = (ch.url || '').trim();
+        if (chName) {
+          addTo(byLowerName, chName.toLowerCase(), cleanPl);
+          const norm = normalizeChannelName(chName);
+          if (norm) addTo(byNormName, norm, cleanPl);
+        }
+        if (chUrl) {
+          addTo(byUrl, chUrl, cleanPl);
+        }
+      }
+    }
+
+    allPlaylists.sort((a, b) => a.localeCompare(b, 'ru'));
+    return { allPlaylists, byUrl, byLowerName, byNormName };
+  }
+
+  private resolveLiveUsedIn(
+    ch: CatalogChannel,
+    streamsByChannel: Map<number, CatalogStream[]>,
+    ownership: ReturnType<CatalogStore['buildLivePlaylistOwnershipMap']>
+  ): string[] {
+    const found = new Set<string>();
+    const addSet = (s?: Set<string>) => {
+      if (!s) return;
+      for (const pl of s) found.add(pl);
+    };
+
+    const lower = (ch.name || '').trim().toLowerCase();
+    addSet(ownership.byLowerName.get(lower));
+    const norm = normalizeChannelName(ch.name || '');
+    if (norm) addSet(ownership.byNormName.get(norm));
+
+    if (Array.isArray(ch.alt_names)) {
+      for (const alt of ch.alt_names) {
+        const altLower = (alt || '').trim().toLowerCase();
+        addSet(ownership.byLowerName.get(altLower));
+        const altNorm = normalizeChannelName(alt || '');
+        if (altNorm) addSet(ownership.byNormName.get(altNorm));
+      }
+    }
+
+    const chStreams = streamsByChannel.get(ch.id) || [];
+    for (const s of chStreams) {
+      if (s.url) {
+        addSet(ownership.byUrl.get(s.url.trim()));
+      }
+    }
+
+    return Array.from(found).sort((a, b) => a.localeCompare(b, 'ru'));
+  }
+
+  private buildStreamsByChannelMap(): Map<number, CatalogStream[]> {
+    const map = new Map<number, CatalogStream[]>();
+    for (const s of this.streams) {
+      let arr = map.get(s.channel_id);
+      if (!arr) {
+        arr = [];
+        map.set(s.channel_id, arr);
+      }
+      arr.push(s);
+    }
+    return map;
+  }
+
   stats() {
     this.ensureInit();
+    const ownership = this.buildLivePlaylistOwnershipMap();
+    const streamsByChannel = this.buildStreamsByChannelMap();
+    let inMyPlCount = 0;
+    for (const c of this.channels) {
+      if (this.resolveLiveUsedIn(c, streamsByChannel, ownership).length > 0) {
+        inMyPlCount++;
+      }
+    }
     return {
       channels: this.channels.length,
-      in_my_pl: this.channels.filter((c) => c.in_my_pl === 1).length,
+      in_my_pl: inMyPlCount,
       streams: this.streams.length,
       streams_online: this.streams.filter((s) => s.online === 1).length,
       sources: this.sources.length,
@@ -281,13 +388,8 @@ class CatalogStore {
 
   getUsedPlaylists(): string[] {
     this.ensureInit();
-    const set = new Set<string>();
-    for (const c of this.channels) {
-      for (const pl of c.used_in) {
-        if (pl) set.add(pl);
-      }
-    }
-    return Array.from(set).sort();
+    const ownership = this.buildLivePlaylistOwnershipMap();
+    return ownership.allPlaylists;
   }
 
   getChannels(
@@ -299,7 +401,10 @@ class CatalogStore {
   ) {
     this.ensureInit();
     const sLower = search.trim().toLowerCase();
+    const cleanFilterPlaylists = playlists.map((p) => this.stripM3u(p)).filter(Boolean);
 
+    const ownership = this.buildLivePlaylistOwnershipMap();
+    const streamsByChannel = this.buildStreamsByChannelMap();
     const streamCounts = new Map<number, { total: number; online: number }>();
     for (const s of this.streams) {
       const entry = streamCounts.get(s.channel_id) || { total: 0, online: 0 };
@@ -308,50 +413,63 @@ class CatalogStore {
       streamCounts.set(s.channel_id, entry);
     }
 
-    const filtered = this.channels
-      .filter((c) => {
+    const enriched = this.channels.map((c) => {
+      const usedIn = this.resolveLiveUsedIn(c, streamsByChannel, ownership);
+      return {
+        ch: c,
+        usedIn,
+        inMyPl: usedIn.length > 0 ? 1 : 0,
+        counts: streamCounts.get(c.id) || { total: 0, online: 0 },
+      };
+    });
+
+    const filtered = enriched
+      .filter(({ ch, usedIn, counts }) => {
         if (sLower) {
-          const hay = (c.name + ' ' + c.alt_names.join(' ')).toLowerCase();
+          const hay = (ch.name + ' ' + ch.alt_names.join(' ')).toLowerCase();
           if (!hay.includes(sLower)) return false;
         }
-        const counts = streamCounts.get(c.id) || { total: 0, online: 0 };
         if (filter === 'online' && counts.online === 0) return false;
         if (filter === 'offline' && (counts.total === 0 || counts.online > 0)) return false;
         if (filter === 'no_streams' && counts.total > 0) return false;
 
-        if (playlists.length > 0) {
-          const hasMatch = playlists.some((pl) => c.used_in.includes(pl));
+        if (cleanFilterPlaylists.length > 0) {
+          const hasMatch = cleanFilterPlaylists.some((pl) => usedIn.includes(pl));
           if (!hasMatch) return false;
         }
         return true;
       })
       .sort((a, b) => {
-        if (b.in_my_pl !== a.in_my_pl) return b.in_my_pl - a.in_my_pl;
-        return a.name.localeCompare(b.name, 'ru');
+        if (b.inMyPl !== a.inMyPl) return b.inMyPl - a.inMyPl;
+        return a.ch.name.localeCompare(b.ch.name, 'ru');
       });
 
-    return filtered.slice(offset, offset + limit).map((c) => {
-      const counts = streamCounts.get(c.id) || { total: 0, online: 0 };
-      return {
-        ...c,
-        used_in: JSON.stringify(c.used_in),
-        alt_names: JSON.stringify(c.alt_names),
-        streams_count: counts.total,
-        streams_online: counts.online,
-      };
-    });
+    return filtered.slice(offset, offset + limit).map(({ ch, usedIn, inMyPl, counts }) => ({
+      ...ch,
+      in_my_pl: inMyPl,
+      used_in: JSON.stringify(usedIn),
+      used_in_list: usedIn,
+      alt_names: JSON.stringify(ch.alt_names),
+      streams_count: counts.total,
+      streams_online: counts.online,
+    }));
   }
 
   getChannel(id: number) {
     this.ensureInit();
     const ch = this.channels.find((c) => c.id === id);
     if (!ch) return null;
-    const chStreams = this.streams
-      .filter((s) => s.channel_id === id)
+    const ownership = this.buildLivePlaylistOwnershipMap();
+    const streamsByChannel = this.buildStreamsByChannelMap();
+    const usedIn = this.resolveLiveUsedIn(ch, streamsByChannel, ownership);
+    const chStreams = (streamsByChannel.get(id) || [])
+      .slice()
       .sort((a, b) => b.online - a.online || b.added_at - a.added_at);
     return {
       ...ch,
-      used_in: JSON.stringify(ch.used_in),
+      in_my_pl: usedIn.length > 0 ? 1 : 0,
+      used_in: JSON.stringify(usedIn),
+      used_in_list: usedIn,
       alt_names: JSON.stringify(ch.alt_names),
       streams: chStreams,
     };
@@ -479,6 +597,49 @@ class CatalogStore {
     }
     this.saveToDisk();
     return { addedChannels, addedStreams };
+  }
+
+  exportRawState(): {
+    nextChannelId: number;
+    nextStreamId: number;
+    nextSourceId: number;
+    channels: CatalogChannel[];
+    streams: CatalogStream[];
+    sources: CatalogSource[];
+  } {
+    this.ensureInit();
+    return {
+      nextChannelId: this.nextChannelId,
+      nextStreamId: this.nextStreamId,
+      nextSourceId: this.nextSourceId,
+      channels: this.channels,
+      streams: this.streams,
+      sources: this.sources,
+    };
+  }
+
+  hydrateRawState(raw: {
+    nextChannelId?: number;
+    nextStreamId?: number;
+    nextSourceId?: number;
+    channels?: CatalogChannel[];
+    streams?: CatalogStream[];
+    sources?: CatalogSource[];
+  }): boolean {
+    if (!raw || typeof raw !== 'object') return false;
+    if (!Array.isArray(raw.channels) || !Array.isArray(raw.streams)) return false;
+    this.channels = raw.channels;
+    this.streams = raw.streams;
+    this.sources = Array.isArray(raw.sources) ? raw.sources : [];
+    this.nextChannelId =
+      Number(raw.nextChannelId) || Math.max(1, ...this.channels.map((c) => c.id + 1));
+    this.nextStreamId =
+      Number(raw.nextStreamId) || Math.max(1, ...this.streams.map((s) => s.id + 1));
+    this.nextSourceId =
+      Number(raw.nextSourceId) || Math.max(1, ...this.sources.map((s) => s.id + 1));
+    this.initialized = true;
+    this.saveToDisk();
+    return true;
   }
 }
 

@@ -2583,6 +2583,22 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         });
     }
 
+    let cachedWorkflowManual = null;
+
+    function showManualWorkflowHelper(info, customMsg) {
+        const box = document.getElementById('gh-workflow-manual-box');
+        const msgEl = document.getElementById('gh-workflow-manual-msg');
+        const linkEl = document.getElementById('gh-manual-open-url');
+        if (!box) return;
+        const merged = info && info.manualCreateUrl ? info : cachedWorkflowManual;
+        if (merged) cachedWorkflowManual = merged;
+        if (customMsg && msgEl) msgEl.textContent = customMsg;
+        if (linkEl && merged && merged.manualCreateUrl) {
+            linkEl.href = merged.manualCreateUrl;
+        }
+        box.classList.remove('hidden');
+    }
+
     async function loadGithubPanel() {
         const badge = document.getElementById('gh-conn-badge');
         const summary = document.getElementById('gh-conn-summary');
@@ -2592,9 +2608,11 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const disconnectBtn = document.getElementById('btn-gh-disconnect');
         const syncBtn = document.getElementById('btn-gh-sync');
         const buildBtn = document.getElementById('btn-gh-build');
+        const manualBox = document.getElementById('gh-workflow-manual-box');
 
         const res = await apiRequest('/api/admin/github/config');
         const cfg = res && res.config ? res.config : { configured: false };
+        if (res && res.workflowManual) cachedWorkflowManual = res.workflowManual;
 
         if (badge) {
             badge.textContent = cfg.configured ? 'Подключён' : 'Не настроен';
@@ -2602,14 +2620,33 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         }
         if (summary) {
             if (cfg.configured) {
+                const scopesList = Array.isArray(cfg.scopes) ? cfg.scopes : [];
+                let scopeInfo = '';
+                if (cfg.tokenType === 'classic') {
+                    const scopeText = scopesList.length ? scopesList.join(', ') : 'нет заголовка scopes';
+                    const wfWarn = cfg.hasWorkflowScope === false
+                        ? ' <span style="color:#fcd34d;">(нет scope <code>workflow</code> — создайте build-apk.yml через кнопку ниже или добавьте <code>workflow</code>)</span>'
+                        : '';
+                    scopeInfo = `<div style="margin-top:4px;">Тип: <code>Classic PAT</code> · права: <code>${escapeHtml(scopeText)}</code>${wfWarn}</div>`;
+                } else if (cfg.tokenType === 'fine-grained') {
+                    scopeInfo = `<div style="margin-top:4px;">Тип: <code>Fine-grained PAT</code> (нужны права репозитория: <code>Contents</code>, <code>Actions</code> и отдельно <code>Workflows: Read &amp; Write</code>)</div>`;
+                }
                 summary.innerHTML = `
                     Репозиторий: <a href="${escapeHtml(cfg.htmlUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--primary-hi); font-weight:600;">${escapeHtml(cfg.repoFullName)}</a>
                     · ветка <code>${escapeHtml(cfg.branch)}</code>
                     ${cfg.login ? ` · токен от <b>@${escapeHtml(cfg.login)}</b>` : ''}
                     (${escapeHtml(cfg.tokenPreview || 'saved')})
+                    ${scopeInfo}
                 `;
             } else {
                 summary.textContent = 'Укажите GitHub репозиторий и токен (PAT), чтобы PQTV сам синхронизировал android-tv/ и запускал облачную сборку APK.';
+            }
+        }
+        if (manualBox) {
+            if (cfg.configured && cfg.tokenType === 'classic' && cfg.hasWorkflowScope === false && cachedWorkflowManual) {
+                showManualWorkflowHelper(cachedWorkflowManual, 'У текущего Classic PAT отсутствует право «workflow». Вы можете либо перевыпустить/обновить токен, либо за 10 секунд создать .github/workflows/build-apk.yml на GitHub вручную:');
+            } else {
+                manualBox.classList.add('hidden');
             }
         }
         if (repoInput && cfg.repoFullName && !repoInput.value) repoInput.value = cfg.repoFullName;
@@ -2637,6 +2674,22 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 runsBox.innerHTML = '<p class="placeholder-text" style="margin:14px 0;">Подключите GitHub выше, чтобы видеть сборки</p>';
             }
         }
+    }
+
+    const btnGhCopyYaml = document.getElementById('btn-gh-copy-yaml');
+    if (btnGhCopyYaml) {
+        btnGhCopyYaml.onclick = async () => {
+            if (!cachedWorkflowManual || !cachedWorkflowManual.workflowYaml) {
+                showToast('YAML ещё не загружен', 'err');
+                return;
+            }
+            try {
+                await navigator.clipboard.writeText(cachedWorkflowManual.workflowYaml);
+                showToast('YAML скопирован в буфер обмена', 'ok');
+            } catch {
+                showToast('Не удалось скопировать в буфер', 'err');
+            }
+        };
     }
 
     const ghConfigForm = document.getElementById('gh-config-form');
@@ -2696,7 +2749,11 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         ? 'Все файлы android-tv/ на GitHub уже актуальны'
                         : `Синхронизировано файлов с GitHub: ${res.syncedFiles}`;
                     showToast(msg, 'ok');
+                    if (res.workflowWarning) showToast(res.workflowWarning, 'err');
                 } else {
+                    if (res && res.needsManualWorkflow) {
+                        showManualWorkflowHelper(res, res.error);
+                    }
                     showToast((res && res.error) || 'Ошибка синхронизации с GitHub', 'err');
                 }
             } finally {
@@ -2730,6 +2787,9 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     ghPollTimer = setInterval(() => { void pollGithubBuildOnce(); }, 3500);
                     await loadGithubRuns();
                 } else {
+                    if (res && res.needsManualWorkflow) {
+                        showManualWorkflowHelper(res, res.error);
+                    }
                     showToast((res && res.error) || 'Не удалось запустить сборку на GitHub', 'err');
                 }
             } finally {

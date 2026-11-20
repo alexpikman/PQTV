@@ -12,6 +12,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidPlaylistId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 64 && id.matches('^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$');
+    }
+
     function isValidEmailHash(hash) {
       return hash is string && hash.size() == 64 && hash.matches('^[a-f0-9]{64}$');
     }
@@ -53,11 +57,25 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/invites/$(inviteId)/private/info).data.email == request.auth.token.email.lower();
     }
 
+    function isViewerWithPlaylist(playlistId) {
+      return isVerifiedEmail()
+        && isValidPlaylistId(playlistId)
+        && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.enabled == true
+        && playlistId in get(/databases/$(database)/documents/users/$(request.auth.uid)).data.playlists;
+    }
+
     // ===== VALIDATION BLUEPRINTS =====
     function isValidPlaylistsList(list) {
       return list is list
-        && list.size() <= 20
+        && list.size() <= 50
         && (list.size() == 0 || (list[0] is string && list[0].size() >= 1 && list[0].size() <= 64));
+    }
+
+    function isValidIdList(list, maxLen) {
+      return list is list
+        && list.size() <= maxLen
+        && (list.size() == 0 || (list[0] is string && list[0].size() >= 1 && list[0].size() <= 128));
     }
 
     function isValidUserProfile(data) {
@@ -81,6 +99,15 @@ service cloud.firestore {
         && data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt'])
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUserCredentials(data) {
+      return data.keys().hasAll(['uid', 'passwordHash', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'passwordHash', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.passwordHash is string && data.passwordHash.size() <= 200
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -137,6 +164,217 @@ service cloud.firestore {
         && data.unavailableCount is int && data.unavailableCount >= 0 && data.unavailableCount <= 50000
         && isValidAlertItems(data.items)
         && data.resolved is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCloudManifest(data) {
+      return data.keys().hasAll(['docId', 'playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'updatedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['docId', 'playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'updatedByUid', 'createdAt', 'updatedAt'])
+        && data.docId is string && data.docId == 'manifest'
+        && isValidIdList(data.playlists, 100)
+        && isValidIdList(data.sourceIds, 100)
+        && isValidIdList(data.sourceIndexIds, 100)
+        && isValidIdList(data.epgIds, 50)
+        && isValidIdList(data.localUserIds, 500)
+        && data.catalogChannelChunks is int && data.catalogChannelChunks >= 0 && data.catalogChannelChunks <= 500
+        && data.catalogStreamChunks is int && data.catalogStreamChunks >= 0 && data.catalogStreamChunks <= 500
+        && data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlaylistMeta(data) {
+      return data.keys().hasAll(['id', 'name', 'channelCount', 'chunkCount', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'channelCount', 'chunkCount', 'createdAt', 'updatedAt'])
+        && isValidPlaylistId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 64
+        && data.channelCount is int && data.channelCount >= 0 && data.channelCount <= 50000
+        && data.chunkCount is int && data.chunkCount >= 0 && data.chunkCount <= 300
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlaylistChunkItems(items) {
+      return items is list
+        && items.size() <= 200
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['name', 'group', 'logo', 'url', 'tvg_id'])
+          && items[0].keys().hasOnly(['name', 'group', 'logo', 'url', 'tvg_id'])
+          && items[0].name is string && items[0].name.size() <= 200
+          && items[0].group is string && items[0].group.size() <= 120
+          && items[0].logo is string && items[0].logo.size() <= 1000
+          && items[0].url is string && items[0].url.size() <= 1500
+          && items[0].tvg_id is string && items[0].tvg_id.size() <= 160
+        ));
+    }
+
+    function isValidPlaylistChunk(data) {
+      return data.keys().hasAll(['playlistId', 'index', 'items', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['playlistId', 'index', 'items', 'createdAt', 'updatedAt'])
+        && isValidPlaylistId(data.playlistId)
+        && data.index is int && data.index >= 0 && data.index <= 300
+        && isValidPlaylistChunkItems(data.items)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStreamSource(data) {
+      return data.keys().hasAll(['id', 'name', 'type', 'url', 'enabled', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'type', 'url', 'enabled', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.type is string && data.type.size() >= 1 && data.type.size() <= 32
+        && data.url is string && data.url.size() >= 1 && data.url.size() <= 1000
+        && data.enabled is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSourceIndexMeta(data) {
+      return data.keys().hasAll(['sourceId', 'count', 'chunkCount', 'indexedAt', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['sourceId', 'count', 'chunkCount', 'indexedAt', 'createdAt', 'updatedAt'])
+        && isValidId(data.sourceId)
+        && data.count is int && data.count >= 0 && data.count <= 100000
+        && data.chunkCount is int && data.chunkCount >= 0 && data.chunkCount <= 500
+        && data.indexedAt is int && data.indexedAt >= 0
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidSourceIndexChunk(data) {
+      return data.keys().hasAll(['sourceId', 'index', 'items', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['sourceId', 'index', 'items', 'createdAt', 'updatedAt'])
+        && isValidId(data.sourceId)
+        && data.index is int && data.index >= 0 && data.index <= 500
+        && itemsIsValidIndexedList(data.items)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function itemsIsValidIndexedList(items) {
+      return items is list
+        && items.size() <= 250
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['name', 'url', 'logo', 'group', 'tvg_id'])
+          && items[0].keys().hasOnly(['name', 'url', 'logo', 'group', 'tvg_id'])
+          && items[0].name is string && items[0].name.size() <= 200
+          && items[0].url is string && items[0].url.size() <= 1500
+          && items[0].logo is string && items[0].logo.size() <= 1000
+          && items[0].group is string && items[0].group.size() <= 120
+          && items[0].tvg_id is string && items[0].tvg_id.size() <= 160
+        ));
+    }
+
+    function isValidEpgSourceDoc(data) {
+      return data.keys().hasAll(['id', 'name', 'url', 'enabled', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'url', 'enabled', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.url is string && data.url.size() >= 1 && data.url.size() <= 1000
+        && data.enabled is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCatalogSourcesList(sources) {
+      return sources is list
+        && sources.size() <= 100
+        && (sources.size() == 0 || (
+          sources[0] is map
+          && sources[0].keys().hasAll(['id', 'name', 'type', 'url', 'enabled', 'created_at'])
+          && sources[0].keys().hasOnly(['id', 'name', 'type', 'url', 'enabled', 'created_at', 'last_run', 'last_status', 'total_found'])
+          && sources[0].id is int
+          && sources[0].name is string && sources[0].name.size() <= 120
+          && sources[0].type is string && sources[0].type.size() <= 32
+          && sources[0].url is string && sources[0].url.size() <= 1000
+          && sources[0].enabled is int
+        ));
+    }
+
+    function isValidCatalogSummary(data) {
+      return data.keys().hasAll(['docId', 'nextChannelId', 'nextStreamId', 'nextSourceId', 'channelChunkCount', 'streamChunkCount', 'sources', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['docId', 'nextChannelId', 'nextStreamId', 'nextSourceId', 'channelChunkCount', 'streamChunkCount', 'sources', 'createdAt', 'updatedAt'])
+        && data.docId is string && data.docId == 'main'
+        && data.nextChannelId is int && data.nextChannelId >= 1
+        && data.nextStreamId is int && data.nextStreamId >= 1
+        && data.nextSourceId is int && data.nextSourceId >= 1
+        && data.channelChunkCount is int && data.channelChunkCount >= 0 && data.channelChunkCount <= 500
+        && data.streamChunkCount is int && data.streamChunkCount >= 0 && data.streamChunkCount <= 500
+        && isValidCatalogSourcesList(data.sources)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCatalogChannelItems(items) {
+      return items is list
+        && items.size() <= 200
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['id', 'code', 'name', 'logo', 'tvg_id', 'in_my_pl', 'used_in', 'alt_names', 'created_at', 'updated_at'])
+          && items[0].keys().hasOnly(['id', 'code', 'name', 'logo', 'tvg_id', 'in_my_pl', 'used_in', 'alt_names', 'created_at', 'updated_at'])
+          && items[0].id is int
+          && items[0].code is string && items[0].code.size() <= 32
+          && items[0].name is string && items[0].name.size() <= 200
+          && items[0].logo is string && items[0].logo.size() <= 1000
+          && items[0].tvg_id is string && items[0].tvg_id.size() <= 160
+          && items[0].in_my_pl is int
+          && items[0].used_in is list && items[0].used_in.size() <= 50
+          && items[0].alt_names is list && items[0].alt_names.size() <= 30
+        ));
+    }
+
+    function isValidCatalogChunk(data) {
+      return data.keys().hasAll(['index', 'items', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['index', 'items', 'createdAt', 'updatedAt'])
+        && data.index is int && data.index >= 0 && data.index <= 500
+        && isValidCatalogChannelItems(data.items)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidCatalogStreamItems(items) {
+      return items is list
+        && items.size() <= 250
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['id', 'channel_id', 'url', 'source_id', 'source_name', 'source_type', 'online', 'http_code', 'response_ms', 'checked_at', 'added_at'])
+          && items[0].keys().hasOnly(['id', 'channel_id', 'url', 'source_id', 'source_name', 'source_type', 'online', 'http_code', 'response_ms', 'checked_at', 'added_at'])
+          && items[0].id is int
+          && items[0].channel_id is int
+          && items[0].url is string && items[0].url.size() <= 1500
+        ));
+    }
+
+    function isValidCatalogStreamChunk(data) {
+      return data.keys().hasAll(['index', 'items', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['index', 'items', 'createdAt', 'updatedAt'])
+        && data.index is int && data.index >= 0 && data.index <= 500
+        && isValidCatalogStreamItems(data.items)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidStreamingSetting(data) {
+      return data.keys().hasAll(['settingId', 'mode', 'tryHttpsUpgrade', 'proxyTimeoutSec', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['settingId', 'mode', 'tryHttpsUpgrade', 'proxyTimeoutSec', 'createdAt', 'updatedAt'])
+        && data.settingId is string && data.settingId == 'streaming'
+        && data.mode is string && data.mode in ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only']
+        && data.tryHttpsUpgrade is bool
+        && data.proxyTimeoutSec is int && data.proxyTimeoutSec >= 3 && data.proxyTimeoutSec <= 60
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminSetting(data) {
+      return data.keys().hasAll(['settingId', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['settingId', 'githubRepo', 'githubBranch', 'adminPasswordHash', 'createdAt', 'updatedAt'])
+        && isValidId(data.settingId)
+        && (!('githubRepo' in data) || (data.githubRepo is string && data.githubRepo.size() <= 200))
+        && (!('githubBranch' in data) || (data.githubBranch is string && data.githubBranch.size() <= 80))
+        && (!('adminPasswordHash' in data) || (data.adminPasswordHash is string && data.adminPasswordHash.size() <= 200))
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -287,6 +525,26 @@ service cloud.firestore {
           );
         allow delete: if isAdmin() && isValidId(userId);
       }
+
+      // Admin-only password hashes for local TV viewer credentials
+      match /private/credentials {
+        allow get: if isValidId(userId) && isAdmin();
+        allow list: if false;
+        allow create: if isAdmin()
+          && isValidId(userId)
+          && isValidUserCredentials(incoming())
+          && incoming().uid == userId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isAdmin()
+          && isValidId(userId)
+          && isValidUserCredentials(incoming())
+          && incoming().uid == existing().uid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['passwordHash', 'updatedAt']);
+        allow delete: if isAdmin() && isValidId(userId);
+      }
     }
 
     // ===== CHANNEL ALERTS (Unavailable channel reports from viewers) =====
@@ -318,6 +576,249 @@ service cloud.firestore {
         );
 
       allow delete: if isAdmin() && isValidId(alertId);
+    }
+
+    // ===== CLOUD META MANIFEST (Admin-only) =====
+    match /cloud_meta/{docId} {
+      allow get: if isValidId(docId) && docId == 'manifest' && isAdmin();
+      allow list: if false;
+      allow create: if isAdmin()
+        && isValidId(docId)
+        && docId == 'manifest'
+        && isValidCloudManifest(incoming())
+        && incoming().docId == docId
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(docId)
+        && docId == 'manifest'
+        && isValidCloudManifest(incoming())
+        && incoming().docId == existing().docId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'updatedByUid', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(docId);
+    }
+
+    // ===== PLAYLISTS & CHUNKED CHANNELS =====
+    match /playlists/{playlistId} {
+      allow get: if isValidPlaylistId(playlistId) && (isAdmin() || isViewerWithPlaylist(playlistId));
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidPlaylistId(playlistId)
+        && isValidPlaylistMeta(incoming())
+        && incoming().id == playlistId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidPlaylistId(playlistId)
+        && isValidPlaylistMeta(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'channelCount', 'chunkCount', 'updatedAt']);
+      allow delete: if isAdmin() && isValidPlaylistId(playlistId);
+
+      match /chunks/{chunkId} {
+        allow get: if isValidPlaylistId(playlistId) && isValidId(chunkId) && (isAdmin() || isViewerWithPlaylist(playlistId));
+        allow list: if isBootstrappedAdmin();
+        allow create: if isAdmin()
+          && isValidPlaylistId(playlistId)
+          && isValidId(chunkId)
+          && isValidPlaylistChunk(incoming())
+          && incoming().playlistId == playlistId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isAdmin()
+          && isValidPlaylistId(playlistId)
+          && isValidId(chunkId)
+          && isValidPlaylistChunk(incoming())
+          && incoming().playlistId == existing().playlistId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['index', 'items', 'updatedAt']);
+        allow delete: if isAdmin() && isValidPlaylistId(playlistId) && isValidId(chunkId);
+      }
+    }
+
+    // ===== PARSER SOURCES & SOURCE INDEX CACHE (Admin-only) =====
+    match /sources/{sourceId} {
+      allow get: if isValidId(sourceId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(sourceId)
+        && isValidStreamSource(incoming())
+        && incoming().id == sourceId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(sourceId)
+        && isValidStreamSource(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'type', 'url', 'enabled', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(sourceId);
+    }
+
+    match /source_index/{sourceId} {
+      allow get: if isValidId(sourceId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(sourceId)
+        && isValidSourceIndexMeta(incoming())
+        && incoming().sourceId == sourceId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(sourceId)
+        && isValidSourceIndexMeta(incoming())
+        && incoming().sourceId == existing().sourceId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['count', 'chunkCount', 'indexedAt', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(sourceId);
+
+      match /chunks/{chunkId} {
+        allow get: if isValidId(sourceId) && isValidId(chunkId) && isAdmin();
+        allow list: if isBootstrappedAdmin();
+        allow create: if isAdmin()
+          && isValidId(sourceId)
+          && isValidId(chunkId)
+          && isValidSourceIndexChunk(incoming())
+          && incoming().sourceId == sourceId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isAdmin()
+          && isValidId(sourceId)
+          && isValidId(chunkId)
+          && isValidSourceIndexChunk(incoming())
+          && incoming().sourceId == existing().sourceId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['index', 'items', 'updatedAt']);
+        allow delete: if isAdmin() && isValidId(sourceId) && isValidId(chunkId);
+      }
+    }
+
+    // ===== EPG SOURCES (Admin-only) =====
+    match /epg_sources/{epgId} {
+      allow get: if isValidId(epgId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(epgId)
+        && isValidEpgSourceDoc(incoming())
+        && incoming().id == epgId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(epgId)
+        && isValidEpgSourceDoc(incoming())
+        && incoming().id == existing().id
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'url', 'enabled', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(epgId);
+    }
+
+    // ===== CATALOG SUMMARY & CHUNKS (Admin-only) =====
+    match /catalog_summary/{docId} {
+      allow get: if isValidId(docId) && docId == 'main' && isAdmin();
+      allow list: if false;
+      allow create: if isAdmin()
+        && isValidId(docId)
+        && docId == 'main'
+        && isValidCatalogSummary(incoming())
+        && incoming().docId == docId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(docId)
+        && docId == 'main'
+        && isValidCatalogSummary(incoming())
+        && incoming().docId == existing().docId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['nextChannelId', 'nextStreamId', 'nextSourceId', 'channelChunkCount', 'streamChunkCount', 'sources', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(docId);
+    }
+
+    match /catalog_chunks/{chunkId} {
+      allow get: if isValidId(chunkId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(chunkId)
+        && isValidCatalogChunk(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(chunkId)
+        && isValidCatalogChunk(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['index', 'items', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(chunkId);
+    }
+
+    match /catalog_stream_chunks/{chunkId} {
+      allow get: if isValidId(chunkId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isAdmin()
+        && isValidId(chunkId)
+        && isValidCatalogStreamChunk(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(chunkId)
+        && isValidCatalogStreamChunk(incoming())
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['index', 'items', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(chunkId);
+    }
+
+    // ===== STREAMING SETTINGS (Verified users & Admins read; Admins write) =====
+    match /app_settings/{settingId} {
+      allow get: if isValidId(settingId) && settingId == 'streaming' && isVerifiedEmail();
+      allow list: if false;
+      allow create: if isAdmin()
+        && isValidId(settingId)
+        && settingId == 'streaming'
+        && isValidStreamingSetting(incoming())
+        && incoming().settingId == settingId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(settingId)
+        && settingId == 'streaming'
+        && isValidStreamingSetting(incoming())
+        && incoming().settingId == existing().settingId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['mode', 'tryHttpsUpgrade', 'proxyTimeoutSec', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(settingId);
+    }
+
+    // ===== ADMIN SETTINGS (Admin-only) =====
+    match /admin_settings/{settingId} {
+      allow get: if isValidId(settingId) && isAdmin();
+      allow list: if false;
+      allow create: if isAdmin()
+        && isValidId(settingId)
+        && isValidAdminSetting(incoming())
+        && incoming().settingId == settingId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(settingId)
+        && isValidAdminSetting(incoming())
+        && incoming().settingId == existing().settingId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['githubRepo', 'githubBranch', 'adminPasswordHash', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(settingId);
     }
   }
 }

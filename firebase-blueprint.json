@@ -27,7 +27,7 @@
         },
         "playlists": {
           "type": "array",
-          "description": "List of playlist filenames assigned to this user (max 20)."
+          "description": "List of playlist filenames assigned to this user (max 50)."
         },
         "enabled": {
           "type": "boolean",
@@ -99,6 +99,34 @@
       },
       "required": ["uid", "email", "createdAt", "updatedAt"]
     },
+    "UserCredentials": {
+      "title": "UserCredentials",
+      "description": "Admin-only bcrypt password hash storage for local TV viewer accounts.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "User ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "passwordHash": {
+          "type": "string",
+          "description": "Bcrypt password hash.",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "passwordHash", "createdAt", "updatedAt"]
+    },
     "AdminRole": {
       "title": "AdminRole",
       "description": "Trusted admin role assignment document.",
@@ -139,7 +167,7 @@
         },
         "playlists": {
           "type": "array",
-          "description": "Assigned playlist filenames (max 20)."
+          "description": "Assigned playlist filenames (max 50)."
         },
         "enabled": {
           "type": "boolean",
@@ -160,13 +188,11 @@
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Server update timestamp."
+          "format": "date-time"
         }
       },
       "required": ["emailHash", "name", "playlists", "enabled", "invitedByUid", "createdAt", "updatedAt"]
@@ -178,7 +204,6 @@
       "properties": {
         "emailHash": {
           "type": "string",
-          "description": "Matching SHA-256 hex digest of email.",
           "minLength": 64,
           "maxLength": 64,
           "pattern": "^[a-f0-9]{64}$"
@@ -186,19 +211,16 @@
         "email": {
           "type": "string",
           "format": "email",
-          "description": "Normalized lowercase Google email address.",
           "minLength": 3,
           "maxLength": 160
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Server update timestamp."
+          "format": "date-time"
         }
       },
       "required": ["emailHash", "email", "createdAt", "updatedAt"]
@@ -210,51 +232,437 @@
       "properties": {
         "uid": {
           "type": "string",
-          "description": "Viewer UID.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
         "userLogin": {
           "type": "string",
-          "description": "Viewer login or email handle.",
           "minLength": 1,
           "maxLength": 64
         },
         "userName": {
           "type": "string",
-          "description": "Viewer display name.",
           "minLength": 1,
           "maxLength": 80
         },
         "totalChannels": {
-          "type": "integer",
-          "description": "Total channels assigned to viewer."
+          "type": "integer"
         },
         "unavailableCount": {
-          "type": "integer",
-          "description": "Number of unavailable channels detected."
+          "type": "integer"
         },
         "items": {
-          "type": "array",
-          "description": "Bounded list (max 50) of unavailable channels with reasons."
+          "type": "array"
         },
         "resolved": {
-          "type": "boolean",
-          "description": "Whether admin marked the alert resolved."
+          "type": "boolean"
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Server creation timestamp."
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Server update timestamp."
+          "format": "date-time"
         }
       },
       "required": ["uid", "userLogin", "userName", "totalChannels", "unavailableCount", "items", "resolved", "createdAt", "updatedAt"]
+    },
+    "CloudManifest": {
+      "title": "CloudManifest",
+      "description": "Master index of persisted playlists, sources, source indexes, EPGs, catalog chunks, and local users.",
+      "type": "object",
+      "properties": {
+        "docId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "playlists": {
+          "type": "array",
+          "description": "List of playlist IDs (max 100)."
+        },
+        "sourceIds": {
+          "type": "array",
+          "description": "List of source IDs (max 100)."
+        },
+        "sourceIndexIds": {
+          "type": "array",
+          "description": "List of indexed source IDs (max 100)."
+        },
+        "epgIds": {
+          "type": "array",
+          "description": "List of EPG source IDs (max 50)."
+        },
+        "localUserIds": {
+          "type": "array",
+          "description": "List of local user IDs whose credentials are stored in Firestore (max 500)."
+        },
+        "catalogChannelChunks": {
+          "type": "integer"
+        },
+        "catalogStreamChunks": {
+          "type": "integer"
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["docId", "playlists", "sourceIds", "sourceIndexIds", "epgIds", "localUserIds", "catalogChannelChunks", "catalogStreamChunks", "updatedByUid", "createdAt", "updatedAt"]
+    },
+    "PlaylistMeta": {
+      "title": "PlaylistMeta",
+      "description": "Metadata document for an M3U playlist stored in Firestore.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "channelCount": {
+          "type": "integer"
+        },
+        "chunkCount": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "channelCount", "chunkCount", "createdAt", "updatedAt"]
+    },
+    "PlaylistChunk": {
+      "title": "PlaylistChunk",
+      "description": "Chunk of up to 200 channels belonging to a playlist.",
+      "type": "object",
+      "properties": {
+        "playlistId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "items": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["playlistId", "index", "items", "createdAt", "updatedAt"]
+    },
+    "StreamSource": {
+      "title": "StreamSource",
+      "description": "External playlist/parser source definition.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "type", "url", "enabled", "createdAt", "updatedAt"]
+    },
+    "SourceIndexMeta": {
+      "title": "SourceIndexMeta",
+      "description": "Metadata and last-updated timestamp for a cached source index.",
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "count": {
+          "type": "integer"
+        },
+        "chunkCount": {
+          "type": "integer"
+        },
+        "indexedAt": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["sourceId", "count", "chunkCount", "indexedAt", "createdAt", "updatedAt"]
+    },
+    "SourceIndexChunk": {
+      "title": "SourceIndexChunk",
+      "description": "Chunk of up to 250 indexed channels for a parser source.",
+      "type": "object",
+      "properties": {
+        "sourceId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "index": {
+          "type": "integer"
+        },
+        "items": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["sourceId", "index", "items", "createdAt", "updatedAt"]
+    },
+    "EpgSourceDoc": {
+      "title": "EpgSourceDoc",
+      "description": "XMLTV EPG source configuration.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["id", "name", "url", "enabled", "createdAt", "updatedAt"]
+    },
+    "CatalogSummary": {
+      "title": "CatalogSummary",
+      "description": "Catalog metadata, counters, sources, and chunk counts.",
+      "type": "object",
+      "properties": {
+        "docId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "nextChannelId": {
+          "type": "integer"
+        },
+        "nextStreamId": {
+          "type": "integer"
+        },
+        "nextSourceId": {
+          "type": "integer"
+        },
+        "channelChunkCount": {
+          "type": "integer"
+        },
+        "streamChunkCount": {
+          "type": "integer"
+        },
+        "sources": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["docId", "nextChannelId", "nextStreamId", "nextSourceId", "channelChunkCount", "streamChunkCount", "sources", "createdAt", "updatedAt"]
+    },
+    "CatalogChunk": {
+      "title": "CatalogChunk",
+      "description": "Chunk of up to 200 catalog channel entities.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer"
+        },
+        "items": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["index", "items", "createdAt", "updatedAt"]
+    },
+    "CatalogStreamChunk": {
+      "title": "CatalogStreamChunk",
+      "description": "Chunk of up to 250 catalog stream entities.",
+      "type": "object",
+      "properties": {
+        "index": {
+          "type": "integer"
+        },
+        "items": {
+          "type": "array"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["index", "items", "createdAt", "updatedAt"]
+    },
+    "StreamingSetting": {
+      "title": "StreamingSetting",
+      "description": "Global stream proxy/direct delivery configuration readable by verified viewers and admins.",
+      "type": "object",
+      "properties": {
+        "settingId": {
+          "type": "string",
+          "enum": ["streaming"]
+        },
+        "mode": {
+          "type": "string",
+          "enum": ["auto_proxy_first", "auto_direct_first", "proxy_only", "direct_only"]
+        },
+        "tryHttpsUpgrade": {
+          "type": "boolean"
+        },
+        "proxyTimeoutSec": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["settingId", "mode", "tryHttpsUpgrade", "proxyTimeoutSec", "createdAt", "updatedAt"]
+    },
+    "AdminSetting": {
+      "title": "AdminSetting",
+      "description": "Admin-only application settings (GitHub repo/branch metadata, admin password hash override, etc.).",
+      "type": "object",
+      "properties": {
+        "settingId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "githubRepo": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "githubBranch": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "adminPasswordHash": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["settingId", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -265,6 +673,10 @@
     "/users/{userId}/private/info": {
       "schema": { "$ref": "#/entities/UserPrivateInfo" },
       "description": "Isolated PII document storing user email, readable only by owner or admin."
+    },
+    "/users/{userId}/private/credentials": {
+      "schema": { "$ref": "#/entities/UserCredentials" },
+      "description": "Admin-only password hashes for local login+password accounts."
     },
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/AdminRole" },
@@ -281,6 +693,54 @@
     "/channel_alerts/{alertId}": {
       "schema": { "$ref": "#/entities/ChannelAlert" },
       "description": "Admin alerts showing users who opened the app and discovered unavailable channels."
+    },
+    "/cloud_meta/{docId}": {
+      "schema": { "$ref": "#/entities/CloudManifest" },
+      "description": "Master cloud index manifest (admin-only)."
+    },
+    "/playlists/{playlistId}": {
+      "schema": { "$ref": "#/entities/PlaylistMeta" },
+      "description": "M3U playlist metadata; readable by admins and viewers assigned that playlist."
+    },
+    "/playlists/{playlistId}/chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/PlaylistChunk" },
+      "description": "Chunked channel rows for each playlist; readable by admins and viewers assigned that playlist."
+    },
+    "/sources/{sourceId}": {
+      "schema": { "$ref": "#/entities/StreamSource" },
+      "description": "Configured parser sources (admin-only)."
+    },
+    "/source_index/{sourceId}": {
+      "schema": { "$ref": "#/entities/SourceIndexMeta" },
+      "description": "Metadata and index timestamp for cached source indexes (admin-only)."
+    },
+    "/source_index/{sourceId}/chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/SourceIndexChunk" },
+      "description": "Chunked indexed channels for cached parser sources (admin-only)."
+    },
+    "/epg_sources/{epgId}": {
+      "schema": { "$ref": "#/entities/EpgSourceDoc" },
+      "description": "XMLTV EPG source URLs (admin-only)."
+    },
+    "/catalog_summary/{docId}": {
+      "schema": { "$ref": "#/entities/CatalogSummary" },
+      "description": "Catalog metadata, counters, and source list (admin-only)."
+    },
+    "/catalog_chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/CatalogChunk" },
+      "description": "Chunked catalog channels (admin-only)."
+    },
+    "/catalog_stream_chunks/{chunkId}": {
+      "schema": { "$ref": "#/entities/CatalogStreamChunk" },
+      "description": "Chunked catalog streams and check statuses (admin-only)."
+    },
+    "/app_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/StreamingSetting" },
+      "description": "Global stream proxy/direct delivery settings; readable by verified viewers and admins."
+    },
+    "/admin_settings/{settingId}": {
+      "schema": { "$ref": "#/entities/AdminSetting" },
+      "description": "Admin-only application settings (GitHub repo/branch, admin password hash)."
     }
   }
 }

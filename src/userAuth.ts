@@ -205,6 +205,45 @@ export class UserAuth {
     return created;
   }
 
+  upsertSyncedUserWithHash(input: {
+    id: string;
+    login: string;
+    name: string;
+    playlists: string[];
+    enabled: boolean;
+    password_hash?: string;
+    created_at?: number;
+  }): UserRecord {
+    const users = this.all();
+    const idx = users.findIndex((u) => u.id === input.id);
+    const cleanPlaylists = Array.isArray(input.playlists)
+      ? input.playlists.filter((p) => typeof p === 'string')
+      : [];
+    if (idx >= 0) {
+      users[idx].login = input.login || users[idx].login;
+      users[idx].name = input.name || users[idx].name;
+      users[idx].playlists = cleanPlaylists;
+      users[idx].enabled = Boolean(input.enabled);
+      if (input.password_hash) {
+        users[idx].password_hash = input.password_hash;
+      }
+      this.saveAll(users);
+      return users[idx];
+    }
+    const created: UserRecord = {
+      id: input.id,
+      login: input.login,
+      password_hash: input.password_hash || '',
+      name: input.name || input.login,
+      playlists: cleanPlaylists,
+      enabled: Boolean(input.enabled),
+      created_at: input.created_at || Math.floor(Date.now() / 1000),
+    };
+    users.push(created);
+    this.saveAll(users);
+    return created;
+  }
+
   authenticate(login: string, password: string): UserRecord | null {
     const u = this.findByLogin(login);
     if (!u || !u.enabled) return null;

@@ -13,6 +13,9 @@ export interface GithubConfigStored {
   htmlUrl?: string;
   isPrivate?: boolean;
   login?: string;
+  tokenType?: 'classic' | 'fine-grained' | 'unknown';
+  scopes?: string[];
+  hasWorkflowScope?: boolean | null;
   updatedAt: number;
 }
 
@@ -26,6 +29,9 @@ export interface GithubPublicConfig {
   htmlUrl: string;
   isPrivate: boolean;
   login: string;
+  tokenType: 'classic' | 'fine-grained' | 'unknown';
+  scopes: string[];
+  hasWorkflowScope: boolean | null;
   tokenPreview: string;
   updatedAt: number;
 }
@@ -149,6 +155,13 @@ function getEffectiveConfig(): { cfg: GithubConfigStored; source: 'env' | 'saved
   return null;
 }
 
+function detectTokenType(token: string): 'classic' | 'fine-grained' | 'unknown' {
+  const t = String(token || '').trim();
+  if (t.startsWith('github_pat_')) return 'fine-grained';
+  if (t.startsWith('ghp_') || t.startsWith('gho_') || t.startsWith('ghu_')) return 'classic';
+  return 'unknown';
+}
+
 export function getPublicGithubConfig(): GithubPublicConfig {
   const eff = getEffectiveConfig();
   if (!eff) {
@@ -162,11 +175,23 @@ export function getPublicGithubConfig(): GithubPublicConfig {
       htmlUrl: '',
       isPrivate: false,
       login: '',
+      tokenType: 'unknown',
+      scopes: [],
+      hasWorkflowScope: null,
       tokenPreview: '',
       updatedAt: 0,
     };
   }
   const { cfg, source } = eff;
+  const tokenType = cfg.tokenType || detectTokenType(cfg.token);
+  const scopes = Array.isArray(cfg.scopes) ? cfg.scopes : [];
+  const hasWorkflowScope =
+    typeof cfg.hasWorkflowScope === 'boolean'
+      ? cfg.hasWorkflowScope
+      : tokenType === 'classic' && scopes.length > 0
+      ? scopes.includes('workflow')
+      : null;
+
   return {
     configured: true,
     source,
@@ -177,6 +202,9 @@ export function getPublicGithubConfig(): GithubPublicConfig {
     htmlUrl: cfg.htmlUrl || `https://github.com/${cfg.owner}/${cfg.repo}`,
     isPrivate: Boolean(cfg.isPrivate),
     login: cfg.login || '',
+    tokenType,
+    scopes,
+    hasWorkflowScope,
     tokenPreview: maskToken(cfg.token),
     updatedAt: cfg.updatedAt || 0,
   };
@@ -217,20 +245,57 @@ async function ghFetch(
   return { ok: res.ok, status: res.status, data, text, headers: res.headers };
 }
 
+export function getWorkflowManualSetupInfo(cfg?: GithubConfigStored | null): {
+  workflowYaml: string;
+  manualCreateUrl: string;
+} {
+  const workflowPath = path.resolve(process.cwd(), '.github/workflows', WORKFLOW_FILE);
+  const workflowYaml = fs.existsSync(workflowPath) ? fs.readFileSync(workflowPath, 'utf-8') : '';
+  const eff = cfg || getEffectiveConfig()?.cfg;
+  const manualCreateUrl = eff
+    ? `https://github.com/${eff.owner}/${eff.repo}/new/${encodeURIComponent(eff.branch || 'main')}?filename=${encodeURIComponent(`.github/workflows/${WORKFLOW_FILE}`)}&value=${encodeURIComponent(workflowYaml)}`
+    : '';
+  return { workflowYaml, manualCreateUrl };
+}
+
+export class GithubWorkflowScopeError extends Error {
+  needsManualWorkflow = true;
+  manualCreateUrl: string;
+  workflowYaml: string;
+
+  constructor(message: string, info: { manualCreateUrl: string; workflowYaml: string }) {
+    super(message);
+    this.name = 'GithubWorkflowScopeError';
+    this.manualCreateUrl = info.manualCreateUrl;
+    this.workflowYaml = info.workflowYaml;
+  }
+}
+
 function extractGhError(res: { status: number; data: unknown; text: string }): string {
   const obj = res.data && typeof res.data === 'object' ? (res.data as Record<string, unknown>) : null;
-  const msg = typeof obj?.message === 'string' ? obj.message : res.text.slice(0, 200);
+  const msg = typeof obj?.message === 'string' ? obj.message : res.text.slice(0, 260);
   if (res.status === 401) {
     return 'Неверный или просроченный GitHub токен (401 Bad credentials)';
   }
   if (res.status === 403) {
+    if (/resource not accessible by personal access token/i.test(msg)) {
+      return `Токену не хватает прав на эту операцию (403: ${msg}). Проверьте права Contents, Actions и Workflows (Read & Write).`;
+    }
     return `Недостаточно прав GitHub токена (403): ${msg}`;
   }
   if (res.status === 404) {
-    return `Репозиторий, ветка или workflow не найдены (404): ${msg}`;
+    return `Репозиторий, ветка или файл workflow не найдены (404): ${msg}`;
   }
-  if (res.status === 422 && /workflow/i.test(msg)) {
-    return 'У GitHub токена нет права «workflow» для создания/обновления .github/workflows/build-apk.yml. Включите scope «workflow» (Classic PAT) или «Workflows: Read & Write» (Fine-grained PAT).';
+  if (res.status === 422) {
+    if (/refusing to allow.*workflow/i.test(msg) || /without.*workflow.*scope/i.test(msg)) {
+      return `GitHub отклонил изменение .github/workflows/build-apk.yml (422: ${msg}). Для Classic PAT нужен scope «workflow», а для Fine-grained PAT — отдельное право «Workflows: Read and write» (не путать с «Actions»).`;
+    }
+    if (/workflow_dispatch/i.test(msg)) {
+      return `В файле .github/workflows/build-apk.yml на GitHub отсутствует триггер workflow_dispatch (422: ${msg}).`;
+    }
+    if (/workflow.*disabled/i.test(msg) || /not enabled/i.test(msg)) {
+      return `GitHub Actions отключены для этого workflow или репозитория (422: ${msg}). Включите Actions во вкладке Actions на GitHub.`;
+    }
   }
   return `GitHub API (${res.status}): ${msg || 'Неизвестная ошибка'}`;
 }
@@ -262,7 +327,19 @@ export async function saveAndVerifyGithubConfig(input: {
   }
 
   let login = '';
+  const tokenType = detectTokenType(cleanToken);
+  let scopes: string[] = [];
+  let hasWorkflowScope: boolean | null = null;
+
   const userRes = await ghFetch('/user', cleanToken);
+  const rawScopesHeader = userRes.headers.get('x-oauth-scopes') ?? repoRes.headers.get('x-oauth-scopes');
+  if (rawScopesHeader !== null) {
+    scopes = rawScopesHeader
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    hasWorkflowScope = scopes.includes('workflow');
+  }
   if (userRes.ok && userRes.data && typeof userRes.data === 'object') {
     login = String((userRes.data as Record<string, unknown>).login || '');
   }
@@ -280,6 +357,9 @@ export async function saveAndVerifyGithubConfig(input: {
     htmlUrl: String(repoData.html_url || `https://github.com/${parsed.owner}/${parsed.repo}`),
     isPrivate: Boolean(repoData.private),
     login,
+    tokenType,
+    scopes,
+    hasWorkflowScope,
     updatedAt: Math.floor(Date.now() / 1000),
   };
 
@@ -353,27 +433,30 @@ export async function syncAndroidProjectToGithub(): Promise<{
   syncedFiles: number;
   skipped: boolean;
   workflowUpdated: boolean;
+  workflowWarning?: string;
 }> {
   const eff = getEffectiveConfig();
   if (!eff) {
     throw new Error('GitHub не настроен. Укажите репозиторий и токен доступа.');
   }
   const { owner, repo, branch, token } = eff.cfg;
-  const files = collectProjectSyncFiles();
-  if (files.length === 0) {
+  const allFiles = collectProjectSyncFiles();
+  if (allFiles.length === 0) {
     throw new Error('Не найдены файлы проекта android-tv/ на сервере');
   }
 
+  const workflowRelPath = `.github/workflows/${WORKFLOW_FILE}`;
+  const androidFiles = allFiles.filter((f) => f.repoPath !== workflowRelPath);
+  const workflowFile = allFiles.find((f) => f.repoPath === workflowRelPath);
+
   let refRes = await ghFetch(`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(branch)}`, token);
   if (!refRes.ok && (refRes.status === 404 || refRes.status === 409)) {
-    // Check if repo is empty or branch doesn't exist yet
     const repoRes = await ghFetch(`/repos/${owner}/${repo}`, token);
     if (!repoRes.ok) throw new Error(extractGhError(repoRes));
     const defaultBranch = String((repoRes.data as Record<string, unknown>).default_branch || 'main');
 
     const defRef = await ghFetch(`/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(defaultBranch)}`, token);
     if (!defRef.ok) {
-      // Repository is completely empty — create initial README commit
       const initRes = await ghFetch(`/repos/${owner}/${repo}/contents/README.md`, token, {
         method: 'PUT',
         body: JSON.stringify({
@@ -384,7 +467,6 @@ export async function syncAndroidProjectToGithub(): Promise<{
       });
       if (!initRes.ok) throw new Error(extractGhError(initRes));
     } else if (branch !== defaultBranch) {
-      // Create requested branch from default branch head
       const defSha = String(((defRef.data as Record<string, unknown>).object as Record<string, unknown>).sha);
       const mkRef = await ghFetch(`/repos/${owner}/${repo}/git/refs`, token, {
         method: 'POST',
@@ -398,7 +480,7 @@ export async function syncAndroidProjectToGithub(): Promise<{
     throw new Error(extractGhError(refRes));
   }
 
-  const headCommitSha = String(
+  let headCommitSha = String(
     ((refRes.data as Record<string, unknown>).object as Record<string, unknown>).sha
   );
   const commitRes = await ghFetch(`/repos/${owner}/${repo}/git/commits/${headCommitSha}`, token);
@@ -427,80 +509,119 @@ export async function syncAndroidProjectToGithub(): Promise<{
     }
   }
 
-  const changedFiles = files.filter((f) => remoteMap.get(f.repoPath) !== computeGitBlobSha1(f.data));
-  if (changedFiles.length === 0) {
-    return {
-      commitSha: headCommitSha,
-      syncedFiles: 0,
-      skipped: true,
-      workflowUpdated: false,
-    };
-  }
+  // Phase 1: Sync android-tv/** files (requires only Contents / repo permission)
+  const changedAndroidFiles = androidFiles.filter(
+    (f) => remoteMap.get(f.repoPath) !== computeGitBlobSha1(f.data)
+  );
+  let syncedCount = 0;
 
-  const workflowUpdated = changedFiles.some((f) => f.repoPath === `.github/workflows/${WORKFLOW_FILE}`);
-  const treeItems: Array<{ path: string; mode: string; type: string; sha: string }> = [];
+  if (changedAndroidFiles.length > 0) {
+    const treeItems: Array<{ path: string; mode: string; type: string; sha: string }> = [];
+    await runWithConcurrency(changedAndroidFiles, 4, async (f) => {
+      const blobRes = await ghFetch(`/repos/${owner}/${repo}/git/blobs`, token, {
+        method: 'POST',
+        body: JSON.stringify({
+          content: f.data.toString('base64'),
+          encoding: 'base64',
+        }),
+      });
+      if (!blobRes.ok) {
+        throw new Error(extractGhError(blobRes));
+      }
+      const sha = String((blobRes.data as Record<string, unknown>).sha);
+      treeItems.push({
+        path: f.repoPath,
+        mode: '100644',
+        type: 'blob',
+        sha,
+      });
+    });
 
-  await runWithConcurrency(changedFiles, 4, async (f) => {
-    const blobRes = await ghFetch(`/repos/${owner}/${repo}/git/blobs`, token, {
+    const newTreeRes = await ghFetch(`/repos/${owner}/${repo}/git/trees`, token, {
       method: 'POST',
       body: JSON.stringify({
-        content: f.data.toString('base64'),
-        encoding: 'base64',
+        base_tree: baseTreeSha,
+        tree: treeItems,
       }),
     });
-    if (!blobRes.ok) {
-      throw new Error(extractGhError(blobRes));
-    }
-    const sha = String((blobRes.data as Record<string, unknown>).sha);
-    treeItems.push({
-      path: f.repoPath,
-      mode: '100644',
-      type: 'blob',
-      sha,
+    if (!newTreeRes.ok) throw new Error(extractGhError(newTreeRes));
+    const newTreeSha = String((newTreeRes.data as Record<string, unknown>).sha);
+
+    const newCommitRes = await ghFetch(`/repos/${owner}/${repo}/git/commits`, token, {
+      method: 'POST',
+      body: JSON.stringify({
+        message: `chore(android-tv): sync PQTV Android TV project (${changedAndroidFiles.length} files)`,
+        tree: newTreeSha,
+        parents: [headCommitSha],
+      }),
     });
-  });
+    if (!newCommitRes.ok) throw new Error(extractGhError(newCommitRes));
+    const newCommitSha = String((newCommitRes.data as Record<string, unknown>).sha);
 
-  const newTreeRes = await ghFetch(`/repos/${owner}/${repo}/git/trees`, token, {
-    method: 'POST',
-    body: JSON.stringify({
-      base_tree: baseTreeSha,
-      tree: treeItems,
-    }),
-  });
-  if (!newTreeRes.ok) throw new Error(extractGhError(newTreeRes));
-  const newTreeSha = String((newTreeRes.data as Record<string, unknown>).sha);
+    const patchRefRes = await ghFetch(
+      `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
+      token,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({ sha: newCommitSha }),
+      }
+    );
+    if (!patchRefRes.ok) throw new Error(extractGhError(patchRefRes));
 
-  const newCommitRes = await ghFetch(`/repos/${owner}/${repo}/git/commits`, token, {
-    method: 'POST',
-    body: JSON.stringify({
-      message: `chore(android-tv): sync PQTV Android TV project (${changedFiles.length} files)`,
-      tree: newTreeSha,
-      parents: [headCommitSha],
-    }),
-  });
-  if (!newCommitRes.ok) throw new Error(extractGhError(newCommitRes));
-  const newCommitSha = String((newCommitRes.data as Record<string, unknown>).sha);
+    headCommitSha = newCommitSha;
+    syncedCount += changedAndroidFiles.length;
+  }
 
-  const patchRefRes = await ghFetch(
-    `/repos/${owner}/${repo}/git/refs/heads/${encodeURIComponent(branch)}`,
-    token,
-    {
-      method: 'PATCH',
-      body: JSON.stringify({ sha: newCommitSha }),
+  // Phase 2: Sync .github/workflows/build-apk.yml separately so android-tv/ never fails on workflow scope
+  let workflowUpdated = false;
+  let workflowWarning: string | undefined;
+
+  if (workflowFile) {
+    const existingWfSha = remoteMap.get(workflowRelPath);
+    const localWfSha = computeGitBlobSha1(workflowFile.data);
+    if (existingWfSha !== localWfSha) {
+      const putBody: Record<string, string> = {
+        message: existingWfSha
+          ? 'chore(ci): update PQTV APK build workflow'
+          : 'chore(ci): add PQTV APK build workflow',
+        content: workflowFile.data.toString('base64'),
+        branch,
+      };
+      if (existingWfSha) {
+        putBody.sha = existingWfSha;
+      }
+
+      const wfRes = await ghFetch(`/repos/${owner}/${repo}/contents/${workflowRelPath}`, token, {
+        method: 'PUT',
+        body: JSON.stringify(putBody),
+      });
+
+      if (wfRes.ok) {
+        workflowUpdated = true;
+        syncedCount += 1;
+        const wfCommit = (wfRes.data as Record<string, unknown>)?.commit as Record<string, unknown> | undefined;
+        if (wfCommit?.sha) headCommitSha = String(wfCommit.sha);
+        // Give GitHub Actions a short moment to index the new/updated workflow file
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+      } else if (existingWfSha) {
+        // Workflow file already exists on GitHub — proceed with existing workflow instead of blocking build
+        workflowWarning = `android-tv синхронизирован, но обновить ${workflowRelPath} не удалось (${extractGhError(wfRes)}). Используется уже существующий workflow в репозитории.`;
+      } else {
+        const manualInfo = getWorkflowManualSetupInfo(eff.cfg);
+        throw new GithubWorkflowScopeError(
+          `${extractGhError(wfRes)} Код android-tv уже синхронизирован (${syncedCount} файлов). Добавьте файл .github/workflows/${WORKFLOW_FILE} через кнопку ниже или обновите права токена.`,
+          manualInfo
+        );
+      }
     }
-  );
-  if (!patchRefRes.ok) throw new Error(extractGhError(patchRefRes));
-
-  if (workflowUpdated) {
-    // Give GitHub Actions a short moment to index the new/updated workflow file
-    await new Promise((resolve) => setTimeout(resolve, 1800));
   }
 
   return {
-    commitSha: newCommitSha,
-    syncedFiles: changedFiles.length,
-    skipped: false,
+    commitSha: headCommitSha,
+    syncedFiles: syncedCount,
+    skipped: syncedCount === 0,
     workflowUpdated,
+    workflowWarning,
   };
 }
 

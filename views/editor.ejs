@@ -460,6 +460,16 @@
                                         <button type="button" id="btn-gh-disconnect" class="btn btn-danger hidden">Отключить</button>
                                     </div>
                                 </form>
+                                <div id="gh-workflow-manual-box" class="hidden" style="margin-top:12px; padding:12px; background:rgba(245,158,11,0.08); border:1px solid rgba(245,158,11,0.35); border-radius:var(--radius-sm); font-size:12px; line-height:1.5;">
+                                    <div style="color:#fcd34d; font-weight:700; margin-bottom:4px;">Как добавить workflow на GitHub за 10 секунд</div>
+                                    <div id="gh-workflow-manual-msg" style="color:var(--text-dim); margin-bottom:8px;">
+                                        Если GitHub не даёт токену создать файл <code>.github/workflows/build-apk.yml</code>, создайте его один раз через браузер — после этого сборка из админки заработает сразу.
+                                    </div>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                        <a id="gh-manual-open-url" href="#" target="_blank" rel="noopener noreferrer" class="btn btn-primary" style="padding:6px 12px; font-size:12px;">Создать build-apk.yml на GitHub →</a>
+                                        <button type="button" id="btn-gh-copy-yaml" class="btn btn-secondary" style="padding:6px 12px; font-size:12px;">Скопировать YAML</button>
+                                    </div>
+                                </div>
                             </div>
 
                             <div class="apk-panel">

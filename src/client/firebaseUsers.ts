@@ -21,6 +21,24 @@ import {
 } from 'firebase/firestore';
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebaseApp.js';
 import blueprint from '../../firebase-blueprint.json' with { type: 'json' };
+import {
+  clearSourceIndexInCloud,
+  CloudExportPayload,
+  CloudStreamingSettings,
+  deletePlaylistFromCloud,
+  fetchStreamingSettingsFromCloud,
+  fetchViewerCloudState,
+  loadFullCloudSnapshot,
+  pushFullLocalToCloud,
+  saveAdminSettingsToCloud,
+  saveCatalogToCloud,
+  saveEpgToCloud,
+  saveLocalUserCredentialsToCloud,
+  savePlaylistToCloud,
+  saveSourceIndexToCloud,
+  saveSourcesToCloud,
+  saveStreamingSettingsToCloud,
+} from './firebaseDb.js';
 
 const BOOTSTRAPPED_ADMIN_EMAILS = ['alexpqtr@gmail.com', 'alex.pikman@gmail.com'];
 
@@ -829,6 +847,67 @@ export const PQTVFirebase = {
       }
     } catch {
       // Ignore heartbeat failures silently when viewer is using password-only session
+    }
+  },
+
+  // ===== FULL DATABASE CLOUD PERSISTENCE =====
+  savePlaylistToCloud,
+  deletePlaylistFromCloud,
+  saveSourcesToCloud,
+  saveSourceIndexToCloud,
+  clearSourceIndexInCloud,
+  saveEpgToCloud,
+  saveCatalogToCloud,
+  saveStreamingSettingsToCloud,
+  fetchStreamingSettingsFromCloud,
+  saveLocalUserCredentialsToCloud,
+  saveAdminSettingsToCloud,
+  pushFullLocalToCloud(data: CloudExportPayload) {
+    return pushFullLocalToCloud(data);
+  },
+  loadFullCloudSnapshot,
+
+  async hydrateViewerFromCloud(watchToken?: string): Promise<{
+    restored: number;
+    streaming: CloudStreamingSettings | null;
+  }> {
+    const user = auth.currentUser;
+    if (!user || !user.emailVerified) {
+      return { restored: 0, streaming: null };
+    }
+    const admin = await isCurrentUserAdmin(user);
+    if (admin) {
+      const streaming = await fetchStreamingSettingsFromCloud();
+      return { restored: 0, streaming };
+    }
+    try {
+      const uSnap = await getDoc(doc(db, 'users', user.uid));
+      if (!uSnap.exists()) return { restored: 0, streaming: null };
+      const ud = uSnap.data();
+      if (!ud.enabled) return { restored: 0, streaming: null };
+      const playlists = Array.isArray(ud.playlists) ? (ud.playlists as string[]) : [];
+      const cloud = await fetchViewerCloudState(playlists);
+      if (cloud.playlists.length === 0 && !cloud.streaming) {
+        return { restored: 0, streaming: null };
+      }
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (watchToken) headers['X-Watch-Token'] = watchToken;
+      const res = await fetch('/watch/api/cloud/hydrate-playlists', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: JSON.stringify({
+          playlists: cloud.playlists,
+          streaming: cloud.streaming,
+        }),
+      });
+      const json = await res.json().catch(() => ({}));
+      return {
+        restored: Number(json.restored) || 0,
+        streaming: (json.streaming || cloud.streaming || null) as CloudStreamingSettings | null,
+      };
+    } catch {
+      return { restored: 0, streaming: null };
     }
   },
 };

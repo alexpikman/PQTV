@@ -504,4 +504,53 @@ export class StreamParser {
       }
     }
   }
+
+  static exportIndexData(): Record<string, { items: IndexedChannel[]; updatedAt: number }> {
+    const dir = this.getIndexDir();
+    const out: Record<string, { items: IndexedChannel[]; updatedAt: number }> = {};
+    for (const src of this.getSources()) {
+      const id = safeId(src.id || '');
+      if (!id) continue;
+      const idxFile = path.join(dir, `${id}.json`);
+      const metaFile = path.join(dir, `${id}.meta`);
+      if (!fs.existsSync(idxFile)) continue;
+      try {
+        const items = JSON.parse(fs.readFileSync(idxFile, 'utf-8'));
+        const updatedAt = fs.existsSync(metaFile)
+          ? parseInt(fs.readFileSync(metaFile, 'utf-8').trim(), 10) || 0
+          : 0;
+        if (Array.isArray(items)) {
+          out[id] = { items, updatedAt };
+        }
+      } catch {
+        // ignore corrupt cache file
+      }
+    }
+    return out;
+  }
+
+  static hydrateIndexData(
+    indexMap: Record<string, { items?: IndexedChannel[]; updatedAt?: number }>
+  ): number {
+    if (!indexMap || typeof indexMap !== 'object') return 0;
+    const dir = this.getIndexDir();
+    let count = 0;
+    for (const [rawId, entry] of Object.entries(indexMap)) {
+      const id = safeId(rawId);
+      if (!id || !entry || !Array.isArray(entry.items)) continue;
+      try {
+        const file = path.join(dir, `${id}.json`);
+        const meta = path.join(dir, `${id}.meta`);
+        const tmp = `${file}.tmp`;
+        fs.writeFileSync(tmp, JSON.stringify(entry.items), 'utf-8');
+        fs.renameSync(tmp, file);
+        const ts = Number(entry.updatedAt) || Math.floor(Date.now() / 1000);
+        fs.writeFileSync(meta, String(ts), 'utf-8');
+        count++;
+      } catch {
+        // ignore
+      }
+    }
+    return count;
+  }
 }
