@@ -125,7 +125,7 @@ async function performStreamUrlCheck(
     }
 
     const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    const isHls = /\\.m3u8?$/i.test(parsedUrl.pathname) ||
+    const isHls = /\.m3u8?$/i.test(parsedUrl.pathname) ||
       contentType.includes('mpegurl') ||
       contentType.includes('vnd.apple');
 

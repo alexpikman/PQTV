@@ -46,15 +46,19 @@
                 <h1>PQ<span>TV</span></h1>
             </div>
             <div style="display:flex; align-items:center; gap:10px;">
-                <label class="streaming-mode-control" for="streaming-mode-select">
-                    Поток
+                <div class="streaming-mode-control">
+                    <label for="streaming-mode-select">Поток</label>
                     <select id="streaming-mode-select" aria-label="Режим передачи видеопотока">
                         <option value="auto_proxy_first">Авто: сначала proxy</option>
                         <option value="auto_direct_first">Авто: напрямую</option>
                         <option value="proxy_only">Только proxy</option>
                         <option value="direct_only">Только напрямую</option>
                     </select>
-                </label>
+                    <label class="streaming-https-toggle" title="Пробовать https:// перед http:// при воспроизведении">
+                        <input type="checkbox" id="streaming-https-toggle" checked>
+                        <span>HTTPS</span>
+                    </label>
+                </div>
                 <button type="button" id="btn-admin-alerts" class="logout-link" style="background:transparent; cursor:pointer;" title="Предупреждения о недоступных каналах у пользователей">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>

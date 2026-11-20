@@ -981,3 +981,11 @@ export async function fetchViewerCloudState(playlistNames: string[]): Promise<{
 
   return { streaming, playlists };
 }
+
+export async function fetchAdminWatchCloudState(): Promise<{
+  streaming: CloudStreamingSettings | null;
+  playlists: Array<{ name: string; channels: CloudChannelItem[] }>;
+}> {
+  const manifest = await readManifest().catch(() => null);
+  return fetchViewerCloudState(manifest ? manifest.playlists : []);
+}

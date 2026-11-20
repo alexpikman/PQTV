@@ -1326,7 +1326,14 @@ app.post('/watch/api/admin/users/save', (req, res) => {
       noCacheJson(res, { error: created.error || 'Ошибка' }, 400);
       return;
     }
-    noCacheJson(res, { ok: true, user: created.user });
+    const createdFull = created.user ? userAuth.find(created.user.id) : null;
+    noCacheJson(res, {
+      ok: true,
+      user: created.user,
+      cloudCred: createdFull
+        ? { id: createdFull.id, password_hash: createdFull.password_hash }
+        : null,
+    });
     return;
   }
 
@@ -1346,7 +1353,14 @@ app.post('/watch/api/admin/users/save', (req, res) => {
         return;
       }
     }
-    noCacheJson(res, { ok: true, user: synced });
+    const syncedFull = userAuth.find(synced.id);
+    noCacheJson(res, {
+      ok: true,
+      user: synced,
+      cloudCred: syncedFull && syncedFull.password_hash
+        ? { id: syncedFull.id, password_hash: syncedFull.password_hash }
+        : null,
+    });
     return;
   }
 
@@ -1355,7 +1369,13 @@ app.post('/watch/api/admin/users/save', (req, res) => {
     noCacheJson(res, { error: updated.error || 'Ошибка' }, 400);
     return;
   }
-  noCacheJson(res, { ok: true });
+  const updatedFull = userAuth.find(id);
+  noCacheJson(res, {
+    ok: true,
+    cloudCred: updatedFull && updatedFull.password_hash
+      ? { id: updatedFull.id, password_hash: updatedFull.password_hash }
+      : null,
+  });
 });
 
 app.post('/watch/api/admin/users/delete', (req, res) => {
@@ -1418,6 +1438,11 @@ app.post('/watch/api/admin/alerts/delete', (req, res) => {
     return;
   }
   noCacheJson(res, { ok: true });
+});
+
+app.post('/watch/api/admin/streaming-settings', (req, res) => {
+  const saved = saveStreamingSettings(req.body || {});
+  noCacheJson(res, { ok: true, settings: saved });
 });
 
 app.use('/watch/api', (_req, res) => {

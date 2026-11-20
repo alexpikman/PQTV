@@ -109,7 +109,6 @@ a:hover { text-decoration: underline; }
   height: 100vh; margin: 0;
   display: flex; flex-direction: column;
   background: linear-gradient(180deg, rgba(19,26,43,0.6), rgba(10,14,26,0.6));
-  border-left: 1px solid var(--border); border-right: 1px solid var(--border);
   box-shadow: 0 0 80px rgba(0,0,0,0.5);
 }
 
@@ -118,7 +117,7 @@ a:hover { text-decoration: underline; }
   backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
   border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
-  padding: 0 24px; flex-shrink: 0;
+  padding: 0 24px; flex-shrink: 0; gap: 16px;
 }
 
 .streaming-mode-control {
@@ -136,6 +135,24 @@ a:hover { text-decoration: underline; }
   background: var(--surface-2);
   border: 1px solid var(--border-hi);
   border-radius: var(--radius-sm);
+}
+.streaming-https-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 9px;
+  background: var(--surface-2);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  cursor: pointer;
+  user-select: none;
+}
+.streaming-https-toggle input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--primary);
+  cursor: pointer;
 }
 
 .catalog-playlist-list {
@@ -502,7 +519,7 @@ a:hover { text-decoration: underline; }
 .player-title { font-size: 15px; font-weight: 700; color: #fff; margin-bottom: 3px; letter-spacing: -0.01em; }
 .player-url {
     font-size: 11.5px; color: var(--muted); font-family: 'SF Mono', Consolas, monospace;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 640px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%;
 }
 .player-actions { display: flex; gap: 4px; flex-shrink: 0; }
 .player-body {
@@ -575,7 +592,7 @@ a:hover { text-decoration: underline; }
     margin: 0 0 4px 0;
     padding: 0;
     line-height: 1.5;
-    max-width: 720px;
+    max-width: none;
 }
 #screen-epg #epg-list-container,
 #screen-users #users-list-container {

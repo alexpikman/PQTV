@@ -180,6 +180,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const setRemoteVer = $('set-remote-ver');
     const setChangelogBox = $('set-changelog-box');
     const setViewLabel = $('set-view-label');
+    const setStreamModeVal = $('set-stream-mode-val');
+    const setStreamModeLabel = $('set-stream-mode-label');
+    const setStreamHttpsLabel = $('set-stream-https-label');
+    const setBtnStreamMode = $('set-btn-stream-mode');
+    const setBtnStreamHttps = $('set-btn-stream-https');
     const setBtnCheckUpdate = $('set-btn-check-update');
     const setBtnInstallApk = $('set-btn-install-apk');
     const setBtnToggleView = $('set-btn-toggle-view');
@@ -190,6 +195,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const tvProgressFill = $('tv-update-progress-fill');
 
     let latestApkInfo = null;
+    const STREAM_MODES = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'];
+    const STREAM_MODE_LABELS = {
+        auto_proxy_first: 'Авто (сначала proxy)',
+        auto_direct_first: 'Авто (напрямую)',
+        proxy_only: 'Только proxy',
+        direct_only: 'Только напрямую'
+    };
+    let serverStreamingSettings = { mode: 'auto_proxy_first', tryHttpsUpgrade: true, proxyTimeoutSec: 15 };
 
     function isNativeTvApp() {
         return Boolean(window.PQTVAndroid && typeof window.PQTVAndroid.isAndroidTV === 'function' && window.PQTVAndroid.isAndroidTV());
@@ -207,6 +220,75 @@ document.addEventListener('DOMContentLoaded', () => {
         return String(window.APP_VERSION || '1.0.0');
     }
 
+    function getEffectiveStreamingSettings() {
+        const localMode = !window.IS_ADMIN_VIEWER ? (localStorage.getItem('pqtv_stream_mode') || '') : '';
+        const localHttps = !window.IS_ADMIN_VIEWER ? localStorage.getItem('pqtv_stream_https') : null;
+        const mode = STREAM_MODES.includes(localMode)
+            ? localMode
+            : (STREAM_MODES.includes(serverStreamingSettings.mode) ? serverStreamingSettings.mode : 'auto_proxy_first');
+        const tryHttpsUpgrade = (localHttps === '1' || localHttps === '0')
+            ? localHttps === '1'
+            : (serverStreamingSettings.tryHttpsUpgrade !== false);
+        return {
+            mode,
+            tryHttpsUpgrade,
+            proxyTimeoutSec: Number(serverStreamingSettings.proxyTimeoutSec) || 15,
+            isOverride: !window.IS_ADMIN_VIEWER && (STREAM_MODES.includes(localMode) || localHttps === '1' || localHttps === '0')
+        };
+    }
+
+    function buildStreamCandidates(rawUrl, settings) {
+        const s = settings || getEffectiveStreamingSettings();
+        const mode = STREAM_MODES.includes(s.mode) ? s.mode : 'auto_proxy_first';
+        const tryHttps = s.tryHttpsUpgrade !== false;
+        const isHttp = /^http:\/\//i.test(rawUrl);
+        const httpsUrl = (tryHttps && isHttp) ? rawUrl.replace(/^http:/i, 'https:') : rawUrl;
+        const canDirectPlainHttp = window.location.protocol !== 'https:' || isNativeTvApp();
+
+        const proxyCandidates = [];
+        if (httpsUrl !== rawUrl) {
+            proxyCandidates.push({
+                src: '/api/stream/proxy?url=' + encodeURIComponent(httpsUrl),
+                label: 'proxy HTTPS'
+            });
+        }
+        proxyCandidates.push({
+            src: '/api/stream/proxy?url=' + encodeURIComponent(rawUrl),
+            label: isHttp ? 'proxy HTTP' : 'proxy'
+        });
+
+        const directCandidates = [];
+        if (httpsUrl !== rawUrl) {
+            directCandidates.push({ src: httpsUrl, label: 'напрямую HTTPS' });
+        }
+        if (!isHttp || canDirectPlainHttp) {
+            directCandidates.push({ src: rawUrl, label: isHttp ? 'напрямую HTTP' : 'напрямую HTTPS' });
+        }
+
+        const dedupe = (arr) => {
+            const seen = new Set();
+            return arr.filter((item) => {
+                if (!item.src || seen.has(item.src)) return false;
+                seen.add(item.src);
+                return true;
+            });
+        };
+
+        if (mode === 'proxy_only') return dedupe(proxyCandidates);
+        if (mode === 'direct_only') return dedupe(directCandidates);
+        if (mode === 'auto_direct_first') return dedupe([...directCandidates, ...proxyCandidates]);
+        return dedupe([...proxyCandidates, ...directCandidates]);
+    }
+
+    async function loadStreamingSettings() {
+        const res = await api('/watch/api/streaming-settings');
+        if (res && res.settings) {
+            serverStreamingSettings = Object.assign({}, serverStreamingSettings, res.settings);
+            syncSettingsModalLabels();
+        }
+        return getEffectiveStreamingSettings();
+    }
+
     function syncSettingsModalLabels() {
         if (setPlatformLabel) {
             setPlatformLabel.textContent = isNativeTvApp()
@@ -215,6 +297,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (setCurrentVer) setCurrentVer.textContent = 'v' + currentAppName();
         if (setViewLabel) setViewLabel.textContent = 'Вид: ' + (viewMode === 'grid' ? 'Сетка' : 'Список');
+
+        const eff = getEffectiveStreamingSettings();
+        const modeText = STREAM_MODE_LABELS[eff.mode] || STREAM_MODE_LABELS.auto_proxy_first;
+        if (setStreamModeVal) {
+            setStreamModeVal.textContent = modeText + (eff.isOverride ? ' (локально)' : '');
+        }
+        if (setStreamModeLabel) {
+            setStreamModeLabel.textContent = 'Поток: ' + modeText;
+        }
+        if (setStreamHttpsLabel) {
+            setStreamHttpsLabel.textContent = 'HTTPS для http://: ' + (eff.tryHttpsUpgrade ? 'Вкл' : 'Выкл');
+        }
     }
 
     function applyUpdateStatus(data) {
@@ -333,6 +427,66 @@ document.addEventListener('DOMContentLoaded', () => {
         if (isNativeTvApp() && latestApkInfo) installLatestApk();
         else openSettingsModal();
     };
+    async function cycleStreamMode() {
+        const eff = getEffectiveStreamingSettings();
+        const curIdx = STREAM_MODES.indexOf(eff.mode);
+        if (window.IS_ADMIN_VIEWER) {
+            const nextMode = STREAM_MODES[(curIdx + 1) % STREAM_MODES.length];
+            const nextSettings = Object.assign({}, serverStreamingSettings, { mode: nextMode });
+            try {
+                const saved = await apiAdmin('/watch/api/admin/streaming-settings', 'POST', nextSettings);
+                if (saved && saved.settings) serverStreamingSettings = saved.settings;
+                else serverStreamingSettings = nextSettings;
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.saveStreamingSettingsToCloud === 'function') {
+                    const isCloudAdmin = await window.PQTVFirebase.isSignedInAdmin().catch(() => false);
+                    if (isCloudAdmin) {
+                        await window.PQTVFirebase.saveStreamingSettingsToCloud(serverStreamingSettings).catch(() => {});
+                    }
+                }
+            } catch {}
+        } else {
+            const existingOverride = localStorage.getItem('pqtv_stream_mode') || '';
+            if (!existingOverride) {
+                localStorage.setItem('pqtv_stream_mode', STREAM_MODES[(curIdx + 1) % STREAM_MODES.length]);
+            } else if (curIdx === STREAM_MODES.length - 1) {
+                localStorage.removeItem('pqtv_stream_mode');
+            } else {
+                localStorage.setItem('pqtv_stream_mode', STREAM_MODES[curIdx + 1]);
+            }
+        }
+        syncSettingsModalLabels();
+        if (previewChannel && playerModal.classList.contains('hidden')) {
+            startPreviewStream(previewChannel);
+        }
+    }
+
+    async function toggleStreamHttps() {
+        const eff = getEffectiveStreamingSettings();
+        const nextHttps = !eff.tryHttpsUpgrade;
+        if (window.IS_ADMIN_VIEWER) {
+            const nextSettings = Object.assign({}, serverStreamingSettings, { tryHttpsUpgrade: nextHttps });
+            try {
+                const saved = await apiAdmin('/watch/api/admin/streaming-settings', 'POST', nextSettings);
+                if (saved && saved.settings) serverStreamingSettings = saved.settings;
+                else serverStreamingSettings = nextSettings;
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.saveStreamingSettingsToCloud === 'function') {
+                    const isCloudAdmin = await window.PQTVFirebase.isSignedInAdmin().catch(() => false);
+                    if (isCloudAdmin) {
+                        await window.PQTVFirebase.saveStreamingSettingsToCloud(serverStreamingSettings).catch(() => {});
+                    }
+                }
+            } catch {}
+        } else {
+            localStorage.setItem('pqtv_stream_https', nextHttps ? '1' : '0');
+        }
+        syncSettingsModalLabels();
+        if (previewChannel && playerModal.classList.contains('hidden')) {
+            startPreviewStream(previewChannel);
+        }
+    }
+
+    if (setBtnStreamMode) setBtnStreamMode.onclick = () => { void cycleStreamMode(); };
+    if (setBtnStreamHttps) setBtnStreamHttps.onclick = () => { void toggleStreamHttps(); };
     if (setBtnCheckUpdate) setBtnCheckUpdate.onclick = () => {
         checkTvUpdate(true);
         if (window.PQTVAndroid && typeof window.PQTVAndroid.checkForUpdate === 'function') {
@@ -532,6 +686,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // ===== LOAD CHANNELS =====
     async function loadChannels() {
         const res = await api('/watch/api/channels?_=' + Date.now());
+        if (res && res.streaming && typeof res.streaming === 'object') {
+            serverStreamingSettings = Object.assign({}, serverStreamingSettings, res.streaming);
+            syncSettingsModalLabels();
+        }
         channels = Array.isArray(res.channels) ? res.channels : [];
         serverUnavailable = Array.isArray(res.unavailable) ? res.unavailable : [];
         serverStats = (res.stats && typeof res.stats === 'object')
@@ -776,6 +934,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let previewMpegts = null;
     let previewKey = null;
     let previewDebounceTimer = null;
+    let previewAttemptTimer = null;
+    let previewAttemptId = 0;
 
     function updatePreview(ch) {
         if (!ch) return;
@@ -854,6 +1014,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function stopPreviewStream() {
         clearTimeout(previewDebounceTimer);
+        clearTimeout(previewAttemptTimer);
+        previewAttemptId++;
         if (previewHls) { try { previewHls.destroy(); } catch(e){} previewHls = null; }
         if (previewMpegts) { try { previewMpegts.destroy(); } catch(e){} previewMpegts = null; }
         try {
@@ -876,33 +1038,28 @@ document.addEventListener('DOMContentLoaded', () => {
         const low = url.split('?')[0].toLowerCase();
         const isM3u8 = low.includes('.m3u8');
         const isTs = low.endsWith('.ts');
-        const proxied = '/api/stream/proxy?url=' + encodeURIComponent(url);
+        const candidates = buildStreamCandidates(url, getEffectiveStreamingSettings());
+        let candidateIdx = 0;
 
-        let ready = false;
         const onReady = () => {
-            if (ready) return;
-            ready = true;
+            clearTimeout(previewAttemptTimer);
             previewLoading.classList.add('hidden');
             previewVideoHost.classList.add('active');
             previewLogoWrap.classList.add('hidden');
         };
-        const onErr = (reason) => {
+        const onAllFailed = () => {
+            clearTimeout(previewAttemptTimer);
             previewLoading.classList.add('hidden');
             previewVideoHost.classList.remove('active');
             previewLogoWrap.classList.remove('hidden');
         };
 
-        const timeoutId = setTimeout(() => onErr('Таймаут загрузки потока (10 сек)'), 10000);
-
-        previewVideo.onloadeddata = () => { clearTimeout(timeoutId); onReady(); };
-        previewVideo.oncanplay = () => { clearTimeout(timeoutId); onReady(); };
-        previewVideo.onerror = () => { clearTimeout(timeoutId); onErr('Поток недоступен или формат не поддерживается'); };
-
-        // Пытаемся играть
-        const tryPlay = () => {
+        const tryPlay = (attemptToken) => {
+            if (attemptToken !== previewAttemptId) return;
             const p = previewVideo.play();
             if (p && p.catch) {
                 p.catch(err => {
+                    if (attemptToken !== previewAttemptId) return;
                     if (err && err.name === 'NotAllowedError') {
                         previewVideo.muted = true;
                         previewMuted = true;
@@ -913,41 +1070,84 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-            previewHls = new Hls({
-                enableWorker: true,
-                lowLatencyMode: false,
-                backBufferLength: 15,
-                maxBufferLength: 20,
-                manifestLoadingTimeOut: 10000,
-                fragLoadingTimeOut: 20000
-            });
-            previewHls.loadSource(proxied);
-            previewHls.attachMedia(previewVideo);
-            previewHls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
-            previewHls.on(Hls.Events.ERROR, (e, d) => {
-                if (d && d.fatal) {
-                    clearTimeout(timeoutId);
-                    onErr('Ошибка потока HLS: ' + (d.details || 'недоступен'));
+        const runAttempt = (cand) => {
+            if (!cand) {
+                onAllFailed();
+                return;
+            }
+            const myAttempt = ++previewAttemptId;
+            clearTimeout(previewAttemptTimer);
+            if (previewHls) { try { previewHls.destroy(); } catch(e){} previewHls = null; }
+            if (previewMpegts) { try { previewMpegts.destroy(); } catch(e){} previewMpegts = null; }
+            try {
+                previewVideo.pause();
+                previewVideo.removeAttribute('src');
+                previewVideo.load();
+            } catch (e) {}
+
+            let settled = false;
+            const advance = () => {
+                if (settled || myAttempt !== previewAttemptId) return;
+                settled = true;
+                clearTimeout(previewAttemptTimer);
+                if (candidateIdx < candidates.length) {
+                    runAttempt(candidates[candidateIdx++]);
+                } else {
+                    onAllFailed();
                 }
-            });
-        } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
-            previewMpegts = mpegts.createPlayer({
-                type: 'mpegts',
-                url: proxied,
-                isLive: true
-            }, { enableWorker: true, liveBufferLatencyChasing: true });
-            previewMpegts.attachMediaElement(previewVideo);
-            previewMpegts.load();
-            previewMpegts.play().catch(()=>{});
-            previewMpegts.on(mpegts.Events.ERROR, (t, d) => {
-                clearTimeout(timeoutId);
-                onErr('Ошибка потока MPEG-TS: ' + (d || t || 'сбой'));
-            });
-        } else {
-            previewVideo.src = proxied;
-            tryPlay();
+            };
+
+            previewAttemptTimer = setTimeout(advance, 8500);
+
+            previewVideo.onloadeddata = () => {
+                if (myAttempt !== previewAttemptId) return;
+                settled = true;
+                onReady();
+            };
+            previewVideo.oncanplay = () => {
+                if (myAttempt !== previewAttemptId) return;
+                settled = true;
+                onReady();
+            };
+            previewVideo.onerror = advance;
+
+            if (isM3u8 && window.Hls && window.Hls.isSupported()) {
+                previewHls = new Hls({
+                    enableWorker: true,
+                    lowLatencyMode: false,
+                    backBufferLength: 15,
+                    maxBufferLength: 20,
+                    manifestLoadingTimeOut: 9000,
+                    manifestLoadingMaxRetry: 1,
+                    fragLoadingTimeOut: 20000
+                });
+                previewHls.loadSource(cand.src);
+                previewHls.attachMedia(previewVideo);
+                previewHls.on(Hls.Events.MANIFEST_PARSED, () => tryPlay(myAttempt));
+                previewHls.on(Hls.Events.ERROR, (e, d) => {
+                    if (d && d.fatal) advance();
+                });
+            } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+                previewMpegts = mpegts.createPlayer({
+                    type: 'mpegts',
+                    url: cand.src,
+                    isLive: true
+                }, { enableWorker: true, liveBufferLatencyChasing: true });
+                previewMpegts.attachMediaElement(previewVideo);
+                previewMpegts.load();
+                previewMpegts.play().catch(()=>{});
+                previewMpegts.on(mpegts.Events.ERROR, advance);
+            } else {
+                previewVideo.src = cand.src;
+                tryPlay(myAttempt);
+            }
+        };
+
+        if (candidates.length === 0) {
+            onAllFailed();
+            return;
         }
+        runAttempt(candidates[candidateIdx++]);
     }
 
     // Клик по кнопке fullscreen на превью
@@ -1079,12 +1279,14 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    let playerAttemptTimer = null;
+
     function stopStream() {
+        clearTimeout(playerAttemptTimer);
         const v = playerVideoHost.querySelector('video');
         if (hls) { try { hls.destroy(); } catch(e){} hls = null; }
         if (mpegtsP) { try { mpegtsP.destroy(); } catch(e){} mpegtsP = null; }
         if (v) { try { v.pause(); v.removeAttribute('src'); v.load(); } catch(e){} }
-        // Отвязать от плеера (переносим обратно нельзя — создаём новый)
     }
 
     function playStream(url) {
@@ -1108,7 +1310,6 @@ document.addEventListener('DOMContentLoaded', () => {
         text.textContent = 'Загрузка потока...';
         if (toast) toast.style.display = 'none';
 
-        const proxied = '/api/stream/proxy?url=' + encodeURIComponent(url);
         const low = url.split('?')[0].toLowerCase();
         const isM3u8 = low.includes('.m3u8');
         const isTs = low.endsWith('.ts');
@@ -1118,18 +1319,28 @@ document.addEventListener('DOMContentLoaded', () => {
         let attemptId = 0;
 
         const ready = () => {
+            clearTimeout(playerAttemptTimer);
             overlay.classList.add('hidden');
             clearRuntimeUnavailable(ch);
         };
         const err = (message) => {
+            clearTimeout(playerAttemptTimer);
             const msg = message || 'Ошибка воспроизведения';
             overlay.classList.remove('hidden');
             text.textContent = msg;
             recordRuntimeUnavailable(ch, msg);
         };
 
-        const attempt = (source) => {
+        const attempt = (candidate) => {
+            if (!candidate) {
+                err(window.location.protocol === 'https:' && !isNativeTvApp() && /^http:\/\//i.test(url)
+                    ? 'Прямая http:// ссылка заблокирована браузером (HTTPS) — включите proxy'
+                    : 'Поток недоступен или формат не поддерживается');
+                return;
+            }
+            const source = candidate.src;
             const currentAttempt = ++attemptId;
+            clearTimeout(playerAttemptTimer);
             if (hls) {
                 try { hls.destroy(); } catch (e) {}
                 hls = null;
@@ -1144,19 +1355,33 @@ document.addEventListener('DOMContentLoaded', () => {
                 v.load();
             } catch (e) {}
 
-            v.onloadeddata = ready;
-            v.oncanplay = ready;
-            v.onerror = () => {
+            text.textContent = 'Загрузка (' + candidate.label + ')...';
+
+            const advance = (fallbackMsg) => {
                 if (currentAttempt !== attemptId) return;
-                if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
-                else err('Поток недоступен или формат не поддерживается');
+                clearTimeout(playerAttemptTimer);
+                if (attemptIndex < attempts.length) {
+                    attempt(attempts[attemptIndex++]);
+                } else {
+                    err(fallbackMsg || 'Поток недоступен или формат не поддерживается');
+                }
             };
+
+            if (attemptIndex < attempts.length) {
+                playerAttemptTimer = setTimeout(() => {
+                    advance('Таймаут загрузки потока');
+                }, 9500);
+            }
+
+            v.onloadeddata = () => { if (currentAttempt === attemptId) ready(); };
+            v.oncanplay = () => { if (currentAttempt === attemptId) ready(); };
+            v.onerror = () => advance('Поток недоступен или формат не поддерживается');
 
             if (isM3u8 && window.Hls && window.Hls.isSupported()) {
                 hls = new Hls({
                     enableWorker: true,
                     lowLatencyMode: false,
-                    manifestLoadingTimeOut: 15000,
+                    manifestLoadingTimeOut: 10000,
                     manifestLoadingMaxRetry: 1,
                     fragLoadingTimeOut: 30000,
                     maxBufferLength: 30,
@@ -1169,8 +1394,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 hls.on(Hls.Events.ERROR, (event, data) => {
                     if (!data || !data.fatal || currentAttempt !== attemptId) return;
-                    if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
-                    else err('Ошибка HLS: ' + (data.details || 'unknown'));
+                    advance('Ошибка HLS: ' + (data.details || 'unknown'));
                 });
             } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
                 mpegtsP = mpegts.createPlayer(
@@ -1181,9 +1405,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 mpegtsP.load();
                 mpegtsP.play().catch(() => {});
                 mpegtsP.on(mpegts.Events.ERROR, (type, detail) => {
-                    if (currentAttempt !== attemptId) return;
-                    if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
-                    else err('Ошибка TS: ' + detail);
+                    advance('Ошибка TS: ' + detail);
                 });
             } else {
                 v.src = source;
@@ -1191,32 +1413,14 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        void api('/watch/api/streaming-settings').then((result) => {
-            const settings = result && result.settings ? result.settings : {};
-            const mode = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'].includes(settings.mode)
-                ? settings.mode
-                : 'auto_proxy_first';
-            const httpsUrl = settings.tryHttpsUpgrade !== false && /^http:\/\//i.test(url)
-                ? url.replace(/^http:/i, 'https:')
-                : url;
-            const directUrls = httpsUrl === url ? [url] : [httpsUrl, url];
-            const proxyUrls = httpsUrl === url
-                ? [proxied]
-                : ['/api/stream/proxy?url=' + encodeURIComponent(httpsUrl), proxied];
-            const modes = {
-                auto_proxy_first: [...proxyUrls, ...directUrls],
-                auto_direct_first: [...directUrls, ...proxyUrls],
-                proxy_only: proxyUrls,
-                direct_only: directUrls
-            };
-            attempts = modes[mode].slice();
-            const first = attempts.shift();
+        void loadStreamingSettings().then((eff) => {
+            attempts = buildStreamCandidates(url, eff);
             attemptIndex = 0;
-            attempt(first);
+            attempt(attempts[attemptIndex++]);
         }).catch(() => {
-            attempts = [url];
+            attempts = buildStreamCandidates(url, getEffectiveStreamingSettings());
             attemptIndex = 0;
-            attempt(proxied);
+            attempt(attempts[attemptIndex++]);
         });
 
         setTimeout(() => {
@@ -1714,6 +1918,9 @@ document.addEventListener('DOMContentLoaded', () => {
                             enabled: tvPopupEnabled,
                             role: 'user'
                         });
+                        if (saved.cloudCred && typeof window.PQTVFirebase.saveLocalUserCredentialsToCloud === 'function') {
+                            await window.PQTVFirebase.saveLocalUserCredentialsToCloud([saved.cloudCred], true).catch(() => {});
+                        }
                     }
                 }
             }
@@ -2117,7 +2324,31 @@ document.addEventListener('DOMContentLoaded', () => {
     sendPing();
     setInterval(sendPing, 30000);
 
+    // ===== CLOUD VIEWER HYDRATION =====
+    let viewerCloudHydrated = false;
+    function initViewerCloudHydration() {
+        if (!window.PQTVFirebase || typeof window.PQTVFirebase.onAuthChange !== 'function') return;
+        window.PQTVFirebase.onAuthChange(async (info) => {
+            if (!info || !info.signedIn || viewerCloudHydrated) return;
+            viewerCloudHydrated = true;
+            try {
+                if (typeof window.PQTVFirebase.hydrateViewerFromCloud === 'function') {
+                    const res = await window.PQTVFirebase.hydrateViewerFromCloud(getWatchToken());
+                    if (res && res.streaming) {
+                        serverStreamingSettings = Object.assign({}, serverStreamingSettings, res.streaming);
+                        syncSettingsModalLabels();
+                    }
+                    if (res && res.restored > 0) {
+                        await loadChannels();
+                    }
+                }
+            } catch {}
+        });
+    }
+
     // ===== BOOT =====
+    loadStreamingSettings().catch(() => {});
     loadChannels();
     checkTvUpdate(false);
+    initViewerCloudHydration();
 });

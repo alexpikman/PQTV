@@ -163,6 +163,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 1200);
     }
 
+    async function refreshAdminAfterCloudHydrate() {
+        await loadPlaylists();
+        if (currentPlaylist && playlistsList.includes(currentPlaylist)) {
+            await loadChannels();
+        } else if (playlistsList.length > 0) {
+            await selectPlaylist(playlistsList[0]);
+        } else {
+            currentPlaylist = null;
+            channelsData = [];
+            renderChannels();
+        }
+        await Promise.all([
+            loadCatalogStats().catch(() => {}),
+            loadCatalogPlaylists().catch(() => {}),
+            loadCatalogSources().catch(() => {}),
+            loadSources().catch(() => {}),
+            loadEpg().catch(() => {}),
+            loadUsers().catch(() => {}),
+            loadAdminAlerts().catch(() => {}),
+        ]);
+        catalogOffset = 0;
+        await loadCatalogChannels().catch(() => {});
+        if (typeof window.__refreshStreamingControls === 'function') {
+            await window.__refreshStreamingControls().catch(() => {});
+        }
+    }
+
     async function bootstrapCloudDatabase() {
         if (!fbAdminConnected || !window.PQTVFirebase) return;
         const statusEl = document.getElementById('fb-status-text');
@@ -174,6 +201,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!restored || !restored.ok) {
                     throw new Error(restored && restored.error ? restored.error : 'Не удалось восстановить базу из Firestore');
                 }
+                await refreshAdminAfterCloudHydrate();
                 if (statusEl) statusEl.textContent = 'Firestore: данные восстановлены из облачной базы';
                 scheduleCloudSync();
                 return;
@@ -223,29 +251,47 @@ document.addEventListener('DOMContentLoaded', () => {
 
     (function initStreamingModeControl() {
         const select = document.getElementById('streaming-mode-select');
-        if (!select) return;
+        const httpsToggle = document.getElementById('streaming-https-toggle');
+        if (!select && !httpsToggle) return;
+        let currentSettings = { mode: 'auto_proxy_first', tryHttpsUpgrade: true, proxyTimeoutSec: 15 };
 
-        apiRequest('/api/settings/streaming').then((res) => {
-            const mode = res && res.settings && res.settings.mode;
-            if (mode && Array.from(select.options).some(option => option.value === mode)) {
-                select.value = mode;
+        async function refreshControls() {
+            const res = await apiRequest('/api/settings/streaming');
+            if (res && res.settings) {
+                currentSettings = Object.assign({}, currentSettings, res.settings);
+                if (select && currentSettings.mode && Array.from(select.options).some(option => option.value === currentSettings.mode)) {
+                    select.value = currentSettings.mode;
+                }
+                if (httpsToggle) {
+                    httpsToggle.checked = currentSettings.tryHttpsUpgrade !== false;
+                }
             }
-        });
+        }
+        window.__refreshStreamingControls = refreshControls;
+        void refreshControls();
 
-        select.addEventListener('change', async () => {
-            select.disabled = true;
+        async function saveStreamingControls() {
+            if (select) select.disabled = true;
+            if (httpsToggle) httpsToggle.disabled = true;
             try {
-                const current = await apiRequest('/api/settings/streaming');
-                const settings = Object.assign({}, current.settings || {}, { mode: select.value });
-                const saved = await apiRequest('/api/settings/streaming', 'POST', settings);
+                const payload = Object.assign({}, currentSettings, {
+                    mode: select ? select.value : currentSettings.mode,
+                    tryHttpsUpgrade: httpsToggle ? httpsToggle.checked : currentSettings.tryHttpsUpgrade,
+                });
+                const saved = await apiRequest('/api/settings/streaming', 'POST', payload);
                 if (!saved || !saved.ok) throw new Error(saved && saved.error ? saved.error : 'Не удалось сохранить режим');
-                showToast('Режим передачи потока сохранён', 'ok');
+                currentSettings = Object.assign({}, currentSettings, saved.settings || payload);
+                showToast('Настройки передачи потока сохранены', 'ok');
             } catch (err) {
                 showToast((err && err.message) ? err.message : 'Ошибка сохранения режима', 'err');
             } finally {
-                select.disabled = false;
+                if (select) select.disabled = false;
+                if (httpsToggle) httpsToggle.disabled = false;
             }
-        });
+        }
+
+        if (select) select.addEventListener('change', saveStreamingControls);
+        if (httpsToggle) httpsToggle.addEventListener('change', saveStreamingControls);
     })();
 
     (function initAdminAuthControls() {
@@ -1784,10 +1830,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         let html = '';
         catalogPlaylists.forEach(pl => {
+            const cleanPl = String(pl || '').replace(/\.m3u$/i, '');
             const checked = catalogActivePL.includes(pl);
             html += `<label class="pl-dropdown-item">
                 <input type="checkbox" value="${escapeHtml(pl)}" ${checked ? 'checked' : ''}>
-                <span class="pl-name">${escapeHtml(pl)}.m3u</span>
+                <span class="pl-name">${escapeHtml(cleanPl)}</span>
             </label>`;
         });
         listEl.innerHTML = html;
@@ -1800,7 +1847,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (catalogActivePL.length === 0) {
                 labelEl.textContent = 'Все плейлисты';
             } else if (catalogActivePL.length === 1) {
-                labelEl.textContent = catalogActivePL[0] + '.m3u';
+                labelEl.textContent = String(catalogActivePL[0] || '').replace(/\.m3u$/i, '');
             } else {
                 labelEl.textContent = 'Выбрано: ' + catalogActivePL.length;
             }
@@ -2097,13 +2144,22 @@ document.addEventListener('DOMContentLoaded', () => {
             streamsHtml += '</tbody></table>';
         }
 
-        // Дропдаун плейлистов
+        // Дропдаун плейлистов (без .m3u)
         let plOptions = '';
         if (typeof playlistsList !== 'undefined' && playlistsList.length) {
             playlistsList.forEach(p => {
-                plOptions += '<option value="' + escapeHtml(p) + '">' + escapeHtml(p) + '.m3u</option>';
+                const cleanP = String(p || '').replace(/\.m3u$/i, '');
+                plOptions += '<option value="' + escapeHtml(p) + '">' + escapeHtml(cleanP) + '</option>';
             });
         }
+        const usedInClean = Array.isArray(ch.used_in_list)
+            ? ch.used_in_list.map(name => String(name || '').replace(/\.m3u$/i, '').trim()).filter(Boolean)
+            : [];
+        const ownPlaylistsHtml = usedInClean.length
+            ? '<div class="catalog-playlist-list" style="margin-top:8px;">' +
+                usedInClean.map(name => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join(' ') +
+              '</div>'
+            : '<div style="margin-top:8px;"><span class="cat-badge grey">Нет в собственных плейлистах</span></div>';
 
         const modal = document.createElement('div');
         modal.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;';
@@ -2124,6 +2180,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div style="font-size:11px; font-weight:800; letter-spacing:0.08em; color:var(--primary-hi); margin-bottom:6px;">${escapeHtml(ch.code)}</div>
                         <div style="font-size:24px; font-weight:800; color:#fff; line-height:1.2; word-break:break-word;">${escapeHtml(ch.name)}</div>
                         <div style="font-size:12px; color:var(--muted); margin-top:6px;">${streams.length} ${streams.length === 1 ? 'поток' : 'потоков'}</div>
+                        ${ownPlaylistsHtml}
                     </div>
                 </div>
 
@@ -3064,7 +3121,56 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         stopBlackScreenDetector();
     }
 
+    let playerAttemptTimer = null;
+
+    function buildStreamCandidates(rawUrl, settings) {
+        const s = settings || {};
+        const mode = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'].includes(s.mode)
+            ? s.mode
+            : 'auto_proxy_first';
+        const tryHttps = s.tryHttpsUpgrade !== false;
+        const isHttp = /^http:\/\//i.test(rawUrl);
+        const httpsUrl = (tryHttps && isHttp) ? rawUrl.replace(/^http:/i, 'https:') : rawUrl;
+        const isHttpsPage = window.location.protocol === 'https:';
+        const canDirectPlainHttp = !isHttpsPage;
+
+        const proxyCandidates = [];
+        if (httpsUrl !== rawUrl) {
+            proxyCandidates.push({
+                src: '/api/stream/proxy?url=' + encodeURIComponent(httpsUrl),
+                label: 'proxy HTTPS',
+            });
+        }
+        proxyCandidates.push({
+            src: '/api/stream/proxy?url=' + encodeURIComponent(rawUrl),
+            label: isHttp ? 'proxy HTTP' : 'proxy',
+        });
+
+        const directCandidates = [];
+        if (httpsUrl !== rawUrl) {
+            directCandidates.push({ src: httpsUrl, label: 'напрямую HTTPS' });
+        }
+        if (!isHttp || canDirectPlainHttp) {
+            directCandidates.push({ src: rawUrl, label: isHttp ? 'напрямую HTTP' : 'напрямую HTTPS' });
+        }
+
+        const dedupe = (arr) => {
+            const seen = new Set();
+            return arr.filter((item) => {
+                if (!item.src || seen.has(item.src)) return false;
+                seen.add(item.src);
+                return true;
+            });
+        };
+
+        if (mode === 'proxy_only') return dedupe(proxyCandidates);
+        if (mode === 'direct_only') return dedupe(directCandidates);
+        if (mode === 'auto_direct_first') return dedupe([...directCandidates, ...proxyCandidates]);
+        return dedupe([...proxyCandidates, ...directCandidates]);
+    }
+
     function stopPlayerStream() {
+        clearTimeout(playerAttemptTimer);
         const v = document.getElementById('player-video');
         if (playerHls) { try { playerHls.destroy(); } catch (e) {} playerHls = null; }
         if (playerMpegts) { try { playerMpegts.destroy(); } catch (e) {} playerMpegts = null; }
@@ -3076,11 +3182,11 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const v = document.getElementById('player-video');
         const overlay = document.getElementById('player-overlay');
         const text = document.getElementById('player-overlay-text');
+        const playerUrlEl = document.getElementById('player-url');
 
         overlay.classList.remove('hidden');
         text.textContent = 'Загрузка потока...';
 
-        const proxied = '/api/stream/proxy?url=' + encodeURIComponent(url);
         const low = url.split('?')[0].toLowerCase();
         const isM3u8 = low.includes('.m3u8');
         const isTs = low.endsWith('.ts');
@@ -3088,14 +3194,29 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         let attemptId = 0;
         let attempts = [];
 
-        const onReady = () => overlay.classList.add('hidden');
+        const onReady = (label) => {
+            clearTimeout(playerAttemptTimer);
+            overlay.classList.add('hidden');
+            if (playerUrlEl && label) {
+                playerUrlEl.textContent = '[' + label + '] ' + url;
+            }
+        };
         const onErr = (msg) => {
+            clearTimeout(playerAttemptTimer);
             overlay.classList.remove('hidden');
             text.textContent = msg || 'Ошибка воспроизведения';
         };
 
-        const attempt = (source) => {
+        const attempt = (candidate) => {
+            if (!candidate) {
+                onErr(window.location.protocol === 'https:' && /^http:\/\//i.test(url)
+                    ? 'Прямая http:// ссылка заблокирована браузером (HTTPS) — включите proxy'
+                    : 'Поток недоступен или формат не поддерживается');
+                return;
+            }
+            const source = candidate.src;
             const currentAttempt = ++attemptId;
+            clearTimeout(playerAttemptTimer);
             if (playerHls) {
                 try { playerHls.destroy(); } catch (e) {}
                 playerHls = null;
@@ -3110,19 +3231,33 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 v.load();
             } catch (e) {}
 
-            v.onloadeddata = onReady;
-            v.oncanplay = onReady;
-            v.onerror = () => {
+            text.textContent = 'Загрузка (' + candidate.label + ')...';
+
+            const advance = (fallbackMsg) => {
                 if (currentAttempt !== attemptId) return;
-                if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
-                else onErr('Поток недоступен или формат не поддерживается');
+                clearTimeout(playerAttemptTimer);
+                if (attemptIndex < attempts.length) {
+                    attempt(attempts[attemptIndex++]);
+                } else {
+                    onErr(fallbackMsg || 'Поток недоступен или формат не поддерживается');
+                }
             };
+
+            if (attemptIndex < attempts.length) {
+                playerAttemptTimer = setTimeout(() => {
+                    advance('Таймаут загрузки потока');
+                }, 9500);
+            }
+
+            v.onloadeddata = () => { if (currentAttempt === attemptId) onReady(candidate.label); };
+            v.oncanplay = () => { if (currentAttempt === attemptId) onReady(candidate.label); };
+            v.onerror = () => advance('Поток недоступен или формат не поддерживается');
 
             if (isM3u8 && window.Hls && window.Hls.isSupported()) {
                 playerHls = new Hls({
                     enableWorker: true,
                     lowLatencyMode: false,
-                    manifestLoadingTimeOut: 12000,
+                    manifestLoadingTimeOut: 10000,
                     manifestLoadingMaxRetry: 1,
                     fragLoadingTimeOut: 25000
                 });
@@ -3133,11 +3268,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 });
                 playerHls.on(Hls.Events.ERROR, (evt, data) => {
                     if (!data || !data.fatal || currentAttempt !== attemptId) return;
-                    if (attemptIndex < attempts.length) {
-                        attempt(attempts[attemptIndex++]);
-                    } else {
-                        onErr('Ошибка HLS: ' + (data.details || 'unknown'));
-                    }
+                    advance('Ошибка HLS: ' + (data.details || 'unknown'));
                 });
             } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
                 playerMpegts = mpegts.createPlayer({
@@ -3152,9 +3283,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 playerMpegts.load();
                 playerMpegts.play().catch(() => {});
                 playerMpegts.on(mpegts.Events.ERROR, (t, d) => {
-                    if (currentAttempt !== attemptId) return;
-                    if (attemptIndex < attempts.length) attempt(attempts[attemptIndex++]);
-                    else onErr('Ошибка TS: ' + d);
+                    advance('Ошибка TS: ' + d);
                 });
             } else {
                 v.src = source;
@@ -3164,30 +3293,13 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
 
         void apiRequest('/api/settings/streaming').then((result) => {
             const settings = result && result.settings ? result.settings : {};
-            const mode = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'].includes(settings.mode)
-                ? settings.mode
-                : 'auto_proxy_first';
-            const httpsUrl = settings.tryHttpsUpgrade !== false && /^http:\/\//i.test(url)
-                ? url.replace(/^http:/i, 'https:')
-                : url;
-            const directUrls = httpsUrl === url ? [url] : [httpsUrl, url];
-            const proxyUrls = httpsUrl === url
-                ? [proxied]
-                : ['/api/stream/proxy?url=' + encodeURIComponent(httpsUrl), proxied];
-            const modes = {
-                auto_proxy_first: [...proxyUrls, ...directUrls],
-                auto_direct_first: [...directUrls, ...proxyUrls],
-                proxy_only: proxyUrls,
-                direct_only: directUrls
-            };
-            attempts = modes[mode].slice();
-            const first = attempts.shift();
+            attempts = buildStreamCandidates(url, settings);
             attemptIndex = 0;
-            attempt(first);
+            attempt(attempts[attemptIndex++]);
         }).catch(() => {
-            attempts = [url];
+            attempts = buildStreamCandidates(url, { mode: 'auto_proxy_first', tryHttpsUpgrade: true });
             attemptIndex = 0;
-            attempt(proxied);
+            attempt(attempts[attemptIndex++]);
         });
     }
 

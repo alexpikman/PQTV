@@ -26,6 +26,7 @@ import {
   CloudExportPayload,
   CloudStreamingSettings,
   deletePlaylistFromCloud,
+  fetchAdminWatchCloudState,
   fetchStreamingSettingsFromCloud,
   fetchViewerCloudState,
   loadFullCloudSnapshot,
@@ -876,17 +877,18 @@ export const PQTVFirebase = {
       return { restored: 0, streaming: null };
     }
     const admin = await isCurrentUserAdmin(user);
-    if (admin) {
-      const streaming = await fetchStreamingSettingsFromCloud();
-      return { restored: 0, streaming };
-    }
     try {
-      const uSnap = await getDoc(doc(db, 'users', user.uid));
-      if (!uSnap.exists()) return { restored: 0, streaming: null };
-      const ud = uSnap.data();
-      if (!ud.enabled) return { restored: 0, streaming: null };
-      const playlists = Array.isArray(ud.playlists) ? (ud.playlists as string[]) : [];
-      const cloud = await fetchViewerCloudState(playlists);
+      let cloud: { streaming: CloudStreamingSettings | null; playlists: Array<{ name: string; channels: unknown[] }> };
+      if (admin) {
+        cloud = await fetchAdminWatchCloudState();
+      } else {
+        const uSnap = await getDoc(doc(db, 'users', user.uid));
+        if (!uSnap.exists()) return { restored: 0, streaming: null };
+        const ud = uSnap.data();
+        if (!ud.enabled) return { restored: 0, streaming: null };
+        const playlists = Array.isArray(ud.playlists) ? (ud.playlists as string[]) : [];
+        cloud = await fetchViewerCloudState(playlists);
+      }
       if (cloud.playlists.length === 0 && !cloud.streaming) {
         return { restored: 0, streaming: null };
       }
