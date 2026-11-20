@@ -2399,7 +2399,7 @@ app.post('/api/catalog/check', async (req, res) => {
   const result = await catalogStore.checkStreams(limit);
   noCacheJson(res, {
     ok: true,
-    output: `Checked ${result.checked} streams, ${result.online} online`,
+    output: `Checked ${result.checked} streams: ${result.online} online, ${result.offline} offline, ${result.unknown} unknown`,
   });
 });
 
