@@ -107,10 +107,10 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 
 async function upsertDoc(
   ref: DocumentReference,
-  path: string,
   payload: Record<string, unknown>,
   mutableKeys: string[]
 ): Promise<void> {
+  const path = ref.path;
   let snap;
   try {
     snap = await getDoc(ref);
@@ -129,9 +129,17 @@ async function upsertDoc(
       handleFirestoreError(err, OperationType.CREATE, path);
     }
   } else {
+    const existingData = snap.data();
+    const changedKeys = mutableKeys.filter(
+      (key) =>
+        key in payload &&
+        JSON.stringify(existingData[key]) !== JSON.stringify(payload[key])
+    );
+    if (changedKeys.length === 0) return;
+
     const patch: Record<string, unknown> = { updatedAt: serverTimestamp() };
-    for (const k of mutableKeys) {
-      if (k in payload) patch[k] = payload[k];
+    for (const key of changedKeys) {
+      patch[key] = payload[key];
     }
     try {
       await updateDoc(ref, patch);
@@ -164,7 +172,8 @@ async function readManifest(): Promise<{
       catalogChannelChunks: Number(d.catalogChannelChunks) || 0,
       catalogStreamChunks: Number(d.catalogStreamChunks) || 0,
     };
-  } catch {
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, 'cloud_meta/manifest');
     return null;
   }
 }
@@ -769,8 +778,8 @@ export async function loadFullCloudSnapshot(): Promise<{
           }
         }
         playlists[plId] = items;
-      } catch {
-        // ignore missing
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -791,8 +800,8 @@ export async function loadFullCloudSnapshot(): Promise<{
             enabled: Boolean(d.enabled),
           });
         }
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -814,8 +823,8 @@ export async function loadFullCloudSnapshot(): Promise<{
           }
         }
         sourceIndex[sid] = { items, updatedAt: indexedAt };
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -835,8 +844,8 @@ export async function loadFullCloudSnapshot(): Promise<{
             enabled: Boolean(d.enabled),
           });
         }
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -872,9 +881,9 @@ export async function loadFullCloudSnapshot(): Promise<{
         streams,
       };
     }
-  } catch {
-    // ignore
-  }
+  } catch (err) {
+        throw err;
+      }
 
   // Streaming settings
   const streamingSettings = await fetchStreamingSettingsFromCloud();
@@ -886,9 +895,9 @@ export async function loadFullCloudSnapshot(): Promise<{
     if (authSnap.exists() && typeof authSnap.data().adminPasswordHash === 'string') {
       adminSettings.adminPasswordHash = authSnap.data().adminPasswordHash;
     }
-  } catch {
-    // ignore
-  }
+  } catch (err) {
+        throw err;
+      }
 
   // Local users + password hashes
   const users: Array<Record<string, unknown>> = [];
@@ -912,8 +921,8 @@ export async function loadFullCloudSnapshot(): Promise<{
           enabled: Boolean(ud.enabled),
           password_hash,
         });
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
