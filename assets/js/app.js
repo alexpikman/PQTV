@@ -2047,7 +2047,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     .then(d => {
                         if (!d || d.error) { showToast('Ошибка загрузки канала', 'err'); return; }
                         let url = '';
-                        for (const s of (d.streams || [])) { if (s.online) { url = s.url; break; } }
+                        for (const s of (d.streams || [])) { if (s.status === 'online') { url = s.url; break; } }
                         if (!url && d.streams && d.streams.length) url = d.streams[0].url;
                         if (!url) { showToast('Нет потоков для этого канала', 'err'); return; }
                         openPlayerByUrl(url, d.name, d.logo || '');
