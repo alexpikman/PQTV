@@ -2038,7 +2038,7 @@ app.post('/api/channels/save', (req, res) => {
 // Stream check & parse
 app.post('/api/stream/check', async (req, res) => {
   const url = String(req.body?.url || '').trim();
-  const result = await checkStreamUrl(url, 3000);
+  const result = await checkStreamUrl(url);
   noCacheJson(res, { online: result.online, status: result.status, code: result.code, ms: result.ms, reason: result.reason });
 });
 
@@ -2421,7 +2421,7 @@ app.post('/api/catalog/to-playlist', (req, res) => {
   }
   let url = '';
   for (const s of ch.streams) {
-    if (s.online) {
+    if (s.status === 'online') {
       url = s.url;
       break;
     }
