@@ -64,6 +64,7 @@ export interface CloudChannelHealthState {
 }
 
 export interface CloudExportPayload {
+  revision?: number;
   playlists: Record<string, CloudChannelItem[]>;
   sources: CloudSourceItem[];
   sourceIndex: Record<string, { items: CloudIndexedItem[]; updatedAt: number }>;
@@ -182,6 +183,7 @@ async function readManifest(): Promise<{
   localUserIds: string[];
   catalogChannelChunks: number;
   catalogStreamChunks: number;
+  revision?: number;
 } | null> {
   const ref = doc(db, 'cloud_meta', 'manifest');
   try {
@@ -196,6 +198,7 @@ async function readManifest(): Promise<{
       localUserIds: Array.isArray(d.localUserIds) ? (d.localUserIds as string[]) : [],
       catalogChannelChunks: Number(d.catalogChannelChunks) || 0,
       catalogStreamChunks: Number(d.catalogStreamChunks) || 0,
+      revision: typeof d.revision === 'number' ? d.revision : undefined,
     };
   } catch (err) {
     handleFirestoreError(err, OperationType.GET, 'cloud_meta/manifest');
@@ -211,6 +214,7 @@ async function writeManifestPatch(patch: Partial<{
   localUserIds: string[];
   catalogChannelChunks: number;
   catalogStreamChunks: number;
+  revision: number;
 }>): Promise<void> {
   const uid = auth.currentUser?.uid;
   if (!uid) return;
@@ -223,7 +227,14 @@ async function writeManifestPatch(patch: Partial<{
     catalogChannelChunks: 0,
     catalogStreamChunks: 0,
   };
-  const merged = {
+  const nextRevision =
+    patch.revision !== undefined
+      ? Math.max(0, Math.floor(Number(patch.revision) || 0))
+      : cur.revision !== undefined
+        ? cur.revision
+        : undefined;
+
+  const merged: Record<string, unknown> = {
     docId: 'manifest',
     playlists: (patch.playlists ?? cur.playlists).slice(0, 100),
     sourceIds: (patch.sourceIds ?? cur.sourceIds).slice(0, 100),
@@ -234,6 +245,9 @@ async function writeManifestPatch(patch: Partial<{
     catalogStreamChunks: patch.catalogStreamChunks ?? cur.catalogStreamChunks,
     updatedByUid: uid,
   };
+  if (nextRevision !== undefined) {
+    merged.revision = nextRevision;
+  }
   await upsertDoc(
     doc(db, 'cloud_meta', 'manifest'),
     merged,
@@ -245,6 +259,7 @@ async function writeManifestPatch(patch: Partial<{
       'localUserIds',
       'catalogChannelChunks',
       'catalogStreamChunks',
+      'revision',
       'updatedByUid',
     ]
   );
@@ -859,6 +874,7 @@ export async function loadChannelHealthFromCloud(): Promise<CloudChannelHealthSt
 }
 
 export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<void> {
+  const prevManifest = await readManifest().catch(() => null);
   const plNames: string[] = [];
   for (const [rawName, channels] of Object.entries(data.playlists || {})) {
     const clean = cleanPlaylistName(rawName);
@@ -867,6 +883,26 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
     await savePlaylistToCloud(clean, channels, false);
   }
   plNames.sort();
+
+  // Remove obsolete cloud playlists that were deleted locally
+  if (prevManifest && Array.isArray(prevManifest.playlists)) {
+    for (const oldPl of prevManifest.playlists) {
+      if (!plNames.includes(oldPl) && isValidPlaylistName(oldPl)) {
+        try {
+          const oldMeta = await getDoc(doc(db, 'playlists', oldPl));
+          if (oldMeta.exists()) {
+            const cc = Number(oldMeta.data().chunkCount) || 0;
+            for (let i = 0; i < cc; i++) {
+              await deleteDoc(doc(db, 'playlists', oldPl, 'chunks', `c_${i}`)).catch(() => {});
+            }
+            await deleteDoc(doc(db, 'playlists', oldPl)).catch(() => {});
+          }
+        } catch {
+          // ignore cleanup failure
+        }
+      }
+    }
+  }
 
   const sourceIds = await saveSourcesToCloud(data.sources || [], false);
   const sourceIndexIds = await saveSourceIndexToCloud(data.sourceIndex || {}, false);
@@ -911,6 +947,7 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
     localUserIds,
     catalogChannelChunks: catInfo.channelChunks,
     catalogStreamChunks: catInfo.streamChunks,
+    ...(typeof data.revision === 'number' ? { revision: data.revision } : {}),
   });
 }
 
@@ -1100,6 +1137,7 @@ export async function loadFullCloudSnapshot(): Promise<{
   return {
     hasCloud: true,
     snapshot: {
+      ...(typeof manifest.revision === 'number' ? { revision: manifest.revision } : {}),
       playlists,
       replacePlaylists: true,
       sources,

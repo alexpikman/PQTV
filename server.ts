@@ -33,7 +33,21 @@ import {
   GithubWorkflowScopeError,
   getWorkflowManualSetupInfo,
 } from './src/githubApkBuilder.js';
-import { getStreamingSettings, saveStreamingSettings } from './src/streamingSettings.js';
+import { getStreamingSettings, trySaveStreamingSettings } from './src/streamingSettings.js';
+import { stateLifecycle } from './src/stateLifecycle.js';
+import {
+  createPlaylistUnified,
+  savePlaylistChannelsUnified,
+  deletePlaylistUnified,
+  restoreBackupUnified,
+  deleteBackupUnified,
+  saveAuthoritativeSourcesUnified,
+  upsertCatalogSourceUnified,
+  deleteSourceUnified,
+  deleteStreamUnified,
+  reconcileCatalogUnified,
+  hydrateStateUnified,
+} from './src/lifecycleCoordinator.js';
 
 const BOOTSTRAPPED_ADMIN_EMAILS = ['alexpqtr@gmail.com', 'alex.pikman@gmail.com'];
 
@@ -49,7 +63,7 @@ declare module 'express-session' {
   }
 }
 
-const app = express();
+export const app = express();
 const rootDir = process.cwd();
 
 app.set('trust proxy', 1);
@@ -1246,7 +1260,11 @@ app.post('/watch/api/cloud/hydrate-playlists', (req, res) => {
   ).currentViewer;
 
   if (req.body?.streaming) {
-    saveStreamingSettings(req.body.streaming);
+    const sRes = trySaveStreamingSettings(req.body.streaming);
+    if (!sRes.ok) {
+      noCacheJson(res, { ok: false, error: sRes.error || 'Не удалось сохранить настройки' }, 500);
+      return;
+    }
   }
 
   const incomingPlaylists = Array.isArray(req.body?.playlists) ? req.body.playlists : [];
@@ -1507,8 +1525,13 @@ app.post('/watch/api/admin/alerts/delete', (req, res) => {
 });
 
 app.post('/watch/api/admin/streaming-settings', (req, res) => {
-  const saved = saveStreamingSettings(req.body || {});
-  noCacheJson(res, { ok: true, settings: saved });
+  const saved = trySaveStreamingSettings(req.body || {});
+  if (!saved.ok) {
+    noCacheJson(res, { ok: false, error: saved.error || 'Не удалось сохранить настройки' }, 500);
+    return;
+  }
+  const meta = stateLifecycle.bumpRevision('health_update', 'streaming_settings');
+  noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
 });
 
 app.use('/watch/api', (_req, res) => {
@@ -1929,14 +1952,32 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-// ============ STREAMING SETTINGS & FULL CLOUD EXPORT / HYDRATION ============
+// ============ STREAMING SETTINGS, STATE REVISION & FULL CLOUD EXPORT / HYDRATION ============
+app.get('/api/state/revision', (_req, res) => {
+  noCacheJson(res, { ok: true, ...stateLifecycle.getStateMeta() });
+});
+
+app.get('/api/lifecycle/logs', (req, res) => {
+  const limit = Number(req.query.limit) || 100;
+  noCacheJson(res, {
+    ok: true,
+    revision: stateLifecycle.getStateMeta().revision,
+    logs: stateLifecycle.getLogs(limit),
+  });
+});
+
 app.get('/api/settings/streaming', (_req, res) => {
   noCacheJson(res, { ok: true, settings: getStreamingSettings() });
 });
 
 app.post('/api/settings/streaming', (req, res) => {
-  const saved = saveStreamingSettings(req.body || {});
-  noCacheJson(res, { ok: true, settings: saved });
+  const saved = trySaveStreamingSettings(req.body || {});
+  if (!saved.ok) {
+    noCacheJson(res, { ok: false, error: saved.error || 'Ошибка сохранения настроек' }, 500);
+    return;
+  }
+  const meta = stateLifecycle.bumpRevision('health_update', 'streaming_settings');
+  noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
 });
 
 app.get('/api/cloud/export', (_req, res) => {
@@ -1948,6 +1989,7 @@ app.get('/api/cloud/export', (_req, res) => {
   const ghCfg = getPublicGithubConfig();
   noCacheJson(res, {
     ok: true,
+    revision: stateLifecycle.getStateMeta().revision,
     playlists,
     sources: StreamParser.getSources(),
     sourceIndex: StreamParser.exportIndexData(),
@@ -1974,129 +2016,59 @@ app.get('/api/cloud/export', (_req, res) => {
   });
 });
 
-app.post('/api/cloud/hydrate', (req, res) => {
-  const body = (req.body || {}) as {
-    playlists?: Record<string, Partial<Channel>[]>;
-    replacePlaylists?: boolean;
-    sources?: SourceItem[];
-    sourceIndex?: Record<string, { items?: Array<{ name: string; url: string; logo: string; group: string; tvg_id: string }>; updatedAt?: number }>;
-    epgSources?: EpgSource[];
-    catalog?: {
-      nextChannelId?: number;
-      nextStreamId?: number;
-      nextSourceId?: number;
-      channels?: unknown[];
-      streams?: unknown[];
-      sources?: unknown[];
-    };
-    streamingSettings?: unknown;
-    channelHealth?: ChannelHealthState;
-    users?: Array<{
-      id?: string;
-      login?: string;
-      name?: string;
-      playlists?: string[];
-      enabled?: boolean;
-      password_hash?: string;
-      created_at?: number;
-    }>;
-    invites?: Array<{
-      email?: string;
-      name?: string;
-      playlists?: string[];
-      enabled?: boolean;
-      claimed_uid?: string;
-    }>;
-    adminSettings?: {
-      adminPasswordHash?: string;
-    };
-  };
+app.post('/api/cloud/hydrate', async (req, res) => {
+  const rawBody = (req.body || {}) as Record<string, unknown>;
+  const out = await hydrateStateUnified(rawBody as Parameters<typeof hydrateStateUnified>[0]);
+  if (!out.ok) {
+    noCacheJson(res, out, out.status);
+    return;
+  }
 
-  let playlistsRestored = 0;
-  if (body.playlists && typeof body.playlists === 'object' && !Array.isArray(body.playlists)) {
-    const cloudNames = new Set<string>();
-    for (const [rawName, channels] of Object.entries(body.playlists)) {
-      const cleanName = rawName.replace(/\.m3u$/i, '').trim();
-      if (!storage.isValidFilename(cleanName) || !Array.isArray(channels)) continue;
-      cloudNames.add(cleanName);
-      if (storage.saveChannels(cleanName, channels)) {
-        playlistsRestored++;
-      }
-    }
-    if (body.replacePlaylists) {
-      for (const existingName of storage.getPlaylists()) {
-        if (!cloudNames.has(existingName)) {
-          storage.deletePlaylist(existingName);
-        }
+  if (Array.isArray(rawBody.invites)) {
+    const validPlaylists = new Set(storage.getPlaylists());
+    for (const rawInv of rawBody.invites as Array<Record<string, unknown>>) {
+      if (!rawInv || !rawInv.email) continue;
+      const pls = Array.isArray(rawInv.playlists)
+        ? rawInv.playlists
+            .filter((p): p is string => typeof p === 'string')
+            .map((p) => p.replace(/\.m3u$/i, '').trim())
+            .filter((p) => validPlaylists.has(p))
+        : [];
+      const saved = userAuth.saveInvite({
+        email: String(rawInv.email).trim().toLowerCase(),
+        name: String(rawInv.name || '').trim(),
+        playlists: pls,
+        enabled: rawInv.enabled !== undefined ? Boolean(rawInv.enabled) : true,
+        claimed_uid: typeof rawInv.claimed_uid === 'string' ? rawInv.claimed_uid : '',
+      });
+      if (!saved.ok && userAuth.getLastError()) {
+        noCacheJson(res, { ok: false, error: userAuth.getLastError() }, 500);
+        return;
       }
     }
   }
 
-  if (Array.isArray(body.sources)) {
-    StreamParser.saveSources(body.sources);
-  }
-  const sourceIndexRestored = body.sourceIndex
-    ? StreamParser.hydrateIndexData(body.sourceIndex)
-    : 0;
-  if (Array.isArray(body.epgSources)) {
-    EpgParser.saveSources(body.epgSources);
-  }
-  if (body.catalog && typeof body.catalog === 'object') {
-    catalogStore.hydrateRawState(body.catalog as Parameters<typeof catalogStore.hydrateRawState>[0]);
-  }
-  if (body.streamingSettings && typeof body.streamingSettings === 'object') {
-    saveStreamingSettings(body.streamingSettings);
-  }
-  if (body.channelHealth && typeof body.channelHealth === 'object') {
-    channelHealth.hydrateState(body.channelHealth);
-  }
-  if (Array.isArray(body.users)) {
-    for (const u of body.users) {
-      if (!u || !u.id || !u.login) continue;
-      userAuth.upsertSyncedUserWithHash({
-        id: String(u.id).trim(),
-        login: String(u.login).trim(),
-        name: String(u.name || u.login).trim(),
-        playlists: Array.isArray(u.playlists)
-          ? u.playlists.filter((p): p is string => typeof p === 'string')
-          : [],
-        enabled: Boolean(u.enabled),
-        password_hash: typeof u.password_hash === 'string' ? u.password_hash : undefined,
-        created_at: Number(u.created_at) || undefined,
-      });
+  const adminSettings = rawBody.adminSettings as { adminPasswordHash?: unknown } | undefined;
+  if (adminSettings?.adminPasswordHash && typeof adminSettings.adminPasswordHash === 'string') {
+    if (!saveAdminPasswordHashOverride(adminSettings.adminPasswordHash)) {
+      noCacheJson(res, { ok: false, error: 'Не удалось сохранить пароль администратора на диск' }, 500);
+      return;
     }
-  }
-  if (Array.isArray(body.invites)) {
-    for (const inv of body.invites) {
-      if (!inv || !inv.email) continue;
-      userAuth.saveInvite({
-        email: String(inv.email).trim().toLowerCase(),
-        name: String(inv.name || '').trim(),
-        playlists: Array.isArray(inv.playlists)
-          ? inv.playlists.filter((p): p is string => typeof p === 'string')
-          : [],
-        enabled: inv.enabled !== undefined ? Boolean(inv.enabled) : true,
-        claimed_uid: typeof inv.claimed_uid === 'string' ? inv.claimed_uid : '',
-      });
-    }
-  }
-  if (body.adminSettings?.adminPasswordHash && typeof body.adminSettings.adminPasswordHash === 'string') {
-    saveAdminPasswordHashOverride(body.adminSettings.adminPasswordHash);
   }
 
-  noCacheJson(res, {
-    ok: true,
-    playlistsRestored,
-    sourceIndexRestored,
-  });
+  noCacheJson(res, out, 200);
 });
 
 // ============ ADMIN APK & SOURCE REBUILD ROUTES ============
 app.get('/api/source/rebuild', async (_req, res) => {
   const indexRes = await StreamParser.refreshAll();
-  const catRes = catalogStore.importFromPlaylists();
+  const catRes = await reconcileCatalogUnified();
   EpgParser.clearCache();
-  noCacheJson(res, { ok: true, index: indexRes, catalog: catRes });
+  if (!catRes.ok) {
+    noCacheJson(res, { ok: false, error: catRes.error || 'Ошибка пересборки каталога' }, catRes.status);
+    return;
+  }
+  noCacheJson(res, { ok: true, index: indexRes, catalog: catRes, revision: catRes.revision });
 });
 
 app.get('/api/admin/apk/releases', (req, res) => {
@@ -2288,27 +2260,43 @@ app.post('/api/auth/set-password', (req, res) => {
   noCacheJson(res, { ok: true });
 });
 
-// Playlists & channels
+// Playlists, backups & channels
 app.get('/api/playlists', (_req, res) => {
-  noCacheJson(res, { playlists: storage.getPlaylists() });
+  noCacheJson(res, {
+    playlists: storage.getPlaylists(),
+    revision: stateLifecycle.getStateMeta().revision,
+  });
 });
 
-app.post('/api/playlists', (req, res) => {
+app.post('/api/playlists', async (req, res) => {
   const name = String(req.body?.name || '').trim();
-  if (storage.createPlaylist(name)) {
-    noCacheJson(res, { ok: true });
-    return;
-  }
-  noCacheJson(res, { error: 'Некорректное имя или файл существует' }, 400);
+  const out = await createPlaylistUnified(name);
+  noCacheJson(res, out, out.status);
 });
 
-app.post('/api/playlists/delete', (req, res) => {
+app.post('/api/playlists/delete', async (req, res) => {
   const name = String(req.body?.name || '').trim();
-  if (storage.deletePlaylist(name)) {
-    noCacheJson(res, { ok: true });
-    return;
-  }
-  noCacheJson(res, { error: 'Ошибка удаления' }, 400);
+  const out = await deletePlaylistUnified(name);
+  noCacheJson(res, out, out.status);
+});
+
+app.get('/api/playlists/backups', (req, res) => {
+  const playlist = typeof req.query.playlist === 'string' ? req.query.playlist : undefined;
+  noCacheJson(res, { ok: true, backups: storage.listBackups(playlist) });
+});
+
+app.post('/api/playlists/backups/restore', async (req, res) => {
+  const filename = String(req.body?.filename || '').trim();
+  const targetPlaylist =
+    typeof req.body?.targetPlaylist === 'string' ? req.body.targetPlaylist : undefined;
+  const out = await restoreBackupUnified(filename, targetPlaylist);
+  noCacheJson(res, out, out.status);
+});
+
+app.post('/api/playlists/backups/delete', async (req, res) => {
+  const filename = String(req.body?.filename || '').trim();
+  const out = await deleteBackupUnified(filename);
+  noCacheJson(res, out, out.status);
 });
 
 app.get('/api/channels', (req, res) => {
@@ -2321,14 +2309,11 @@ app.get('/api/channels', (req, res) => {
   noCacheJson(res, { channels: parseM3uFile(filePath) });
 });
 
-app.post('/api/channels/save', (req, res) => {
+app.post('/api/channels/save', async (req, res) => {
   const playlist = String(req.body?.playlist || '').trim();
   const channels = Array.isArray(req.body?.channels) ? req.body.channels : [];
-  if (storage.saveChannels(playlist, channels)) {
-    noCacheJson(res, { ok: true });
-    return;
-  }
-  noCacheJson(res, { error: 'Ошибка сохранения' }, 500);
+  const out = await savePlaylistChannelsUnified(playlist, channels);
+  noCacheJson(res, out, out.status);
 });
 
 // Stream check & parse
@@ -2415,7 +2400,20 @@ app.post('/api/health/replace-url', async (req, res) => {
     origin,
     unpause,
   });
-  noCacheJson(res, out, out.ok ? 200 : 400);
+  if (out.ok) {
+    const meta = stateLifecycle.bumpRevision('health_update', channelName, {
+      action: 'replace_url',
+      updatedPlaylists: out.updatedPlaylists,
+    });
+    noCacheJson(res, { ...out, revision: meta.revision }, 200);
+    return;
+  }
+  const status = (out.error || '').includes('не найден')
+    ? 404
+    : (out.error || '').includes('Не удалось')
+      ? 500
+      : 400;
+  noCacheJson(res, out, status);
 });
 
 app.post('/api/health/auto-repair', async (req, res) => {
@@ -2430,14 +2428,36 @@ app.post('/api/health/pause', (req, res) => {
   const paused = Boolean(req.body?.paused);
   const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : undefined;
   const out = channelHealth.setChannelPaused({ channelName, paused, playlists });
-  noCacheJson(res, out, out.ok ? 200 : 400);
+  if (out.ok) {
+    const meta = stateLifecycle.bumpRevision('health_update', channelName, { action: 'pause', paused });
+    noCacheJson(res, { ...out, revision: meta.revision }, 200);
+    return;
+  }
+  const status = (out.error || '').includes('не найден')
+    ? 404
+    : (out.error || '').includes('Не удалось')
+      ? 500
+      : 400;
+  noCacheJson(res, out, status);
 });
 
 app.post('/api/health/delete-channel', (req, res) => {
   const channelName = String(req.body?.channelName || '').trim();
   const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : undefined;
   const out = channelHealth.deleteChannelFromPlaylists({ channelName, playlists });
-  noCacheJson(res, out, out.ok ? 200 : 400);
+  if (out.ok) {
+    const meta = stateLifecycle.bumpRevision('channel_delete', channelName, {
+      updatedPlaylists: out.updatedPlaylists,
+    });
+    noCacheJson(res, { ...out, revision: meta.revision }, 200);
+    return;
+  }
+  const status = (out.error || '').includes('не найден')
+    ? 404
+    : (out.error || '').includes('Не удалось')
+      ? 500
+      : 400;
+  noCacheJson(res, out, status);
 });
 
 app.post('/api/health/resolve', async (req, res) => {
@@ -2459,16 +2479,25 @@ app.post('/api/stream/parse', (req, res) => {
 
 // Sources & Index
 app.get('/api/sources', (_req, res) => {
-  noCacheJson(res, { sources: StreamParser.getSources() });
+  noCacheJson(res, {
+    sources: StreamParser.getSources(),
+    revision: stateLifecycle.getStateMeta().revision,
+  });
 });
 
-app.post('/api/sources/save', (req, res) => {
-  const sources: SourceItem[] = Array.isArray(req.body?.sources) ? req.body.sources : [];
-  if (StreamParser.saveSources(sources)) {
-    noCacheJson(res, { ok: true });
+app.post('/api/sources/save', async (req, res) => {
+  if (!Array.isArray(req.body?.sources)) {
+    noCacheJson(res, { ok: false, error: 'Ожидается массив sources' }, 400);
     return;
   }
-  noCacheJson(res, { error: 'Ошибка сохранения источников' }, 500);
+  const out = await saveAuthoritativeSourcesUnified(req.body.sources as SourceItem[]);
+  noCacheJson(res, out, out.status);
+});
+
+app.post('/api/sources/delete', async (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const out = await deleteSourceUnified(id);
+  noCacheJson(res, out, out.status);
 });
 
 app.get('/api/stream/index/status', (_req, res) => {
@@ -2500,10 +2529,11 @@ app.post('/api/epg/save', (req, res) => {
     return;
   }
   if (EpgParser.saveSources(epg)) {
-    noCacheJson(res, { ok: true });
+    const meta = stateLifecycle.bumpRevision('health_update', 'epg_sources');
+    noCacheJson(res, { ok: true, revision: meta.revision });
     return;
   }
-  noCacheJson(res, { error: 'Ошибка сохранения' }, 500);
+  noCacheJson(res, { ok: false, error: EpgParser.getLastError() || 'Ошибка сохранения' }, 500);
 });
 
 app.get('/api/epg/now', async (req, res) => {
@@ -2562,10 +2592,12 @@ app.post('/api/users/save', (req, res) => {
   if (!id) {
     const created = userAuth.create(login, password, name, playlists, enabled);
     if (!created.ok) {
-      noCacheJson(res, { error: created.error || 'Ошибка' }, 400);
+      const code = userAuth.getLastError() ? 500 : 400;
+      noCacheJson(res, { error: created.error || 'Ошибка' }, code);
       return;
     }
-    noCacheJson(res, { ok: true, user: created.user });
+    const meta = stateLifecycle.bumpRevision('users_update', created.user!.id, { action: 'create' });
+    noCacheJson(res, { ok: true, user: created.user, revision: meta.revision });
     return;
   }
 
@@ -2578,23 +2610,31 @@ app.post('/api/users/save', (req, res) => {
       playlists,
       enabled,
     });
+    if (userAuth.getLastError()) {
+      noCacheJson(res, { error: userAuth.getLastError() }, 500);
+      return;
+    }
     if (password) {
       const pwdRes = userAuth.update(synced.id, { password });
       if (!pwdRes.ok) {
-        noCacheJson(res, { error: pwdRes.error || 'Ошибка' }, 400);
+        const code = userAuth.getLastError() ? 500 : 400;
+        noCacheJson(res, { error: pwdRes.error || 'Ошибка' }, code);
         return;
       }
     }
-    noCacheJson(res, { ok: true, user: synced });
+    const meta = stateLifecycle.bumpRevision('users_update', synced.id, { action: 'upsert' });
+    noCacheJson(res, { ok: true, user: synced, revision: meta.revision });
     return;
   }
 
   const updated = userAuth.update(id, { name, playlists, enabled, password });
   if (!updated.ok) {
-    noCacheJson(res, { error: updated.error || 'Ошибка' }, 400);
+    const code = userAuth.getLastError() ? 500 : 400;
+    noCacheJson(res, { error: updated.error || 'Ошибка' }, code);
     return;
   }
-  noCacheJson(res, { ok: true });
+  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'update' });
+  noCacheJson(res, { ok: true, revision: meta.revision });
 });
 
 app.post('/api/users/sync-from-firebase', (req, res) => {
@@ -2613,6 +2653,11 @@ app.post('/api/users/sync-from-firebase', (req, res) => {
       : [];
     const enabled = Boolean((item as Record<string, unknown>).enabled);
     userAuth.upsertSyncedUser({ id, login, name, playlists, enabled });
+    const uErr = userAuth.getLastError();
+    if (uErr) {
+      noCacheJson(res, { ok: false, error: uErr }, 500);
+      return;
+    }
     count++;
   }
   noCacheJson(res, { ok: true, count });
@@ -2624,11 +2669,16 @@ app.post('/api/users/delete', (req, res) => {
     noCacheJson(res, { error: 'Пустой ID' }, 400);
     return;
   }
-  if (userAuth.delete(id)) {
-    noCacheJson(res, { ok: true });
+  if (!userAuth.find(id)) {
+    noCacheJson(res, { error: 'Пользователь не найден' }, 404);
     return;
   }
-  noCacheJson(res, { error: 'Не удалось удалить' }, 400);
+  if (userAuth.delete(id)) {
+    const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'delete' });
+    noCacheJson(res, { ok: true, revision: meta.revision });
+    return;
+  }
+  noCacheJson(res, { error: userAuth.getLastError() || 'Ошибка сохранения при удалении' }, 500);
 });
 
 app.get('/api/users/online', (_req, res) => {
@@ -2662,19 +2712,23 @@ app.post('/api/invites/save', (req, res) => {
   const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : true;
   const saved = userAuth.saveInvite({ email, name, playlists, enabled });
   if (!saved.ok) {
-    noCacheJson(res, { error: saved.error || 'Ошибка сохранения приглашения' }, 400);
+    const code = userAuth.getLastError() ? 500 : 400;
+    noCacheJson(res, { error: saved.error || 'Ошибка сохранения приглашения' }, code);
     return;
   }
-  noCacheJson(res, { ok: true, invite: saved.invite });
+  const meta = stateLifecycle.bumpRevision('users_update', saved.invite!.id, { action: 'invite_save' });
+  noCacheJson(res, { ok: true, invite: saved.invite, revision: meta.revision });
 });
 
 app.post('/api/invites/delete', (req, res) => {
   const id = String(req.body?.id || req.body?.email || '').trim();
   if (!id || !userAuth.deleteInvite(id)) {
-    noCacheJson(res, { error: 'Приглашение не найдено' }, 404);
+    const code = userAuth.getLastError() ? 500 : 404;
+    noCacheJson(res, { error: userAuth.getLastError() || 'Приглашение не найдено' }, code);
     return;
   }
-  noCacheJson(res, { ok: true });
+  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'invite_delete' });
+  noCacheJson(res, { ok: true, revision: meta.revision });
 });
 
 app.post('/api/invites/sync-from-firebase', (req, res) => {
@@ -2695,6 +2749,10 @@ app.post('/api/invites/sync-from-firebase', (req, res) => {
       enabled: raw.enabled !== undefined ? Boolean(raw.enabled) : true,
       claimed_uid: typeof raw.claimedUid === 'string' ? raw.claimedUid : '',
     });
+    if (!saved.ok && userAuth.getLastError()) {
+      noCacheJson(res, { ok: false, error: userAuth.getLastError() }, 500);
+      return;
+    }
     if (saved.ok) count++;
   }
   noCacheJson(res, { ok: true, count });
@@ -2780,48 +2838,55 @@ app.get('/api/catalog/sources', (_req, res) => {
   noCacheJson(res, { sources: catalogStore.getSources() });
 });
 
-app.post('/api/catalog/sources/save', (req, res) => {
-  const id = Number(req.body?.id) || 0;
+app.post('/api/catalog/sources/save', async (req, res) => {
+  const id = req.body?.id ? Number(req.body.id) || String(req.body.id) : undefined;
   const name = String(req.body?.name || '').trim();
   const type = String(req.body?.type || 'm3u').trim();
   const url = String(req.body?.url || '').trim();
-  const enabled = req.body?.enabled ? 1 : 0;
+  const enabled = Boolean(req.body?.enabled);
 
   if (!name || !url) {
-    noCacheJson(res, { error: 'Пустые поля' }, 400);
+    noCacheJson(res, { ok: false, error: 'Пустые поля' }, 400);
     return;
   }
-  if (id > 0) {
-    catalogStore.updateSource(id, { name, type, url, enabled });
-    noCacheJson(res, { ok: true, id });
+  const out = await upsertCatalogSourceUnified({ id, name, type, url, enabled });
+  noCacheJson(res, out, out.status);
+});
+
+app.post('/api/catalog/sources/delete', async (req, res) => {
+  const rawId = req.body?.id;
+  const cleanId =
+    typeof rawId === 'number'
+      ? rawId
+      : String(rawId || '').trim();
+  if (!cleanId || (typeof cleanId === 'number' && cleanId <= 0)) {
+    noCacheJson(res, { ok: false, error: 'Не указан ID источника' }, 400);
     return;
   }
-  const newId = catalogStore.addSource(name, type, url, enabled);
-  noCacheJson(res, { ok: true, id: newId });
+  const out = await deleteSourceUnified(cleanId);
+  noCacheJson(res, out, out.status);
 });
 
-app.post('/api/catalog/sources/delete', (req, res) => {
+app.post('/api/catalog/stream/delete', async (req, res) => {
   const id = Number(req.body?.id) || 0;
-  if (id > 0) catalogStore.deleteSource(id);
-  noCacheJson(res, { ok: true });
-});
-
-app.post('/api/catalog/stream/delete', (req, res) => {
-  const id = Number(req.body?.id) || 0;
-  if (id > 0) catalogStore.deleteStream(id);
-  noCacheJson(res, { ok: true });
+  const out = await deleteStreamUnified(id);
+  noCacheJson(res, out, out.status);
 });
 
 app.post('/api/catalog/check', async (req, res) => {
   const limit = Number(req.body?.limit) || 500;
   const result = await catalogStore.checkStreams(limit);
+  if (!result.persisted) {
+    noCacheJson(res, { ok: false, error: result.error || 'Не удалось сохранить результаты проверки' }, 500);
+    return;
+  }
   noCacheJson(res, {
     ok: true,
     output: `Checked ${result.checked} streams: ${result.online} online, ${result.offline} offline, ${result.unknown} unknown`,
   });
 });
 
-app.post('/api/catalog/to-playlist', (req, res) => {
+app.post('/api/catalog/to-playlist', async (req, res) => {
   const channelId = Number(req.body?.channel_id) || 0;
   const playlist = String(req.body?.playlist || '').trim();
   if (!channelId || !playlist) {
@@ -2865,24 +2930,46 @@ app.post('/api/catalog/to-playlist', (req, res) => {
     tvg_id: ch.tvg_id || '',
   });
 
-  if (storage.saveChannels(playlist, list)) {
-    noCacheJson(res, { ok: true, name: ch.name });
+  const saved = await savePlaylistChannelsUnified(playlist, list);
+  if (!saved.ok) {
+    noCacheJson(res, saved, saved.status);
     return;
   }
-  noCacheJson(res, { error: 'Ошибка сохранения' }, 500);
+  noCacheJson(res, { ok: true, name: ch.name, revision: saved.revision });
 });
 
 app.post('/api/catalog/aggregate', async (_req, res) => {
   const result = await catalogStore.aggregateFromSources();
+  if (!result.ok) {
+    noCacheJson(res, { ok: false, error: result.error || 'Ошибка агрегации каталога' }, 500);
+    return;
+  }
+  const meta = stateLifecycle.bumpRevision('reconcile', 'aggregate', {
+    addedChannels: result.addedChannels,
+    addedStreams: result.addedStreams,
+  });
   noCacheJson(res, {
     ok: true,
     output: `Aggregated ${result.addedChannels} channels and ${result.addedStreams} streams`,
+    revision: meta.revision,
   });
 });
 
-app.post('/api/catalog/import', (_req, res) => {
-  const result = catalogStore.importFromPlaylists();
-  noCacheJson(res, { ok: true, output: `Imported ${result.imported} channels` });
+app.post('/api/catalog/import', async (_req, res) => {
+  const out = await reconcileCatalogUnified();
+  if (!out.ok) {
+    noCacheJson(res, out, out.status);
+    return;
+  }
+  noCacheJson(res, {
+    ...out,
+    output: `Reconciled: imported ${out.imported}, removed ${out.removedChannels} channels / ${out.removedStreams} streams`,
+  });
+});
+
+app.post('/api/catalog/reconcile', async (_req, res) => {
+  const out = await reconcileCatalogUnified();
+  noCacheJson(res, out, out.status);
 });
 
 app.use('/api', (_req, res) => {
@@ -2893,6 +2980,8 @@ app.use((_req, res) => {
   res.status(404).send('404 Not Found');
 });
 
-app.listen(config.port, '0.0.0.0', () => {
-  console.log(`PQTV server listening on http://0.0.0.0:${config.port}`);
-});
+if (process.env.PQTV_NO_LISTEN !== '1') {
+  app.listen(config.port, '0.0.0.0', () => {
+    console.log(`PQTV server listening on http://0.0.0.0:${config.port}`);
+  });
+}

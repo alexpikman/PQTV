@@ -170,7 +170,7 @@ service cloud.firestore {
 
     function isValidCloudManifest(data) {
       return data.keys().hasAll(['docId', 'playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'updatedByUid', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['docId', 'playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'updatedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['docId', 'playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'revision', 'updatedByUid', 'createdAt', 'updatedAt'])
         && data.docId is string && data.docId == 'manifest'
         && isValidIdList(data.playlists, 100)
         && isValidIdList(data.sourceIds, 100)
@@ -179,6 +179,7 @@ service cloud.firestore {
         && isValidIdList(data.localUserIds, 500)
         && data.catalogChannelChunks is int && data.catalogChannelChunks >= 0 && data.catalogChannelChunks <= 500
         && data.catalogStreamChunks is int && data.catalogStreamChunks >= 0 && data.catalogStreamChunks <= 500
+        && (!('revision' in data) || (data.revision is int && data.revision >= 0))
         && data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
@@ -653,7 +654,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && incoming().updatedByUid == request.auth.uid
-        && incoming().diff(existing()).affectedKeys().hasOnly(['playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'updatedByUid', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'revision', 'updatedByUid', 'updatedAt']);
       allow delete: if isAdmin() && isValidId(docId);
     }
 

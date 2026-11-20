@@ -200,11 +200,26 @@ document.addEventListener('DOMContentLoaded', () => {
             if (cloud.hasCloud && cloud.snapshot) {
                 const restored = await apiRequest('/api/cloud/hydrate', 'POST', cloud.snapshot);
                 if (!restored || !restored.ok) {
+                    if (restored && (restored._httpStatus === 409 || restored.stale)) {
+                        const localRev = restored.localRevision ?? 0;
+                        const cloudRev = restored.incomingRevision ?? 0;
+                        const pushLocal = await uiConfirm(
+                            `В Firestore сохранён более старый снимок (rev ${cloudRev}), а на сервере уже более новая версия (rev ${localRev}). Отправить локальную базу в Firestore, чтобы не вернуть удалённые данные?`,
+                            'Конфликт версий базы'
+                        );
+                        if (pushLocal) {
+                            await syncCloudDatabase();
+                            if (statusEl) statusEl.textContent = `Firestore: локальная база (rev ${localRev}) отправлена в облако`;
+                        } else {
+                            if (statusEl) statusEl.textContent = `Локальная база сохранена (rev ${localRev}); облачный снимок пропущен`;
+                            showToast('Устаревший снимок из облака отклонён, локальные данные сохранены', 'info');
+                        }
+                        return;
+                    }
                     throw new Error(restored && restored.error ? restored.error : 'Не удалось восстановить базу из Firestore');
                 }
                 await refreshAdminAfterCloudHydrate();
-                if (statusEl) statusEl.textContent = 'Firestore: данные восстановлены из облачной базы';
-                scheduleCloudSync();
+                if (statusEl) statusEl.textContent = `Firestore: база восстановлена (rev ${restored.revision || 0})`;
                 return;
             }
             await syncCloudDatabase();
@@ -229,24 +244,25 @@ document.addEventListener('DOMContentLoaded', () => {
             if (res.status === 401) {
                 try { sessionStorage.removeItem('pqtv_admin_token'); } catch {}
                 window.location.href = '/login?clear_token=1';
-                return {};
+                return { ok: false, _httpStatus: 401 };
             }
             const data = await res.json().catch(() => ({}));
             if (!res.ok) {
-                console.error(`API ${res.status} ${url}`);
-                return data;
+                console.error(`API ${res.status} ${url}`, data);
+                return Object.assign({}, data, { ok: false, _httpStatus: res.status });
             }
             if (
                 fbAdminConnected &&
                 (['POST', 'PUT', 'DELETE'].includes(method) ||
-                    (method === 'GET' && url.startsWith('/api/source/rebuild')))
+                    (method === 'GET' && url.startsWith('/api/source/rebuild'))) &&
+                !url.startsWith('/api/cloud/hydrate')
             ) {
                 scheduleCloudSync();
             }
             return data;
         } catch (e) {
             console.error(`Fetch error ${url}:`, e);
-            return {};
+            return { ok: false, _httpStatus: 0, error: (e && e.message) ? e.message : 'Сетевая ошибка' };
         }
     }
 
@@ -688,14 +704,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const targetPl = parseContext.playlist;
         const chName = parseContext.channelName;
         channelsData[parseContext.channelIndex].url = url;
-        await apiRequest('/api/channels/save', 'POST', {
+        const res = await apiRequest('/api/channels/save', 'POST', {
             playlist: targetPl,
             channels: channelsData
         });
+        if (!res || !res.ok) {
+            showToast((res && res.error) || 'Ошибка сохранения канала', 'err');
+            await loadChannels();
+            return;
+        }
         showToast(`Ссылка обновлена для «${chName}»`, 'ok');
         parseContext = { playlist: null, channelIndex: -1, channelName: '' };
         if (parseTargetInfo) parseTargetInfo.classList.add('hidden');
         await selectPlaylist(targetPl || currentPlaylist);
+        loadCatalog().catch(() => {});
+        if (typeof loadHealthOverview === 'function') loadHealthOverview().catch(() => {});
     }
 
     async function addParsedToPlaylist(url, name) {
@@ -713,11 +736,13 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const save = await apiRequest('/api/channels/save', 'POST', { playlist: target, channels: list });
-        if (save.ok) {
+        if (save && save.ok) {
             if (target === currentPlaylist) await loadChannels();
             showToast(`Добавлено в «${target}.m3u»`, 'ok');
+            loadCatalog().catch(() => {});
+            if (typeof loadHealthOverview === 'function') loadHealthOverview().catch(() => {});
         } else {
-            showToast('Ошибка сохранения', 'err');
+            showToast((save && save.error) || 'Ошибка сохранения', 'err');
         }
     }
 
@@ -745,16 +770,23 @@ document.addEventListener('DOMContentLoaded', () => {
             if (txt) txt.textContent = 'Индексация...';
             try {
                 const res = await apiRequest('/api/stream/index/refresh', 'POST', { mode: 'all' });
+                if (!res || !res.ok) {
+                    showToast((res && res.error) || 'Ошибка обновления индекса', 'err');
+                    if (txt) txt.textContent = 'Обновить индекс';
+                    return;
+                }
                 const ok = Object.values(res.results || {}).filter(r => r.ok).length;
                 const total = res.total || 0;
                 if (txt) txt.textContent = `Готово (${ok}/${total}, ${res.elapsed}с)`;
                 await loadSources();
+                loadCatalog().catch(() => {});
                 setTimeout(() => { if (txt) txt.textContent = 'Обновить индекс'; }, 2500);
             } catch (e) {
                 showToast('Ошибка: ' + e.message, 'err');
                 if (txt) txt.textContent = 'Обновить индекс';
+            } finally {
+                btnRefreshIndex.disabled = false;
             }
-            btnRefreshIndex.disabled = false;
         };
     }
 
@@ -865,9 +897,22 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function deleteSource(idx) {
-        if (!(await uiConfirm('Удалить этот источник?'))) return;
-        sourcesData.splice(idx, 1);
-        await saveSources();
+        const src = sourcesData[idx];
+        if (!src) return;
+        if (!(await uiConfirm(`Удалить источник «${src.name || src.id}» и его потоки из каталога?`))) return;
+        const res = await apiRequest('/api/sources/delete', 'POST', { id: src.id });
+        if (!res || !res.ok) {
+            showToast((res && res.error) || 'Ошибка удаления источника', 'err');
+            await loadSources();
+            return;
+        }
+        showToast(
+            `Источник удалён (потоков: ${res.removedStreams || 0}, каналов: ${res.removedChannels || 0})`,
+            'ok'
+        );
+        await loadSources();
+        loadCatalog().catch(() => {});
+        if (fbAdminConnected) void syncCloudDatabase();
     }
 
     if (sourceForm) {
@@ -891,20 +936,33 @@ document.addEventListener('DOMContentLoaded', () => {
             if (orig) srcData.origin = orig;
             if (timeoutVal >= 3) srcData.timeoutSec = timeoutVal;
             if (ignoreTls) srcData.ignoreTlsErrors = true;
+            const prevSources = sourcesData.slice();
             if (id) {
                 const i = sourcesData.findIndex(s => s.id === id);
                 if (i >= 0) sourcesData[i] = srcData;
             } else {
                 sourcesData.push(srcData);
             }
-            await saveSources();
+            const ok = await saveSources();
+            if (!ok) {
+                sourcesData = prevSources;
+                renderSources();
+                return;
+            }
             closeForm();
         };
     }
 
     async function saveSources() {
-        await apiRequest('/api/sources/save', 'POST', { sources: sourcesData });
-        renderSources();
+        const res = await apiRequest('/api/sources/save', 'POST', { sources: sourcesData });
+        if (!res || !res.ok) {
+            showToast((res && res.error) || 'Ошибка сохранения источников', 'err');
+            await loadSources();
+            return false;
+        }
+        await loadSources();
+        loadCatalog().catch(() => {});
+        return true;
     }
 
     // ===== EPG =====
@@ -999,20 +1057,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 url: document.getElementById('epg-url').value.trim(),
                 enabled: document.getElementById('epg-enabled').checked
             };
+            const prevEpg = epgData.slice();
             if (id) {
                 const i = epgData.findIndex(x => x.id === id);
                 if (i >= 0) epgData[i] = data;
             } else {
                 epgData.push(data);
             }
-            await saveEpg();
+            const ok = await saveEpg();
+            if (!ok) {
+                epgData = prevEpg;
+                renderEpg();
+                return;
+            }
             closeForm();
         };
     }
 
     async function saveEpg() {
-        await apiRequest('/api/epg/save', 'POST', { epg: epgData });
+        const res = await apiRequest('/api/epg/save', 'POST', { epg: epgData });
+        if (!res || !res.ok) {
+            showToast((res && res.error) || 'Ошибка сохранения EPG', 'err');
+            await loadEpg();
+            return false;
+        }
         renderEpg();
+        return true;
     }
 
     // ===== COPY CHANNEL =====
@@ -1725,7 +1795,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (fbAdminConnected && inv.inFirestore && window.PQTVFirebase) {
                 await window.PQTVFirebase.deleteInviteAdmin(inv.id);
             }
-            await apiRequest('/api/invites/delete', 'POST', { id: inv.id, email: inv.email });
+            const existsLocally = localInvitesCache.some(li => li.id === inv.id || (li.email && li.email === inv.email));
+            if (existsLocally || !fbAdminConnected) {
+                const res = await apiRequest('/api/invites/delete', 'POST', { id: inv.id, email: inv.email });
+                if (!res || !res.ok) {
+                    showUsersError((res && res.error) || 'Ошибка удаления приглашения');
+                    return;
+                }
+            }
             await loadUsers();
             showToast('Приглашение удалено', 'ok');
         } catch (err) {
@@ -2285,10 +2362,17 @@ document.addEventListener('DOMContentLoaded', () => {
         modal.querySelectorAll('[data-del-stream]').forEach(b => {
             b.onclick = async () => {
                 if (!(await uiConfirm('Удалить поток?'))) return;
-                await apiRequest('/api/catalog/stream/delete', 'POST', { id: +b.dataset.delStream });
+                const res = await apiRequest('/api/catalog/stream/delete', 'POST', { id: +b.dataset.delStream });
+                if (!res || !res.ok) {
+                    showToast((res && res.error) || 'Не удалось удалить поток', 'err');
+                    return;
+                }
+                showToast('Поток удалён', 'ok');
                 modal.remove();
-                viewCatalogChannel(id);
-                loadCatalogStats();
+                if ((res.removedChannels || 0) === 0) {
+                    viewCatalogChannel(id);
+                }
+                loadCatalog();
             };
         });
 
@@ -2480,8 +2564,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function saveAllChannels() {
-        await apiRequest('/api/channels/save', 'POST', { playlist: currentPlaylist, channels: channelsData });
+        const res = await apiRequest('/api/channels/save', 'POST', { playlist: currentPlaylist, channels: channelsData });
+        if (!res || !res.ok) {
+            showToast((res && res.error) || 'Ошибка сохранения плейлиста', 'err');
+            await loadChannels();
+            return false;
+        }
         renderChannels();
+        loadCatalog().catch(() => {});
+        if (typeof loadHealthOverview === 'function') loadHealthOverview().catch(() => {});
+        return true;
     }
 
     // ===== PLAYLIST ACTIONS =====
@@ -2491,8 +2583,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const name = await uiPrompt('Имя нового плейлиста (латиница, цифры, _ -):', '', 'Новый плейлист');
             if (!name) return;
             const res = await apiRequest('/api/playlists', 'POST', { name });
-            if (res.ok) selectPlaylist(name);
-            else showToast(res.error || 'Ошибка создания плейлиста', 'err');
+            if (res && res.ok) {
+                await selectPlaylist(name);
+                loadCatalogPlaylists().catch(() => {});
+            } else {
+                showToast((res && res.error) || 'Ошибка создания плейлиста', 'err');
+            }
         };
     }
 
@@ -2503,9 +2599,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function deletePlaylist(name) {
-        if (!(await uiConfirm(`Удалить плейлист ${name}.m3u?`))) return;
+        if (!(await uiConfirm(`Удалить плейлист ${name}.m3u? Каталог и доступы пользователей будут обновлены.`))) return;
         const res = await apiRequest('/api/playlists/delete', 'POST', { name });
-        if (res.ok) {
+        if (res && res.ok) {
             if (currentPlaylist === name) {
                 currentPlaylist = null;
                 channelsData = [];
@@ -2517,10 +2613,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 closeForm();
                 renderChannels();
             }
+            if (fbAdminConnected && window.PQTVFirebase) {
+                await window.PQTVFirebase.deletePlaylistFromCloud(name).catch(() => {});
+                await syncCloudDatabase().catch(() => {});
+            }
             showToast(`Плейлист ${name}.m3u удалён`, 'ok');
-            loadPlaylists();
+            await Promise.all([
+                loadPlaylists(),
+                loadUsers().catch(() => {}),
+                loadCatalog().catch(() => {}),
+                typeof loadHealthOverview === 'function' ? loadHealthOverview().catch(() => {}) : Promise.resolve(),
+            ]);
         } else {
-            showToast(res.error || 'Ошибка удаления плейлиста', 'err');
+            showToast((res && res.error) || 'Ошибка удаления плейлиста', 'err');
         }
     }
 
@@ -3713,6 +3818,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         showToast(`${chName}: ${nextPaused ? 'приостановлен во всех плейлистах' : 'возобновлён'}`, 'ok');
                         await syncLocalMutationToPlaylists();
                         await loadHealthOverview();
+                    } else {
+                        showToast((res && res.error) || 'Не удалось изменить статус паузы', 'err');
                     }
                     return;
                 }
@@ -3724,6 +3831,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         showToast(res.message || 'Канал всё ещё не работает — возвращён в нерабочие с меткой!', 'err');
                     } else if (res && res.ok) {
                         showToast('Поток проверен и отмечен решённым', 'ok');
+                    } else {
+                        showToast((res && res.error) || 'Ошибка отметки решения', 'err');
                     }
                     await Promise.all([
                         loadHealthOverview(),
@@ -3738,6 +3847,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         showToast(`Канал «${chName}» удалён из плейлистов: ${(res.updatedPlaylists || []).join(', ')}`, 'ok');
                         await syncLocalMutationToPlaylists();
                         await loadHealthOverview();
+                    } else {
+                        showToast((res && res.error) || 'Ошибка удаления канала', 'err');
                     }
                 }
             };
@@ -3747,7 +3858,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
     async function syncLocalMutationToPlaylists() {
         await loadPlaylists();
         if (currentPlaylist) await loadChannels();
-        scheduleCloudSync();
+        loadCatalog().catch(() => {});
+        if (fbAdminConnected) void syncCloudDatabase();
     }
 
     function openHealthReplaceModal(channelName) {
@@ -3924,6 +4036,137 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         }
 
         loadHealthOverview();
+    })();
+
+    (function initBackupsAndLifecycleModal() {
+        const modal = document.getElementById('backups-modal');
+        const btnOpen = document.getElementById('btn-open-backups');
+        const btnClose = document.getElementById('backups-modal-close');
+        const backdrop = document.getElementById('backups-modal-backdrop');
+        const btnReconcile = document.getElementById('btn-run-reconcile');
+        const revLabel = document.getElementById('lifecycle-revision-label');
+        const backupsBox = document.getElementById('backups-list-container');
+        const logsBox = document.getElementById('lifecycle-logs-container');
+        if (!modal || !btnOpen) return;
+
+        const closeModal = () => modal.classList.add('hidden');
+        if (btnClose) btnClose.onclick = closeModal;
+        if (backdrop) backdrop.onclick = closeModal;
+
+        async function loadModalData() {
+            const [bRes, lRes] = await Promise.all([
+                apiRequest('/api/playlists/backups'),
+                apiRequest('/api/lifecycle/logs?limit=40'),
+            ]);
+            if (revLabel) {
+                const rev = (lRes && (lRes.revision ?? (lRes.meta && lRes.meta.revision))) ?? '—';
+                revLabel.textContent = `Ревизия базы: rev ${rev}`;
+            }
+
+            if (backupsBox) {
+                const list = (bRes && Array.isArray(bRes.backups)) ? bRes.backups : [];
+                if (list.length === 0) {
+                    backupsBox.innerHTML = '<p class="placeholder-text" style="margin:12px 0;">Резервных копий (.bak) пока нет</p>';
+                } else {
+                    backupsBox.innerHTML = `<table class="ch-table"><thead><tr>
+                        <th>Файл</th>
+                        <th>Плейлист</th>
+                        <th style="width:90px;">Размер</th>
+                        <th style="width:150px;">Создана</th>
+                        <th style="width:170px; text-align:right;">Действия</th>
+                    </tr></thead><tbody>` + list.map((bk) => `<tr>
+                        <td style="font-family:monospace; font-size:11.5px;">${escapeHtml(bk.filename)}</td>
+                        <td><span class="cat-badge violet">${escapeHtml(bk.playlistName || bk.playlist || '')}</span></td>
+                        <td style="font-size:12px; color:var(--muted);">${fmtBytes(bk.size)}</td>
+                        <td style="font-size:12px; color:var(--muted);">${fmtDateTime(bk.createdAt ? Math.floor(bk.createdAt / 1000) : 0)}</td>
+                        <td style="text-align:right; white-space:nowrap;">
+                            <button type="button" class="btn btn-secondary" data-bak-restore="${escapeHtml(bk.filename)}" style="padding:4px 9px; font-size:11.5px;">Восстановить</button>
+                            <button type="button" class="icon-btn danger" data-bak-del="${escapeHtml(bk.filename)}" title="Удалить">${I.trash}</button>
+                        </td>
+                    </tr>`).join('') + '</tbody></table>';
+
+                    backupsBox.querySelectorAll('[data-bak-restore]').forEach((btn) => {
+                        btn.onclick = async () => {
+                            const fn = btn.dataset.bakRestore;
+                            if (!(await uiConfirm(`Восстановить плейлист из копии ${fn}?`))) return;
+                            const res = await apiRequest('/api/playlists/backups/restore', 'POST', { filename: fn });
+                            if (!res || !res.ok) {
+                                showToast((res && res.error) || 'Не удалось восстановить копию', 'err');
+                                return;
+                            }
+                            showToast(`Восстановлен плейлист ${res.playlist}.m3u`, 'ok');
+                            await Promise.all([
+                                loadPlaylists(),
+                                loadCatalog().catch(() => {}),
+                                loadUsers().catch(() => {}),
+                                loadHealthOverview().catch(() => {}),
+                            ]);
+                            if (currentPlaylist === res.playlist) await loadChannels();
+                            await loadModalData();
+                        };
+                    });
+
+                    backupsBox.querySelectorAll('[data-bak-del]').forEach((btn) => {
+                        btn.onclick = async () => {
+                            const fn = btn.dataset.bakDel;
+                            if (!(await uiConfirm(`Удалить резервную копию ${fn}?`))) return;
+                            const res = await apiRequest('/api/playlists/backups/delete', 'POST', { filename: fn });
+                            if (!res || !res.ok) {
+                                showToast((res && res.error) || 'Не удалось удалить копию', 'err');
+                                return;
+                            }
+                            showToast('Резервная копия удалена', 'ok');
+                            await loadModalData();
+                        };
+                    });
+                }
+            }
+
+            if (logsBox) {
+                const logs = (lRes && Array.isArray(lRes.logs)) ? lRes.logs : [];
+                if (logs.length === 0) {
+                    logsBox.innerHTML = '<p class="placeholder-text" style="margin:12px 0;">Операций пока нет</p>';
+                } else {
+                    logsBox.innerHTML = `<table class="ch-table"><thead><tr>
+                        <th style="width:70px;">Rev</th>
+                        <th style="width:150px;">Действие</th>
+                        <th>Объект</th>
+                        <th style="width:140px;">Время</th>
+                    </tr></thead><tbody>` + logs.map((entry) => `<tr>
+                        <td><span class="cat-badge violet">r${entry.revision}</span></td>
+                        <td style="font-family:monospace; font-size:11.5px; color:#fff;">${escapeHtml(entry.action)}</td>
+                        <td style="font-size:12px; color:var(--text-dim);">${escapeHtml(entry.target || '—')}</td>
+                        <td style="font-size:11.5px; color:var(--muted);">${escapeHtml(entry.at ? new Date(entry.at).toLocaleString('ru-RU') : '—')}</td>
+                    </tr>`).join('') + '</tbody></table>';
+                }
+            }
+        }
+
+        btnOpen.onclick = async () => {
+            modal.classList.remove('hidden');
+            await loadModalData();
+        };
+
+        if (btnReconcile) {
+            btnReconcile.onclick = async () => {
+                btnReconcile.disabled = true;
+                try {
+                    const res = await apiRequest('/api/catalog/reconcile', 'POST', {});
+                    if (!res || !res.ok) {
+                        showToast((res && res.error) || 'Ошибка синхронизации каталога', 'err');
+                        return;
+                    }
+                    showToast(`Синхронизировано (удалено каналов: ${res.removedChannels || 0}, потоков: ${res.removedStreams || 0})`, 'ok');
+                    await Promise.all([
+                        loadCatalog().catch(() => {}),
+                        loadHealthOverview().catch(() => {}),
+                        loadModalData(),
+                    ]);
+                } finally {
+                    btnReconcile.disabled = false;
+                }
+            };
+        }
     })();
 
     // ===== СТАРТ: открываем каталог по умолчанию =====

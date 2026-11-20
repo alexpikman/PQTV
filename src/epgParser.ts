@@ -3,6 +3,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { config } from './config.js';
 import { normalizeChannelName } from './streamParser.js';
+import { atomicWriteJsonSync } from './persistence.js';
 
 export interface EpgSource {
   id: string;
@@ -55,6 +56,11 @@ function parseXmltvTime(s: string): number {
 export class EpgParser {
   private static lookupCache = new Map<string, Record<string, string>>();
   private static inflightBuilds = new Map<string, Promise<string>>();
+  private static lastError = '';
+
+  static getLastError(): string {
+    return this.lastError;
+  }
 
   private static getEpgFile(): string {
     return path.join(config.dataDir, 'epg.json');
@@ -80,14 +86,13 @@ export class EpgParser {
   }
 
   static saveSources(epg: EpgSource[]): boolean {
-    try {
-      const file = this.getEpgFile();
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify(epg, null, 4), 'utf-8');
-      return true;
-    } catch {
+    this.lastError = '';
+    const res = atomicWriteJsonSync(this.getEpgFile(), epg, 4);
+    if (!res.ok) {
+      this.lastError = res.error || 'Ошибка записи epg.json';
       return false;
     }
+    return true;
   }
 
   private static getEnabledSources(): EpgSource[] {

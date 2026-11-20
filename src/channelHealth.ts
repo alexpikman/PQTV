@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { Channel, parseM3uFile } from './m3uParser.js';
+import { atomicWriteJsonSync } from './persistence.js';
 import { storage } from './storage.js';
 import { StreamParser } from './streamParser.js';
 import { checkStreamDeep, DeepCheckResult, DiagCode } from './streamChecker.js';
@@ -68,11 +69,35 @@ function inferDiagCodeFromReason(reason: string): DiagCode {
 }
 
 class ChannelHealthManager {
-  private filePath = path.join(config.dataDir, 'channel_health.json');
   private loaded = false;
   private urlDiagnostics: Record<string, UrlDiagnosticEntry> = {};
   private issues: Record<string, ChannelIssueRecord> = {};
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastError = '';
+
+  private get filePath(): string {
+    return path.join(config.dataDir, 'channel_health.json');
+  }
+
+  getLastError(): string {
+    return this.lastError;
+  }
+
+  resetState(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.loaded = false;
+    this.urlDiagnostics = {};
+    this.issues = {};
+    this.lastError = '';
+  }
+
+  reloadFromDisk(): void {
+    this.resetState();
+    this.ensureLoaded();
+  }
 
   private ensureLoaded(): void {
     if (this.loaded) return;
@@ -91,23 +116,22 @@ class ChannelHealthManager {
     }
   }
 
-  private saveToDisk(): void {
-    try {
-      this.pruneDiagnostics();
-      fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
-      const tmp = `${this.filePath}.tmp`;
-      fs.writeFileSync(
-        tmp,
-        JSON.stringify({
-          urlDiagnostics: this.urlDiagnostics,
-          issues: this.issues,
-        }),
-        'utf-8'
-      );
-      fs.renameSync(tmp, this.filePath);
-    } catch {
-      // ignore write error
+  private saveToDisk(): boolean {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
     }
+    this.lastError = '';
+    this.pruneDiagnostics();
+    const res = atomicWriteJsonSync(this.filePath, {
+      urlDiagnostics: this.urlDiagnostics,
+      issues: this.issues,
+    });
+    if (!res.ok) {
+      this.lastError = res.error || 'Не удалось сохранить channel_health.json';
+      return false;
+    }
+    return true;
   }
 
   private scheduleSave(): void {
@@ -116,6 +140,23 @@ class ChannelHealthManager {
       this.saveTimer = null;
       this.saveToDisk();
     }, 350);
+  }
+
+  pruneOrphanedIssues(): { removed: number; persisted: boolean; error?: string } {
+    this.ensureLoaded();
+    const live = this.collectChannelPlaylistOccurrences();
+    let removed = 0;
+    for (const key of Object.keys(this.issues)) {
+      if (!live.has(key)) {
+        delete this.issues[key];
+        removed++;
+      }
+    }
+    if (removed > 0) {
+      const ok = this.saveToDisk();
+      return { removed, persisted: ok, ...(ok ? {} : { error: this.lastError }) };
+    }
+    return { removed: 0, persisted: true };
   }
 
   private pruneDiagnostics(): void {
@@ -731,7 +772,13 @@ class ChannelHealthManager {
           modified = true;
         }
       }
-      if (modified && storage.saveChannels(pl, items)) {
+      if (modified) {
+        if (!storage.saveChannels(pl, items)) {
+          return {
+            ok: false,
+            error: storage.getLastError() || `Не удалось сохранить плейлист ${pl}`,
+          };
+        }
         updatedPlaylists.push(pl);
       }
     }
@@ -768,7 +815,12 @@ class ChannelHealthManager {
       this.issues[key].updatedAt = now;
     }
 
-    this.saveToDisk();
+    if (!this.saveToDisk()) {
+      return {
+        ok: false,
+        error: this.lastError || 'Не удалось сохранить состояние здоровья каналов',
+      };
+    }
     return {
       ok: true,
       updatedPlaylists,
@@ -799,7 +851,13 @@ class ChannelHealthManager {
           modified = true;
         }
       }
-      if (modified && storage.saveChannels(pl, items)) {
+      if (modified) {
+        if (!storage.saveChannels(pl, items)) {
+          return {
+            ok: false,
+            error: storage.getLastError() || `Не удалось сохранить плейлист ${pl}`,
+          };
+        }
         updatedPlaylists.push(pl);
       }
     }
@@ -827,9 +885,13 @@ class ChannelHealthManager {
       const items = parseM3uFile(storage.getPlaylistPath(pl));
       const filtered = items.filter((ch) => (ch.name || '').trim().toLowerCase() !== key);
       if (filtered.length !== items.length) {
-        if (storage.saveChannels(pl, filtered)) {
-          updatedPlaylists.push(pl);
+        if (!storage.saveChannels(pl, filtered)) {
+          return {
+            ok: false,
+            error: storage.getLastError() || `Не удалось обновить плейлист ${pl}`,
+          };
         }
+        updatedPlaylists.push(pl);
       }
     }
 
@@ -837,14 +899,16 @@ class ChannelHealthManager {
       return { ok: false, error: 'Канал не найден в плейлистах' };
     }
 
-    // Remove channel issue if it no longer exists in any playlist
     const remaining = this.collectChannelPlaylistOccurrences(key);
     if (!remaining.has(key)) {
       delete this.issues[key];
       this.saveToDisk();
     }
 
-    catalogStore.importFromPlaylists();
+    const rec = catalogStore.importFromPlaylists();
+    if (!rec.persisted) {
+      return { ok: false, error: rec.error || 'Не удалось обновить каталог после удаления канала' };
+    }
     return { ok: true, updatedPlaylists };
   }
 
@@ -1137,14 +1201,19 @@ class ChannelHealthManager {
     };
   }
 
-  hydrateState(raw: Partial<ChannelHealthState> | null | undefined): boolean {
-    if (!raw || typeof raw !== 'object') return false;
+  hydrateState(raw: Partial<ChannelHealthState> | null | undefined): { ok: boolean; error?: string } {
+    if (!raw || typeof raw !== 'object') {
+      return { ok: false, error: 'Некорректные данные channel_health' };
+    }
     this.urlDiagnostics =
       raw.urlDiagnostics && typeof raw.urlDiagnostics === 'object' ? raw.urlDiagnostics : {};
     this.issues = raw.issues && typeof raw.issues === 'object' ? raw.issues : {};
     this.loaded = true;
-    this.saveToDisk();
-    return true;
+    const saved = this.saveToDisk();
+    return {
+      ok: saved,
+      ...(saved ? {} : { error: this.lastError || 'Не удалось сохранить channel_health.json' }),
+    };
   }
 }
 

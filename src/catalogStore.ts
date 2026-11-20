@@ -2,8 +2,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { parseM3uFile } from './m3uParser.js';
+import { atomicWriteJsonSync } from './persistence.js';
 import { storage } from './storage.js';
-import { normalizeChannelName, StreamParser } from './streamParser.js';
+import { normalizeChannelName, SourceItem, StreamParser } from './streamParser.js';
 
 import {
   checkStreamDeep,
@@ -46,6 +47,7 @@ export interface CatalogChannel {
 
 export interface CatalogSource {
   id: number;
+  stringId?: string;
   name: string;
   type: string;
   url: string;
@@ -54,6 +56,16 @@ export interface CatalogSource {
   last_run?: number;
   last_status?: string;
   total_found?: number;
+}
+
+export interface ReconcileResult {
+  ok: boolean;
+  imported: number;
+  removedChannels: number;
+  removedStreams: number;
+  updatedChannels: number;
+  persisted: boolean;
+  error?: string;
 }
 
 const STREAM_STATUS_TTL_SECONDS: Record<StreamCheckStatus, number> = {
@@ -90,30 +102,63 @@ export async function checkStreamUrl(
   });
 }
 
-/**
- * In-memory replacement for MySQL CatalogDB (`pqtv_catalog`).
- * Seeded from local playlists and sources.json so Catalog works out of the box without MySQL.
- */
+function toCatalogSource(src: SourceItem): CatalogSource {
+  return {
+    id: Number(src.catalogId) || 1,
+    stringId: src.id,
+    name: src.name,
+    type: src.type || 'm3u',
+    url: src.url,
+    enabled: src.enabled ? 1 : 0,
+    created_at: Number(src.created_at) || Math.floor(Date.now() / 1000),
+    ...(src.last_run !== undefined ? { last_run: src.last_run } : {}),
+    ...(src.last_status !== undefined ? { last_status: src.last_status } : {}),
+    ...(src.total_found !== undefined ? { total_found: src.total_found } : {}),
+  };
+}
+
 class CatalogStore {
   private channels: CatalogChannel[] = [];
   private streams: CatalogStream[] = [];
-  private sources: CatalogSource[] = [];
   private nextChannelId = 1;
   private nextStreamId = 1;
-  private nextSourceId = 1;
   private initialized = false;
-  private catalogFile = path.join(config.dataDir, 'catalog.json');
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
+  private lastSaveError = '';
+
+  private get catalogFile(): string {
+    return path.join(config.dataDir, 'catalog.json');
+  }
+
+  getLastSaveError(): string {
+    return this.lastSaveError;
+  }
+
+  resetState(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.channels = [];
+    this.streams = [];
+    this.nextChannelId = 1;
+    this.nextStreamId = 1;
+    this.initialized = false;
+    this.lastSaveError = '';
+  }
+
+  reloadFromDisk(): void {
+    this.resetState();
+    this.ensureInit();
+  }
 
   private ensureInit(): void {
     if (this.initialized) return;
     this.initialized = true;
     if (!this.loadFromDisk()) {
-      this.seedFromLocalFiles();
-      this.saveToDisk();
+      this.reconcile({ save: true });
     } else {
-      // Merge any new playlists that appeared on disk
-      this.importFromPlaylists();
+      this.reconcile({ save: true });
     }
   }
 
@@ -126,47 +171,60 @@ class CatalogStore {
         sources?: CatalogSource[];
         nextChannelId?: number;
         nextStreamId?: number;
-        nextSourceId?: number;
       };
       if (!Array.isArray(raw.channels) || !Array.isArray(raw.streams)) return false;
       this.channels = raw.channels;
       this.streams = raw.streams;
-      this.sources = Array.isArray(raw.sources) ? raw.sources : [];
+
+      // DEF-08: One-time migration if catalog.json had sources but data/sources.json was missing/empty
+      if (Array.isArray(raw.sources) && raw.sources.length > 0 && StreamParser.getSources().length === 0) {
+        const migrated: SourceItem[] = raw.sources.map((s) => ({
+          id: `src_${Number(s.id) || 1}`,
+          catalogId: Number(s.id) || 1,
+          name: s.name || `Источник ${s.id}`,
+          type: s.type || 'm3u',
+          url: s.url || '',
+          enabled: Boolean(s.enabled),
+          created_at: Number(s.created_at) || Math.floor(Date.now() / 1000),
+          last_run: s.last_run,
+          last_status: s.last_status,
+          total_found: s.total_found,
+        }));
+        StreamParser.saveSources(migrated);
+      }
+
       this.nextChannelId =
         Number(raw.nextChannelId) ||
-        Math.max(1, ...this.channels.map((c) => c.id + 1));
+        Math.max(1, ...this.channels.map((c) => Number(c.id) + 1));
       this.nextStreamId =
         Number(raw.nextStreamId) ||
-        Math.max(1, ...this.streams.map((s) => s.id + 1));
-      this.nextSourceId =
-        Number(raw.nextSourceId) ||
-        Math.max(1, ...this.sources.map((s) => s.id + 1));
+        Math.max(1, ...this.streams.map((s) => Number(s.id) + 1));
       return true;
     } catch {
       return false;
     }
   }
 
-  private saveToDisk(): void {
-    try {
-      fs.mkdirSync(path.dirname(this.catalogFile), { recursive: true });
-      const tmp = `${this.catalogFile}.tmp`;
-      fs.writeFileSync(
-        tmp,
-        JSON.stringify({
-          nextChannelId: this.nextChannelId,
-          nextStreamId: this.nextStreamId,
-          nextSourceId: this.nextSourceId,
-          channels: this.channels,
-          streams: this.streams,
-          sources: this.sources,
-        }),
-        'utf-8'
-      );
-      fs.renameSync(tmp, this.catalogFile);
-    } catch {
-      // ignore disk write errors
+  saveToDisk(): { ok: boolean; error?: string } {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
     }
+    this.lastSaveError = '';
+    const authSources = this.getSources();
+    const nextSourceId = authSources.reduce((m, s) => Math.max(m, s.id + 1), 1);
+    const res = atomicWriteJsonSync(this.catalogFile, {
+      nextChannelId: this.nextChannelId,
+      nextStreamId: this.nextStreamId,
+      nextSourceId,
+      channels: this.channels,
+      streams: this.streams,
+    });
+    if (!res.ok) {
+      this.lastSaveError = res.error || 'Не удалось сохранить catalog.json';
+      return { ok: false, error: this.lastSaveError };
+    }
+    return { ok: true };
   }
 
   private scheduleSaveToDisk(): void {
@@ -177,29 +235,65 @@ class CatalogStore {
     }, 500);
   }
 
-  private seedFromLocalFiles(): void {
+  /**
+   * DEF-01, DEF-02, DEF-03: Full bidirectional reconciliation between live .m3u playlists,
+   * authoritative StreamParser sources, and catalog channels/streams.
+   */
+  reconcile(opts: { save?: boolean } = {}): ReconcileResult {
+    this.initialized = true;
     const now = Math.floor(Date.now() / 1000);
-    for (const s of StreamParser.getSources()) {
-      this.sources.push({
-        id: this.nextSourceId++,
-        name: s.name,
-        type: s.type || 'm3u',
-        url: s.url,
-        enabled: s.enabled ? 1 : 0,
-        created_at: now,
-      });
-    }
-    this.importFromPlaylists();
-  }
 
-  importFromPlaylists(): { imported: number } {
     const playlists = storage.getPlaylists();
-    let imported = 0;
-    const now = Math.floor(Date.now() / 1000);
+    const livePlaylistUrls = new Set<string>();
+    const playlistItems = new Map<string, ReturnType<typeof parseM3uFile>>();
 
-    for (const pl of playlists) {
-      const file = path.join(config.playlistDir, `${pl}.m3u`);
-      const items = parseM3uFile(file);
+    for (const rawPl of playlists) {
+      const pl = this.stripM3u(rawPl);
+      if (!pl) continue;
+      const items = parseM3uFile(storage.getPlaylistPath(rawPl));
+      playlistItems.set(pl, items);
+      for (const ch of items) {
+        const url = (ch.url || '').trim();
+        if (url) livePlaylistUrls.add(url);
+      }
+    }
+
+    const authSources = StreamParser.getSources();
+    const activeSourcesByCatalogId = new Map<number, SourceItem>();
+    for (const s of authSources) {
+      if (s.catalogId && s.catalogId > 0) {
+        activeSourcesByCatalogId.set(s.catalogId, s);
+      }
+    }
+
+    // 1. Prune obsolete streams (from deleted playlists or deleted sources) & dedup
+    const prevStreamCount = this.streams.length;
+    const seenStreamKeys = new Set<string>();
+    const nextStreams: CatalogStream[] = [];
+    for (const st of this.streams) {
+      const cleanUrl = (st.url || '').trim();
+      if (!cleanUrl) continue;
+
+      if (st.source_id === null || st.source_id === undefined) {
+        if (!livePlaylistUrls.has(cleanUrl)) continue;
+      } else {
+        const activeSrc = activeSourcesByCatalogId.get(Number(st.source_id));
+        if (!activeSrc) continue;
+        st.source_name = activeSrc.name;
+        st.source_type = activeSrc.type || 'm3u';
+      }
+
+      const dedupKey = `${st.channel_id}|${st.source_id ?? 'pl'}|${cleanUrl}`;
+      if (seenStreamKeys.has(dedupKey)) continue;
+      seenStreamKeys.add(dedupKey);
+      nextStreams.push({ ...st, url: cleanUrl });
+    }
+    this.streams = nextStreams;
+    const removedStreams = Math.max(0, prevStreamCount - this.streams.length);
+
+    // 2. Ensure all channels & streams present in live .m3u files exist in catalog
+    let imported = 0;
+    for (const [pl, items] of playlistItems.entries()) {
       for (const ch of items) {
         const name = (ch.name || '').trim();
         if (!name) continue;
@@ -221,19 +315,73 @@ class CatalogStore {
           this.channels.push(existing);
           imported++;
         } else {
-          existing.in_my_pl = 1;
-          if (!existing.used_in.includes(pl)) existing.used_in.push(pl);
           if (!existing.logo && ch.logo) existing.logo = ch.logo;
           if (!existing.tvg_id && ch.tvg_id) existing.tvg_id = ch.tvg_id;
-          existing.updated_at = now;
         }
-        if (ch.url) {
-          this.addStreamInternal(existing.id, ch.url, null, null, null);
+
+        const cleanUrl = (ch.url || '').trim();
+        if (cleanUrl) {
+          this.addStreamInternal(existing.id, cleanUrl, null, null, null);
         }
       }
     }
-    if (imported > 0) this.saveToDisk();
-    return { imported };
+
+    // 3. Recompute used_in & in_my_pl from live playlists and remove orphan channels
+    const ownership = this.buildLivePlaylistOwnershipMap();
+    const streamsByChannel = this.buildStreamsByChannelMap();
+    const prevChannelCount = this.channels.length;
+    let updatedChannels = 0;
+    const nextChannels: CatalogChannel[] = [];
+
+    for (const ch of this.channels) {
+      const liveUsedIn = this.resolveLiveUsedIn(ch, streamsByChannel, ownership);
+      const chStreams = streamsByChannel.get(ch.id) || [];
+
+      if (liveUsedIn.length === 0 && chStreams.length === 0) {
+        // Channel has no active playlists AND no active source streams -> prune
+        continue;
+      }
+
+      const nextInMyPl = liveUsedIn.length > 0 ? 1 : 0;
+      const usedChanged =
+        ch.in_my_pl !== nextInMyPl ||
+        ch.used_in.length !== liveUsedIn.length ||
+        ch.used_in.some((v, idx) => v !== liveUsedIn[idx]);
+
+      if (usedChanged) {
+        ch.in_my_pl = nextInMyPl;
+        ch.used_in = liveUsedIn;
+        ch.updated_at = now;
+        updatedChannels++;
+      }
+      nextChannels.push(ch);
+    }
+
+    this.channels = nextChannels;
+    const removedChannels = Math.max(0, prevChannelCount - this.channels.length);
+
+    let persisted = true;
+    let error: string | undefined;
+    if (opts.save !== false) {
+      const saveRes = this.saveToDisk();
+      persisted = saveRes.ok;
+      error = saveRes.error;
+    }
+
+    return {
+      ok: persisted,
+      imported,
+      removedChannels,
+      removedStreams,
+      updatedChannels,
+      persisted,
+      ...(error ? { error } : {}),
+    };
+  }
+
+  importFromPlaylists(): ReconcileResult {
+    this.ensureInit();
+    return this.reconcile({ save: true });
   }
 
   private findByNameInternal(name: string): CatalogChannel | undefined {
@@ -255,13 +403,16 @@ class CatalogStore {
     sourceName: string | null,
     sourceType: string | null
   ): boolean {
-    if (!url) return false;
-    const dup = this.streams.find((s) => s.channel_id === channelId && s.url === url);
+    const cleanUrl = url.trim();
+    if (!cleanUrl) return false;
+    const dup = this.streams.find(
+      (s) => s.channel_id === channelId && s.url === cleanUrl && s.source_id === sourceId
+    );
     if (dup) return false;
     this.streams.push({
       id: this.nextStreamId++,
       channel_id: channelId,
-      url,
+      url: cleanUrl,
       source_id: sourceId,
       source_name: sourceName,
       source_type: sourceType,
@@ -377,6 +528,7 @@ class CatalogStore {
     this.ensureInit();
     const ownership = this.buildLivePlaylistOwnershipMap();
     const streamsByChannel = this.buildStreamsByChannelMap();
+    const authSources = this.getSources();
     let inMyPlCount = 0;
     const now = Math.floor(Date.now() / 1000);
     for (const c of this.channels) {
@@ -389,8 +541,8 @@ class CatalogStore {
       in_my_pl: inMyPlCount,
       streams: this.streams.length,
       streams_online: this.streams.filter((s) => s.online === 1 && isStreamStatusFresh(s, now)).length,
-      sources: this.sources.length,
-      sources_enabled: this.sources.filter((s) => s.enabled === 1).length,
+      sources: authSources.length,
+      sources_enabled: authSources.filter((s) => s.enabled === 1).length,
     };
   }
 
@@ -507,57 +659,193 @@ class CatalogStore {
         const fresh = isStreamStatusFresh(stream);
         return {
           ...stream,
-          status: !fresh || stream.online === 0
-            ? 'unknown'
-            : stream.online === 1
-              ? 'online'
-              : stream.online === -1
-                ? 'offline'
-                : 'unknown',
+          status:
+            !fresh || stream.online === 0
+              ? 'unknown'
+              : stream.online === 1
+                ? 'online'
+                : stream.online === -1
+                  ? 'offline'
+                  : 'unknown',
         };
       }),
     };
   }
 
+  /**
+   * DEF-08: Always reflects authoritative StreamParser (`data/sources.json`).
+   */
   getSources(): CatalogSource[] {
-    this.ensureInit();
-    return [...this.sources].sort((a, b) => b.id - a.id);
+    return StreamParser.getSources()
+      .map(toCatalogSource)
+      .sort((a, b) => b.id - a.id);
   }
 
-  addSource(name: string, type: string, url: string, enabled = 1): number {
+  addSource(name: string, type: string, url: string, enabled = 1): { ok: boolean; id?: number; error?: string } {
     this.ensureInit();
-    const id = this.nextSourceId++;
-    this.sources.push({
-      id,
+    const res = StreamParser.upsertCatalogSource({
       name,
       type,
       url,
-      enabled,
-      created_at: Math.floor(Date.now() / 1000),
+      enabled: Boolean(enabled),
     });
-    this.saveToDisk();
-    return id;
+    if (!res.ok) return { ok: false, error: res.error };
+    const saveRes = this.saveToDisk();
+    if (!saveRes.ok) return { ok: false, id: res.id, error: saveRes.error };
+    return { ok: true, id: res.id };
   }
 
-  updateSource(id: number, patch: Partial<CatalogSource>): boolean {
+  updateSource(id: number | string, patch: Partial<CatalogSource>): { ok: boolean; notFound?: boolean; error?: string } {
     this.ensureInit();
-    const src = this.sources.find((s) => s.id === id);
-    if (!src) return false;
-    Object.assign(src, patch);
-    this.saveToDisk();
-    return true;
+    const existing = StreamParser.getSources().find(
+      (s) => s.catalogId === Number(id) || s.id === String(id)
+    );
+    if (!existing) {
+      return { ok: false, notFound: true, error: 'Источник не найден' };
+    }
+    const res = StreamParser.upsertCatalogSource({
+      id: existing.catalogId,
+      name: patch.name !== undefined ? patch.name : existing.name,
+      type: patch.type !== undefined ? patch.type : existing.type,
+      url: patch.url !== undefined ? patch.url : existing.url,
+      enabled: patch.enabled !== undefined ? Boolean(patch.enabled) : existing.enabled,
+    });
+    if (!res.ok) return { ok: false, error: res.error };
+    this.reconcile({ save: false });
+    const saveRes = this.saveToDisk();
+    if (!saveRes.ok) return { ok: false, error: saveRes.error };
+    return { ok: true };
   }
 
-  deleteSource(id: number): void {
+  /**
+   * DEF-03 + DEF-08 + DEF-09 + DEF-10: Cascade deletes source -> index -> streams -> orphaned channels.
+   */
+  deleteSource(id: number | string): {
+    deleted: boolean;
+    removedSource?: SourceItem;
+    removedStreams: number;
+    removedChannels: number;
+    persisted: boolean;
+    error?: string;
+  } {
     this.ensureInit();
-    this.sources = this.sources.filter((s) => s.id !== id);
-    this.saveToDisk();
+    const removed = StreamParser.removeSource(id);
+    if (!removed.deleted) {
+      return {
+        deleted: false,
+        removedStreams: 0,
+        removedChannels: 0,
+        persisted: removed.persisted,
+        error: removed.error || 'Источник не найден',
+      };
+    }
+
+    const catId = removed.removedSource?.catalogId;
+    const beforeStreams = this.streams.length;
+    if (catId !== undefined) {
+      this.streams = this.streams.filter((s) => s.source_id !== catId);
+    }
+    const directRemovedStreams = beforeStreams - this.streams.length;
+    const rec = this.reconcile({ save: true });
+    return {
+      deleted: true,
+      removedSource: removed.removedSource,
+      removedStreams: directRemovedStreams + rec.removedStreams,
+      removedChannels: rec.removedChannels,
+      persisted: rec.persisted,
+      ...(rec.error ? { error: rec.error } : {}),
+    };
   }
 
-  deleteStream(streamId: number): void {
+  /**
+   * DEF-10: Returns notFound if streamId doesn't exist, prunes orphaned channel if empty, persists atomically.
+   */
+  deleteStream(streamId: number): {
+    deleted: boolean;
+    removedChannels: number;
+    persisted: boolean;
+    error?: string;
+  } {
     this.ensureInit();
+    const target = this.streams.find((s) => s.id === streamId);
+    if (!target) {
+      return {
+        deleted: false,
+        removedChannels: 0,
+        persisted: true,
+        error: 'Поток не найден',
+      };
+    }
+
     this.streams = this.streams.filter((s) => s.id !== streamId);
-    this.saveToDisk();
+    let removedChannels = 0;
+
+    // Prune parent channel if it no longer has ANY remaining streams AND is not in any live playlist
+    const remainingForChannel = this.streams.some((s) => s.channel_id === target.channel_id);
+    if (!remainingForChannel) {
+      const ch = this.channels.find((c) => c.id === target.channel_id);
+      if (ch) {
+        const ownership = this.buildLivePlaylistOwnershipMap();
+        const streamsByChannel = this.buildStreamsByChannelMap();
+        const usedIn = this.resolveLiveUsedIn(ch, streamsByChannel, ownership);
+        if (usedIn.length === 0) {
+          this.channels = this.channels.filter((c) => c.id !== ch.id);
+          removedChannels = 1;
+        }
+      }
+    }
+
+    const saveRes = this.saveToDisk();
+    return {
+      deleted: true,
+      removedChannels,
+      persisted: saveRes.ok,
+      ...(saveRes.error ? { error: saveRes.error } : {}),
+    };
+  }
+
+  /**
+   * Programmatically adds or ensures streams from an authoritative source during aggregation/testing.
+   */
+  ingestSourceItems(
+    source: Pick<SourceItem, 'catalogId' | 'name' | 'type'>,
+    items: Array<{ name: string; url: string; logo?: string; group?: string; tvg_id?: string }>
+  ): { addedChannels: number; addedStreams: number } {
+    this.ensureInit();
+    const now = Math.floor(Date.now() / 1000);
+    const catId = Number(source.catalogId) || null;
+    let addedChannels = 0;
+    let addedStreams = 0;
+
+    for (const it of items) {
+      const name = (it.name || '').trim();
+      const url = (it.url || '').trim();
+      if (!name || !url) continue;
+
+      let ch = this.findByNameInternal(name);
+      if (!ch) {
+        const id = this.nextChannelId++;
+        ch = {
+          id,
+          code: 'ID' + String(id).padStart(6, '0'),
+          name,
+          logo: it.logo || '',
+          tvg_id: it.tvg_id || '',
+          in_my_pl: 0,
+          used_in: [],
+          alt_names: [],
+          created_at: now,
+          updated_at: now,
+        };
+        this.channels.push(ch);
+        addedChannels++;
+      }
+      if (this.addStreamInternal(ch.id, url, catId, source.name, source.type)) {
+        addedStreams++;
+      }
+    }
+
+    return { addedChannels, addedStreams };
   }
 
   async checkStream(
@@ -583,11 +871,14 @@ class CatalogStore {
     return result;
   }
 
-  async checkStreams(limit = 500, force = true): Promise<{ checked: number; online: number; offline: number; unknown: number }> {
+  async checkStreams(
+    limit = 500,
+    force = true
+  ): Promise<{ checked: number; online: number; offline: number; unknown: number; persisted: boolean; error?: string }> {
     this.ensureInit();
-    const target = Array.from(new Set(
-      this.streams.slice(0, limit).map((stream) => stream.url).filter(Boolean)
-    ));
+    const target = Array.from(
+      new Set(this.streams.slice(0, limit).map((stream) => stream.url).filter(Boolean))
+    );
     let onlineCount = 0;
     let offlineCount = 0;
     let unknownCount = 0;
@@ -604,8 +895,15 @@ class CatalogStore {
         else unknownCount++;
       }
     }
-    this.saveToDisk();
-    return { checked: target.length, online: onlineCount, offline: offlineCount, unknown: unknownCount };
+    const saveRes = this.saveToDisk();
+    return {
+      checked: target.length,
+      online: onlineCount,
+      offline: offlineCount,
+      unknown: unknownCount,
+      persisted: saveRes.ok,
+      ...(saveRes.error ? { error: saveRes.error } : {}),
+    };
   }
 
   findAlternativeStreams(
@@ -641,13 +939,14 @@ class CatalogStore {
       }
     >();
 
-    // 1. Catalog channels + streams
     for (const ch of this.channels) {
       const nameMatch =
         ch.name.trim().toLowerCase() === qLower ||
         (qNorm && normalizeChannelName(ch.name) === qNorm) ||
         (cleanTvg && ch.tvg_id.trim().toLowerCase() === cleanTvg) ||
-        ch.alt_names.some((a) => a.trim().toLowerCase() === qLower || (qNorm && normalizeChannelName(a) === qNorm));
+        ch.alt_names.some(
+          (a) => a.trim().toLowerCase() === qLower || (qNorm && normalizeChannelName(a) === qNorm)
+        );
       if (!nameMatch) continue;
       for (const s of this.streams) {
         if (s.channel_id !== ch.id) continue;
@@ -663,7 +962,6 @@ class CatalogStore {
       }
     }
 
-    // 2. Indexed streams from StreamParser
     for (const item of StreamParser.getAllIndexedStreams()) {
       const u = (item.url || '').trim();
       if (!u || excluded.has(u) || byUrl.has(u)) continue;
@@ -685,7 +983,6 @@ class CatalogStore {
       });
     }
 
-    // 3. Fallback fuzzy substring match in index if nothing exact found
     if (byUrl.size === 0 && qNorm && qNorm.length >= 3) {
       for (const item of StreamParser.getAllIndexedStreams()) {
         const u = (item.url || '').trim();
@@ -709,7 +1006,12 @@ class CatalogStore {
     return Array.from(byUrl.values()).sort((a, b) => b.online - a.online);
   }
 
-  async aggregateFromSources(): Promise<{ addedChannels: number; addedStreams: number }> {
+  async aggregateFromSources(): Promise<{
+    ok: boolean;
+    addedChannels: number;
+    addedStreams: number;
+    error?: string;
+  }> {
     this.ensureInit();
     await StreamParser.refreshAll();
     let addedChannels = 0;
@@ -717,58 +1019,35 @@ class CatalogStore {
     const now = Math.floor(Date.now() / 1000);
     const parserSources = StreamParser.getSources();
 
-    for (const src of this.sources) {
-      if (!src.enabled) continue;
+    for (const src of parserSources) {
+      if (!src.enabled || !src.catalogId) continue;
       try {
-        const matchingParserSrc = parserSources.find((ps) => ps.url === src.url || ps.name === src.name);
-        const body = await StreamParser.fetchTextWithSource(src.url, matchingParserSrc, 20000);
+        const body = await StreamParser.fetchTextWithSource(src.url, src, 20000);
         if (!body) {
-          src.last_run = now;
-          src.last_status = 'error';
+          StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
           continue;
         }
-        const items = StreamParser.parseSource(body, {
-          id: String(src.id),
-          name: src.name,
-          type: src.type,
-          url: src.url,
-          enabled: true,
+        const items = StreamParser.parseSource(body, src).slice(0, 500);
+        const res = this.ingestSourceItems(src, items);
+        addedChannels += res.addedChannels;
+        addedStreams += res.addedStreams;
+        StreamParser.updateSourceStats(src.catalogId, {
+          last_run: now,
+          last_status: 'ok',
+          total_found: items.length,
         });
-        let found = 0;
-        for (const it of items.slice(0, 500)) {
-          let ch = this.findByNameInternal(it.name);
-          if (!ch) {
-            const id = this.nextChannelId++;
-            ch = {
-              id,
-              code: 'ID' + String(id).padStart(6, '0'),
-              name: it.name,
-              logo: it.logo || '',
-              tvg_id: it.tvg_id || '',
-              in_my_pl: 0,
-              used_in: [],
-              alt_names: [],
-              created_at: now,
-              updated_at: now,
-            };
-            this.channels.push(ch);
-            addedChannels++;
-          }
-          if (this.addStreamInternal(ch.id, it.url, src.id, src.name, src.type)) {
-            addedStreams++;
-          }
-          found++;
-        }
-        src.last_run = now;
-        src.last_status = 'ok';
-        src.total_found = found;
       } catch {
-        src.last_run = now;
-        src.last_status = 'error';
+        StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
       }
     }
-    this.saveToDisk();
-    return { addedChannels, addedStreams };
+
+    const rec = this.reconcile({ save: true });
+    return {
+      ok: rec.persisted,
+      addedChannels,
+      addedStreams,
+      ...(rec.error ? { error: rec.error } : {}),
+    };
   }
 
   exportRawState(): {
@@ -780,13 +1059,15 @@ class CatalogStore {
     sources: CatalogSource[];
   } {
     this.ensureInit();
+    const sources = this.getSources();
+    const nextSourceId = sources.reduce((m, s) => Math.max(m, s.id + 1), 1);
     return {
       nextChannelId: this.nextChannelId,
       nextStreamId: this.nextStreamId,
-      nextSourceId: this.nextSourceId,
+      nextSourceId,
       channels: this.channels,
       streams: this.streams,
-      sources: this.sources,
+      sources,
     };
   }
 
@@ -797,21 +1078,28 @@ class CatalogStore {
     channels?: CatalogChannel[];
     streams?: CatalogStream[];
     sources?: CatalogSource[];
-  }): boolean {
-    if (!raw || typeof raw !== 'object') return false;
-    if (!Array.isArray(raw.channels) || !Array.isArray(raw.streams)) return false;
+  }): { ok: boolean; reconcile?: ReconcileResult; error?: string } {
+    if (!raw || typeof raw !== 'object') {
+      return { ok: false, error: 'Некорректные данные каталога' };
+    }
+    if (!Array.isArray(raw.channels) || !Array.isArray(raw.streams)) {
+      return { ok: false, error: 'Отсутствуют массивы channels/streams' };
+    }
     this.channels = raw.channels;
     this.streams = raw.streams;
-    this.sources = Array.isArray(raw.sources) ? raw.sources : [];
     this.nextChannelId =
-      Number(raw.nextChannelId) || Math.max(1, ...this.channels.map((c) => c.id + 1));
+      Number(raw.nextChannelId) || Math.max(1, ...this.channels.map((c) => Number(c.id) + 1));
     this.nextStreamId =
-      Number(raw.nextStreamId) || Math.max(1, ...this.streams.map((s) => s.id + 1));
-    this.nextSourceId =
-      Number(raw.nextSourceId) || Math.max(1, ...this.sources.map((s) => s.id + 1));
+      Number(raw.nextStreamId) || Math.max(1, ...this.streams.map((s) => Number(s.id) + 1));
     this.initialized = true;
-    this.saveToDisk();
-    return true;
+
+    // Note: Do NOT blindly restore raw.sources over authoritative StreamParser sources
+    const rec = this.reconcile({ save: true });
+    return {
+      ok: rec.persisted,
+      reconcile: rec,
+      ...(rec.error ? { error: rec.error } : {}),
+    };
   }
 }
 

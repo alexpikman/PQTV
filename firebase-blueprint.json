@@ -306,6 +306,10 @@
         "catalogStreamChunks": {
           "type": "integer"
         },
+        "revision": {
+          "type": "integer",
+          "description": "Monotonic server state revision counter for stale snapshot protection."
+        },
         "updatedByUid": {
           "type": "string",
           "minLength": 1,

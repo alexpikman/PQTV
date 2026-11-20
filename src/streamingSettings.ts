@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
+import { atomicWriteJsonSync } from './persistence.js';
 
 export type StreamDeliveryMode =
   | 'auto_proxy_first'
@@ -63,16 +64,19 @@ export function getStreamingSettings(): StreamingSettings {
   }
 }
 
-export function saveStreamingSettings(input: unknown): StreamingSettings {
+export function trySaveStreamingSettings(input: unknown): {
+  ok: boolean;
+  settings: StreamingSettings;
+  error?: string;
+} {
   const next = sanitizeStreamingSettings(input);
-  try {
-    const file = getSettingsPath();
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf-8');
-    fs.renameSync(tmp, file);
-  } catch {
-    // ignore disk error
+  const res = atomicWriteJsonSync(getSettingsPath(), next, 2);
+  if (!res.ok) {
+    return { ok: false, settings: next, error: res.error || 'Ошибка сохранения настроек потока' };
   }
-  return next;
+  return { ok: true, settings: next };
+}
+
+export function saveStreamingSettings(input: unknown): StreamingSettings {
+  return trySaveStreamingSettings(input).settings;
 }

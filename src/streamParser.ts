@@ -3,10 +3,12 @@ import path from 'node:path';
 import { config } from './config.js';
 import { parseM3uContent } from './m3uParser.js';
 
+import { atomicWriteFileSync, atomicWriteJsonSync, safeUnlinkSync } from './persistence.js';
 import { fetchBytesWithNode, buildOutboundHeaders } from './streamChecker.js';
 
 export interface SourceItem {
   id: string;
+  catalogId?: number;
   name: string;
   type: string;
   url: string;
@@ -17,6 +19,10 @@ export interface SourceItem {
   customHeaders?: Record<string, string>;
   timeoutSec?: number;
   ignoreTlsErrors?: boolean;
+  created_at?: number;
+  last_run?: number;
+  last_status?: string;
+  total_found?: number;
 }
 
 export interface SourceRequestOptions {
@@ -98,6 +104,17 @@ function buildSourceRequestOptions(src?: SourceItem | null): SourceRequestOption
 }
 
 export class StreamParser {
+  private static lastError = '';
+
+  static getLastError(): string {
+    return this.lastError;
+  }
+
+  static resetCache(): void {
+    invalidateSourceLookup();
+    this.lastError = '';
+  }
+
   private static getSourcesFile(): string {
     return path.join(config.dataDir, 'sources.json');
   }
@@ -110,27 +127,234 @@ export class StreamParser {
     return dir;
   }
 
+  static ensureSourceIds(sources: SourceItem[]): { list: SourceItem[]; changed: boolean } {
+    let changed = false;
+    const now = Math.floor(Date.now() / 1000);
+    const usedCatalogIds = new Set<number>();
+    const usedStringIds = new Set<string>();
+    let maxCatalogId = 0;
+
+    for (const src of sources) {
+      const cid = Number(src.catalogId);
+      if (Number.isInteger(cid) && cid > 0 && cid > maxCatalogId) {
+        maxCatalogId = cid;
+      }
+    }
+
+    const list: SourceItem[] = [];
+    for (const raw of sources) {
+      if (!raw || typeof raw !== 'object') continue;
+      let catalogId = Number(raw.catalogId);
+      if (!Number.isInteger(catalogId) || catalogId <= 0 || usedCatalogIds.has(catalogId)) {
+        maxCatalogId++;
+        catalogId = maxCatalogId;
+        changed = true;
+      }
+      usedCatalogIds.add(catalogId);
+
+      let strId = typeof raw.id === 'string' ? safeId(raw.id.trim()) : '';
+      if (!strId || usedStringIds.has(strId)) {
+        strId = `src_${catalogId}`;
+        while (usedStringIds.has(strId)) {
+          maxCatalogId++;
+          strId = `src_${maxCatalogId}`;
+        }
+        changed = true;
+      }
+      usedStringIds.add(strId);
+
+      const copy: SourceItem = {
+        ...raw,
+        id: strId,
+        catalogId,
+        name: String(raw.name || strId).trim(),
+        type: String(raw.type || 'm3u').trim() || 'm3u',
+        url: String(raw.url || '').trim(),
+        enabled: Boolean(raw.enabled),
+        created_at: Number(raw.created_at) || now,
+      };
+      if (copy.id !== raw.id || copy.catalogId !== raw.catalogId || copy.created_at !== raw.created_at) {
+        changed = true;
+      }
+      list.push(copy);
+    }
+
+    return { list, changed };
+  }
+
   static getSources(): SourceItem[] {
     const file = this.getSourcesFile();
     if (!fs.existsSync(file)) return [];
     try {
       const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+      const { list, changed } = this.ensureSourceIds(parsed as SourceItem[]);
+      if (changed) {
+        atomicWriteJsonSync(file, list, 4);
+      }
+      return list;
     } catch {
       return [];
     }
   }
 
   static saveSources(sources: SourceItem[]): boolean {
-    try {
-      const file = this.getSourcesFile();
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify(sources, null, 4), 'utf-8');
-      invalidateSourceLookup();
-      return true;
-    } catch {
+    this.lastError = '';
+    const { list } = this.ensureSourceIds(Array.isArray(sources) ? sources : []);
+    const file = this.getSourcesFile();
+    const res = atomicWriteJsonSync(file, list, 4);
+    if (!res.ok) {
+      this.lastError = res.error || 'Не удалось сохранить sources.json';
       return false;
     }
+    invalidateSourceLookup();
+    this.pruneOrphanedIndexes(list);
+    return true;
+  }
+
+  static pruneOrphanedIndexes(activeSources?: SourceItem[]): number {
+    const dir = path.join(config.cacheDir, 'source_index');
+    if (!fs.existsSync(dir)) return 0;
+    const validIds = new Set(
+      (activeSources ?? this.getSources())
+        .map((s) => safeId(s.id || ''))
+        .filter(Boolean)
+    );
+    let pruned = 0;
+    try {
+      for (const f of fs.readdirSync(dir)) {
+        if (f.includes('.tmp.')) {
+          const r = safeUnlinkSync(path.join(dir, f));
+          if (r.ok && r.existed) pruned++;
+          continue;
+        }
+        if (f.endsWith('.json') || f.endsWith('.meta')) {
+          const base = f.replace(/\.(json|meta)$/, '');
+          if (!validIds.has(base)) {
+            const r = safeUnlinkSync(path.join(dir, f));
+            if (r.ok && r.existed) pruned++;
+          }
+        }
+      }
+    } catch {
+      // ignore unreadable cache dir
+    }
+    if (pruned > 0) invalidateSourceLookup();
+    return pruned;
+  }
+
+  static upsertCatalogSource(input: {
+    id?: number | string;
+    name: string;
+    type: string;
+    url: string;
+    enabled: boolean;
+    userAgent?: string;
+    referer?: string;
+    origin?: string;
+    timeoutSec?: number;
+    ignoreTlsErrors?: boolean;
+  }): { ok: boolean; id?: number; source?: SourceItem; error?: string } {
+    const sources = this.getSources();
+    const now = Math.floor(Date.now() / 1000);
+    const numId = input.id !== undefined ? Number(input.id) : NaN;
+    const strId = input.id !== undefined ? String(input.id).trim() : '';
+
+    const idx = sources.findIndex(
+      (s) =>
+        (Number.isInteger(numId) && numId > 0 && s.catalogId === numId) ||
+        (strId && s.id === strId)
+    );
+
+    if (idx >= 0) {
+      sources[idx] = {
+        ...sources[idx],
+        name: input.name.trim(),
+        type: (input.type || 'm3u').trim(),
+        url: input.url.trim(),
+        enabled: Boolean(input.enabled),
+        ...(input.userAgent !== undefined ? { userAgent: input.userAgent } : {}),
+        ...(input.referer !== undefined ? { referer: input.referer } : {}),
+        ...(input.origin !== undefined ? { origin: input.origin } : {}),
+        ...(input.timeoutSec !== undefined ? { timeoutSec: input.timeoutSec } : {}),
+        ...(input.ignoreTlsErrors !== undefined ? { ignoreTlsErrors: input.ignoreTlsErrors } : {}),
+      };
+      if (!this.saveSources(sources)) {
+        return { ok: false, error: this.lastError || 'Ошибка сохранения источника' };
+      }
+      const updated = this.getSources().find((s) => s.id === sources[idx].id) || sources[idx];
+      return { ok: true, id: updated.catalogId, source: updated };
+    }
+
+    const maxCatalogId = sources.reduce((m, s) => Math.max(m, Number(s.catalogId) || 0), 0);
+    const nextCatalogId = maxCatalogId + 1;
+    const usedIds = new Set(sources.map((s) => s.id));
+    let nextStrId = `src_${nextCatalogId}`;
+    let c = nextCatalogId;
+    while (usedIds.has(nextStrId)) {
+      c++;
+      nextStrId = `src_${c}`;
+    }
+
+    const created: SourceItem = {
+      id: nextStrId,
+      catalogId: nextCatalogId,
+      name: input.name.trim(),
+      type: (input.type || 'm3u').trim(),
+      url: input.url.trim(),
+      enabled: Boolean(input.enabled),
+      created_at: now,
+      ...(input.userAgent ? { userAgent: input.userAgent } : {}),
+      ...(input.referer ? { referer: input.referer } : {}),
+      ...(input.origin ? { origin: input.origin } : {}),
+      ...(input.timeoutSec ? { timeoutSec: input.timeoutSec } : {}),
+      ...(input.ignoreTlsErrors ? { ignoreTlsErrors: input.ignoreTlsErrors } : {}),
+    };
+    sources.push(created);
+    if (!this.saveSources(sources)) {
+      return { ok: false, error: this.lastError || 'Ошибка сохранения источника' };
+    }
+    return { ok: true, id: created.catalogId, source: created };
+  }
+
+  static updateSourceStats(
+    catalogId: number,
+    patch: { last_run?: number; last_status?: string; total_found?: number }
+  ): boolean {
+    const sources = this.getSources();
+    const idx = sources.findIndex((s) => s.catalogId === catalogId);
+    if (idx < 0) return false;
+    sources[idx] = { ...sources[idx], ...patch };
+    return this.saveSources(sources);
+  }
+
+  static removeSource(idOrCatalogId: string | number): {
+    deleted: boolean;
+    removedSource?: SourceItem;
+    persisted: boolean;
+    error?: string;
+  } {
+    const cleanStr = String(idOrCatalogId ?? '').trim();
+    const cleanNum = Number(idOrCatalogId);
+    const sources = this.getSources();
+    const target = sources.find(
+      (s) =>
+        (cleanStr && s.id === cleanStr) ||
+        (Number.isInteger(cleanNum) && cleanNum > 0 && s.catalogId === cleanNum)
+    );
+    if (!target) {
+      return { deleted: false, persisted: true, error: 'Источник не найден' };
+    }
+    const next = sources.filter((s) => s.id !== target.id);
+    if (!this.saveSources(next)) {
+      return {
+        deleted: false,
+        persisted: false,
+        error: this.lastError || 'Не удалось сохранить список источников',
+      };
+    }
+    this.clearIndex(target.id);
+    return { deleted: true, removedSource: target, persisted: true };
   }
 
   static getSourceRequestOptions(streamUrl: string): SourceRequestOptions {
@@ -484,15 +708,22 @@ export class StreamParser {
     }
   }
 
-  private static writeIndex(id: string, items: IndexedChannel[]): void {
+  private static writeIndex(id: string, items: IndexedChannel[]): boolean {
     const dir = this.getIndexDir();
     const file = path.join(dir, `${id}.json`);
     const meta = path.join(dir, `${id}.meta`);
-    const tmp = `${file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(items), 'utf-8');
-    fs.renameSync(tmp, file);
-    fs.writeFileSync(meta, String(Math.floor(Date.now() / 1000)), 'utf-8');
+    const resJson = atomicWriteJsonSync(file, items);
+    if (!resJson.ok) {
+      this.lastError = resJson.error || `Не удалось записать индекс источника ${id}`;
+      return false;
+    }
+    const resMeta = atomicWriteFileSync(meta, String(Math.floor(Date.now() / 1000)));
+    if (!resMeta.ok) {
+      this.lastError = resMeta.error || `Не удалось записать метаданные индекса ${id}`;
+      return false;
+    }
     invalidateSourceLookup();
+    return true;
   }
 
   static async refreshAll(): Promise<{
@@ -674,25 +905,14 @@ export class StreamParser {
     if (!sourceId) {
       if (fs.existsSync(dir)) {
         for (const f of fs.readdirSync(dir)) {
-          try {
-            fs.unlinkSync(path.join(dir, f));
-          } catch {
-            // ignore
-          }
+          safeUnlinkSync(path.join(dir, f));
         }
       }
       return;
     }
     const id = safeId(sourceId);
     for (const ext of ['.json', '.meta']) {
-      const p = path.join(dir, `${id}${ext}`);
-      if (fs.existsSync(p)) {
-        try {
-          fs.unlinkSync(p);
-        } catch {
-          // ignore
-        }
-      }
+      safeUnlinkSync(path.join(dir, `${id}${ext}`));
     }
   }
 
@@ -721,28 +941,46 @@ export class StreamParser {
   }
 
   static hydrateIndexData(
-    indexMap: Record<string, { items?: IndexedChannel[]; updatedAt?: number }>
-  ): number {
-    if (!indexMap || typeof indexMap !== 'object') return 0;
+    indexMap: Record<string, { items?: IndexedChannel[]; updatedAt?: number }>,
+    opts?: { replaceAll?: boolean }
+  ): { ok: boolean; count: number; pruned: number; error?: string } {
+    if (!indexMap || typeof indexMap !== 'object') {
+      return { ok: true, count: 0, pruned: 0 };
+    }
+    this.lastError = '';
     const dir = this.getIndexDir();
+    const activeIds = new Set(
+      this.getSources().map((s) => safeId(s.id || '')).filter(Boolean)
+    );
     let count = 0;
+
+    if (opts?.replaceAll !== false) {
+      this.clearIndex(null);
+    }
+
     for (const [rawId, entry] of Object.entries(indexMap)) {
       const id = safeId(rawId);
       if (!id || !entry || !Array.isArray(entry.items)) continue;
-      try {
-        const file = path.join(dir, `${id}.json`);
-        const meta = path.join(dir, `${id}.meta`);
-        const tmp = `${file}.tmp`;
-        fs.writeFileSync(tmp, JSON.stringify(entry.items), 'utf-8');
-        fs.renameSync(tmp, file);
-        const ts = Number(entry.updatedAt) || Math.floor(Date.now() / 1000);
-        fs.writeFileSync(meta, String(ts), 'utf-8');
-        count++;
-      } catch {
-        // ignore
+      if (!activeIds.has(id)) continue;
+
+      const file = path.join(dir, `${id}.json`);
+      const meta = path.join(dir, `${id}.meta`);
+      const resJson = atomicWriteJsonSync(file, entry.items);
+      if (!resJson.ok) {
+        this.lastError = resJson.error || `Не удалось восстановить индекс ${id}`;
+        return { ok: false, count, pruned: 0, error: this.lastError };
       }
+      const ts = Number(entry.updatedAt) || Math.floor(Date.now() / 1000);
+      const resMeta = atomicWriteFileSync(meta, String(ts));
+      if (!resMeta.ok) {
+        this.lastError = resMeta.error || `Не удалось восстановить мета-индекс ${id}`;
+        return { ok: false, count, pruned: 0, error: this.lastError };
+      }
+      count++;
     }
-    if (count > 0) invalidateSourceLookup();
-    return count;
+
+    const pruned = this.pruneOrphanedIndexes();
+    invalidateSourceLookup();
+    return { ok: true, count, pruned };
   }
 }

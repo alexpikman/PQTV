@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { config, hashPassword, verifyPassword } from './config.js';
+import { atomicWriteJsonSync } from './persistence.js';
 
 export interface UserRecord {
   id: string;
@@ -57,17 +58,31 @@ export function hashEmailId(email: string): string {
     .digest('hex');
 }
 
-export class UserAuth {
-  private usersFile: string;
-  private sessionsFile: string;
-  private invitesFile: string;
-  private alertsFile: string;
+function normalizePlaylistName(raw: string): string {
+  return String(raw || '').replace(/\.m3u$/i, '').trim();
+}
 
-  constructor() {
-    this.usersFile = path.join(config.dataDir, 'users.json');
-    this.sessionsFile = path.join(config.dataDir, 'user_sessions.json');
-    this.invitesFile = path.join(config.dataDir, 'invites.json');
-    this.alertsFile = path.join(config.dataDir, 'channel_alerts.json');
+export class UserAuth {
+  private lastError = '';
+
+  private get usersFile(): string {
+    return path.join(config.dataDir, 'users.json');
+  }
+
+  private get sessionsFile(): string {
+    return path.join(config.dataDir, 'user_sessions.json');
+  }
+
+  private get invitesFile(): string {
+    return path.join(config.dataDir, 'invites.json');
+  }
+
+  private get alertsFile(): string {
+    return path.join(config.dataDir, 'channel_alerts.json');
+  }
+
+  getLastError(): string {
+    return this.lastError;
   }
 
   all(): UserRecord[] {
@@ -81,15 +96,13 @@ export class UserAuth {
   }
 
   saveAll(users: UserRecord[]): boolean {
-    try {
-      fs.mkdirSync(path.dirname(this.usersFile), { recursive: true });
-      const tmp = `${this.usersFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(users, null, 4), 'utf-8');
-      fs.renameSync(tmp, this.usersFile);
-      return true;
-    } catch {
+    this.lastError = '';
+    const res = atomicWriteJsonSync(this.usersFile, users, 4);
+    if (!res.ok) {
+      this.lastError = res.error || 'Ошибка сохранения users.json';
       return false;
     }
+    return true;
   }
 
   find(id: string): UserRecord | null {
@@ -125,13 +138,16 @@ export class UserAuth {
       login: cleanLogin,
       password_hash: hashPassword(password),
       name: name.trim() !== '' ? name.trim() : cleanLogin,
-      playlists: playlists.filter((p) => typeof p === 'string'),
+      playlists: playlists
+        .filter((p) => typeof p === 'string')
+        .map(normalizePlaylistName)
+        .filter(Boolean),
       enabled: Boolean(enabled),
       created_at: Math.floor(Date.now() / 1000),
     };
     users.push(user);
     if (!this.saveAll(users)) {
-      return { ok: false, error: 'Ошибка сохранения' };
+      return { ok: false, error: this.lastError || 'Ошибка сохранения' };
     }
     return { ok: true, user };
   }
@@ -148,7 +164,10 @@ export class UserAuth {
     const u = users[idx];
     if (patch.name !== undefined) u.name = patch.name.trim();
     if (Array.isArray(patch.playlists)) {
-      u.playlists = patch.playlists.filter((p) => typeof p === 'string');
+      u.playlists = patch.playlists
+        .filter((p) => typeof p === 'string')
+        .map(normalizePlaylistName)
+        .filter(Boolean);
     }
     if (patch.enabled !== undefined) u.enabled = Boolean(patch.enabled);
     if (patch.password) {
@@ -159,7 +178,7 @@ export class UserAuth {
     }
 
     if (!this.saveAll(users)) {
-      return { ok: false, error: 'Ошибка сохранения' };
+      return { ok: false, error: this.lastError || 'Ошибка сохранения' };
     }
     return { ok: true };
   }
@@ -181,7 +200,10 @@ export class UserAuth {
     const users = this.all();
     const idx = users.findIndex((u) => u.id === input.id);
     const cleanPlaylists = Array.isArray(input.playlists)
-      ? input.playlists.filter((p) => typeof p === 'string')
+      ? input.playlists
+          .filter((p) => typeof p === 'string')
+          .map(normalizePlaylistName)
+          .filter(Boolean)
       : [];
     if (idx >= 0) {
       users[idx].login = input.login || users[idx].login;
@@ -217,7 +239,10 @@ export class UserAuth {
     const users = this.all();
     const idx = users.findIndex((u) => u.id === input.id);
     const cleanPlaylists = Array.isArray(input.playlists)
-      ? input.playlists.filter((p) => typeof p === 'string')
+      ? input.playlists
+          .filter((p) => typeof p === 'string')
+          .map(normalizePlaylistName)
+          .filter(Boolean)
       : [];
     if (idx >= 0) {
       users[idx].login = input.login || users[idx].login;
@@ -253,27 +278,22 @@ export class UserAuth {
   }
 
   touchSession(userId: string, ip: string, ua: string): void {
-    try {
-      fs.mkdirSync(path.dirname(this.sessionsFile), { recursive: true });
-      const data = this.getSessions();
-      const now = Math.floor(Date.now() / 1000);
-      const existing = data[userId];
-      data[userId] = {
-        last_ping: now,
-        started: existing?.started || now,
-        ip: ip || '',
-        ua: (ua || '').slice(0, 120),
-      };
-      const cutoff = now - 7 * 86400;
-      for (const k of Object.keys(data)) {
-        if ((data[k]?.last_ping || 0) < cutoff) {
-          delete data[k];
-        }
+    const data = this.getSessions();
+    const now = Math.floor(Date.now() / 1000);
+    const existing = data[userId];
+    data[userId] = {
+      last_ping: now,
+      started: existing?.started || now,
+      ip: ip || '',
+      ua: (ua || '').slice(0, 120),
+    };
+    const cutoff = now - 7 * 86400;
+    for (const k of Object.keys(data)) {
+      if ((data[k]?.last_ping || 0) < cutoff) {
+        delete data[k];
       }
-      fs.writeFileSync(this.sessionsFile, JSON.stringify(data), 'utf-8');
-    } catch {
-      // ignore
     }
+    atomicWriteJsonSync(this.sessionsFile, data);
   }
 
   getSessions(): Record<string, UserSessionInfo> {
@@ -297,16 +317,14 @@ export class UserAuth {
     }
   }
 
-  private saveAllInvites(invites: InviteRecord[]): boolean {
-    try {
-      fs.mkdirSync(path.dirname(this.invitesFile), { recursive: true });
-      const tmp = `${this.invitesFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(invites, null, 2), 'utf-8');
-      fs.renameSync(tmp, this.invitesFile);
-      return true;
-    } catch {
+  saveAllInvites(invites: InviteRecord[]): boolean {
+    this.lastError = '';
+    const res = atomicWriteJsonSync(this.invitesFile, invites, 2);
+    if (!res.ok) {
+      this.lastError = res.error || 'Ошибка сохранения invites.json';
       return false;
     }
+    return true;
   }
 
   findInviteByEmail(email: string): InviteRecord | null {
@@ -333,7 +351,11 @@ export class UserAuth {
     const now = Math.floor(Date.now() / 1000);
     const cleanName = (input.name.trim() || email.split('@')[0] || 'Пользователь').slice(0, 80);
     const cleanPlaylists = Array.isArray(input.playlists)
-      ? input.playlists.filter((p) => typeof p === 'string' && p.trim().length > 0).slice(0, 20)
+      ? input.playlists
+          .filter((p) => typeof p === 'string')
+          .map(normalizePlaylistName)
+          .filter(Boolean)
+          .slice(0, 50)
       : [];
 
     const invites = this.allInvites();
@@ -364,7 +386,7 @@ export class UserAuth {
     }
 
     if (!this.saveAllInvites(invites)) {
-      return { ok: false, error: 'Ошибка сохранения приглашения' };
+      return { ok: false, error: this.lastError || 'Ошибка сохранения приглашения' };
     }
     return { ok: true, invite: saved };
   }
@@ -390,6 +412,122 @@ export class UserAuth {
     return this.saveAllInvites(filtered);
   }
 
+  /**
+   * DEF-06: Removes references to a deleted playlist from all users & invites atomically.
+   */
+  removePlaylistReferences(playlistName: string): {
+    ok: boolean;
+    cleanedUsers: number;
+    cleanedInvites: number;
+    updatedUserIds: string[];
+    updatedInviteIds: string[];
+    error?: string;
+  } {
+    const target = normalizePlaylistName(playlistName);
+    if (!target) {
+      return { ok: true, cleanedUsers: 0, cleanedInvites: 0, updatedUserIds: [], updatedInviteIds: [] };
+    }
+
+    const users = this.all();
+    const updatedUserIds: string[] = [];
+    for (const u of users) {
+      const prev = Array.isArray(u.playlists) ? u.playlists : [];
+      const next = prev
+        .map(normalizePlaylistName)
+        .filter((p) => p && p !== target);
+      if (next.length !== prev.length || next.some((v, idx) => v !== prev[idx])) {
+        u.playlists = next;
+        updatedUserIds.push(u.id);
+      }
+    }
+    if (updatedUserIds.length > 0 && !this.saveAll(users)) {
+      return {
+        ok: false,
+        cleanedUsers: 0,
+        cleanedInvites: 0,
+        updatedUserIds: [],
+        updatedInviteIds: [],
+        error: this.lastError || 'Ошибка очистки плейлиста у пользователей',
+      };
+    }
+
+    const invites = this.allInvites();
+    const updatedInviteIds: string[] = [];
+    const now = Math.floor(Date.now() / 1000);
+    for (const inv of invites) {
+      const prev = Array.isArray(inv.playlists) ? inv.playlists : [];
+      const next = prev
+        .map(normalizePlaylistName)
+        .filter((p) => p && p !== target);
+      if (next.length !== prev.length || next.some((v, idx) => v !== prev[idx])) {
+        inv.playlists = next;
+        inv.updated_at = now;
+        updatedInviteIds.push(inv.id);
+      }
+    }
+    if (updatedInviteIds.length > 0 && !this.saveAllInvites(invites)) {
+      return {
+        ok: false,
+        cleanedUsers: updatedUserIds.length,
+        cleanedInvites: 0,
+        updatedUserIds,
+        updatedInviteIds: [],
+        error: this.lastError || 'Ошибка очистки плейлиста у приглашений',
+      };
+    }
+
+    return {
+      ok: true,
+      cleanedUsers: updatedUserIds.length,
+      cleanedInvites: updatedInviteIds.length,
+      updatedUserIds,
+      updatedInviteIds,
+    };
+  }
+
+  /**
+   * Prunes any stale playlist assignments from users & invites against currently active playlists.
+   */
+  pruneInvalidPlaylists(validPlaylists: string[]): {
+    ok: boolean;
+    cleanedUsers: number;
+    cleanedInvites: number;
+    error?: string;
+  } {
+    const validSet = new Set(validPlaylists.map(normalizePlaylistName).filter(Boolean));
+    const users = this.all();
+    let usersChanged = 0;
+    for (const u of users) {
+      const prev = Array.isArray(u.playlists) ? u.playlists : [];
+      const next = prev.map(normalizePlaylistName).filter((p) => validSet.has(p));
+      if (next.length !== prev.length || next.some((v, idx) => v !== prev[idx])) {
+        u.playlists = next;
+        usersChanged++;
+      }
+    }
+    if (usersChanged > 0 && !this.saveAll(users)) {
+      return { ok: false, cleanedUsers: 0, cleanedInvites: 0, error: this.lastError };
+    }
+
+    const invites = this.allInvites();
+    let invitesChanged = 0;
+    const now = Math.floor(Date.now() / 1000);
+    for (const inv of invites) {
+      const prev = Array.isArray(inv.playlists) ? inv.playlists : [];
+      const next = prev.map(normalizePlaylistName).filter((p) => validSet.has(p));
+      if (next.length !== prev.length || next.some((v, idx) => v !== prev[idx])) {
+        inv.playlists = next;
+        inv.updated_at = now;
+        invitesChanged++;
+      }
+    }
+    if (invitesChanged > 0 && !this.saveAllInvites(invites)) {
+      return { ok: false, cleanedUsers: usersChanged, cleanedInvites: 0, error: this.lastError };
+    }
+
+    return { ok: true, cleanedUsers: usersChanged, cleanedInvites: invitesChanged };
+  }
+
   // ===== UNAVAILABLE CHANNEL ALERTS =====
   allAlerts(): ChannelAlertRecord[] {
     if (!fs.existsSync(this.alertsFile)) return [];
@@ -403,15 +541,13 @@ export class UserAuth {
   }
 
   private saveAllAlerts(alerts: ChannelAlertRecord[]): boolean {
-    try {
-      fs.mkdirSync(path.dirname(this.alertsFile), { recursive: true });
-      const tmp = `${this.alertsFile}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(alerts, null, 2), 'utf-8');
-      fs.renameSync(tmp, this.alertsFile);
-      return true;
-    } catch {
+    this.lastError = '';
+    const res = atomicWriteJsonSync(this.alertsFile, alerts, 2);
+    if (!res.ok) {
+      this.lastError = res.error || 'Ошибка сохранения channel_alerts.json';
       return false;
     }
+    return true;
   }
 
   upsertAlert(input: {
@@ -426,7 +562,14 @@ export class UserAuth {
 
     const cleanItems: ChannelAlertIssue[] = Array.isArray(input.items)
       ? input.items
-          .filter((it) => it && typeof it.name === 'string' && it.name.trim() && typeof it.reason === 'string' && it.reason.trim())
+          .filter(
+            (it) =>
+              it &&
+              typeof it.name === 'string' &&
+              it.name.trim() &&
+              typeof it.reason === 'string' &&
+              it.reason.trim()
+          )
           .slice(0, 50)
           .map((it) => ({
             name: it.name.trim().slice(0, 120),
