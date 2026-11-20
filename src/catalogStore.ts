@@ -242,6 +242,7 @@ class CatalogStore {
   private nextSourceId = 1;
   private initialized = false;
   private catalogFile = path.join(config.dataDir, 'catalog.json');
+  private saveTimer: ReturnType<typeof setTimeout> | null = null;
 
   private ensureInit(): void {
     if (this.initialized) return;
@@ -305,6 +306,14 @@ class CatalogStore {
     } catch {
       // ignore disk write errors
     }
+  }
+
+  private scheduleSaveToDisk(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null;
+      this.saveToDisk();
+    }, 500);
   }
 
   private seedFromLocalFiles(): void {
@@ -700,7 +709,7 @@ class CatalogStore {
       stream.response_ms = result.ms;
       stream.checked_at = result.checkedAt;
     }
-    if (persist && matching.length > 0) this.saveToDisk();
+    if (persist && matching.length > 0) this.scheduleSaveToDisk();
     return result;
   }
 
