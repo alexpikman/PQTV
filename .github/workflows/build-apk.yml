@@ -47,12 +47,14 @@ jobs:
           name: pqtv-android-tv-apk
           path: android-tv/app/build/outputs/apk/release/*.apk
       - name: Publish OTA directly to PQTV Server
-        if: ${{ secrets.PQTV_UPLOAD_TOKEN != '' }}
+        if: env.PQTV_UPLOAD_TOKEN != ''
+        env:
+          PQTV_UPLOAD_TOKEN: ${{ secrets.PQTV_UPLOAD_TOKEN }}
         continue-on-error: true
         run: |
           APK_FILE=$(ls android-tv/app/build/outputs/apk/release/*.apk | head -n 1)
           curl -f -X POST "${{ inputs.server_url }}/api/admin/apk-upload" \
-            -H "Authorization: Bearer ${{ secrets.PQTV_UPLOAD_TOKEN }}" \
+            -H "Authorization: Bearer $PQTV_UPLOAD_TOKEN" \
             -H "Content-Type: application/vnd.android.package-archive" \
             -H "X-Version-Code: ${{ inputs.version_code }}" \
             -H "X-Version-Name: ${{ inputs.version_name }}" \
