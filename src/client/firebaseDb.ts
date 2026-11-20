@@ -542,7 +542,7 @@ export async function saveCatalogToCloud(
     source_id: st.source_id !== null && st.source_id !== undefined ? Number(st.source_id) : null,
     source_name: st.source_name ? s(st.source_name, 120) : null,
     source_type: st.source_type ? s(st.source_type, 32) : null,
-    online: Number(st.online) ? 1 : 0,
+    online: Number(st.online) === 1 ? 1 : Number(st.online) === -1 ? -1 : 0,
     http_code: Number(st.http_code) || 0,
     response_ms: Number(st.response_ms) || 0,
     checked_at: Number(st.checked_at) || 0,
