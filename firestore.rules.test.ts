@@ -1,20 +1,20 @@
 /**
  * Dirty Dozen Security Rules Verification Specification for PQTV Firestore.
- * Run against Firebase Emulator Suite when available.
+ * Covers /users, /invites, /channel_alerts, and /admins.
  */
 export const dirtyDozenCases = [
   {
-    name: '1. Unauthenticated read on /users/{userId}',
+    name: '1. Unauthenticated read on /users, /invites, /channel_alerts',
     auth: null,
     op: 'get',
     path: 'users/u_1',
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '2. Unauthenticated write on /users/{userId}',
+    name: '2. Unauthenticated write on /channel_alerts/{uid}',
     auth: null,
     op: 'create',
-    path: 'users/u_1',
+    path: 'channel_alerts/u_1',
     expect: 'PERMISSION_DENIED',
   },
   {
@@ -33,7 +33,7 @@ export const dirtyDozenCases = [
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '5. Self-enabled account without admin approval',
+    name: '5. Self-enabled account without admin invite',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'create',
     path: 'users/user1',
@@ -41,7 +41,7 @@ export const dirtyDozenCases = [
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '6. Self-granted playlists on signup',
+    name: '6. Self-granted playlists without matching invite',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'create',
     path: 'users/user1',
@@ -49,37 +49,37 @@ export const dirtyDozenCases = [
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '7. Shadow / ghost field injection',
+    name: '7. Shadow / ghost field injection on /invites or /channel_alerts',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'create',
-    path: 'users/user1',
+    path: 'channel_alerts/user1',
     payload: { isSuperAdmin: true },
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '8. Cross-user PII read on /users/{otherUid}/private/info',
+    name: '8. Cross-user PII read on /users/{otherUid}/private/info or /invites/{hash}/private/info',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'get',
     path: 'users/user2/private/info',
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '9. Blanket user list scraping without uid filter',
+    name: '9. Blanket collection list scraping without owner filter',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'list',
-    path: 'users',
+    path: 'invites',
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '10. Immutable uid / createdAt mutation',
+    name: '10. Viewer resolving own channel alert or mutating immutable uid/createdAt',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'update',
-    path: 'users/user1',
-    payload: { uid: 'other' },
+    path: 'channel_alerts/user1',
+    payload: { resolved: true },
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '11. Oversized ID / string poisoning',
+    name: '11. Oversized ID / array poisoning',
     auth: { uid: 'alexpqtr', email: 'alexpqtr@gmail.com', email_verified: true },
     op: 'create',
     path: `users/${'a'.repeat(200)}`,
@@ -89,7 +89,7 @@ export const dirtyDozenCases = [
     name: '12. Client-forged createdAt timestamp',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'create',
-    path: 'users/user1',
+    path: 'channel_alerts/user1',
     payload: { createdAt: '2020-01-01T00:00:00Z' },
     expect: 'PERMISSION_DENIED',
   },

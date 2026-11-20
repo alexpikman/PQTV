@@ -12,6 +12,10 @@ service cloud.firestore {
       return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
+    function isValidEmailHash(hash) {
+      return hash is string && hash.size() == 64 && hash.matches('^[a-f0-9]{64}$');
+    }
+
     function incoming() {
       return request.resource.data;
     }
@@ -42,6 +46,13 @@ service cloud.firestore {
         || (isVerifiedEmail() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
     }
 
+    function isInvitedEmailOwner(inviteId) {
+      return isVerifiedEmail()
+        && isValidEmailHash(inviteId)
+        && exists(/databases/$(database)/documents/invites/$(inviteId)/private/info)
+        && get(/databases/$(database)/documents/invites/$(inviteId)/private/info).data.email == request.auth.token.email.lower();
+    }
+
     // ===== VALIDATION BLUEPRINTS =====
     function isValidPlaylistsList(list) {
       return list is list
@@ -51,13 +62,14 @@ service cloud.firestore {
 
     function isValidUserProfile(data) {
       return data.keys().hasAll(['uid', 'login', 'name', 'playlists', 'enabled', 'role', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['uid', 'login', 'name', 'playlists', 'enabled', 'role', 'lastPing', 'lastUa', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'login', 'name', 'playlists', 'enabled', 'role', 'inviteId', 'lastPing', 'lastUa', 'createdAt', 'updatedAt'])
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.login is string && data.login.size() >= 3 && data.login.size() <= 32 && data.login.matches('^[a-zA-Z0-9_.-]{3,32}$')
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
         && isValidPlaylistsList(data.playlists)
         && data.enabled is bool
         && data.role is string && data.role in ['user', 'admin']
+        && (!('inviteId' in data) || isValidEmailHash(data.inviteId))
         && (!('lastPing' in data) || data.lastPing is timestamp)
         && (!('lastUa' in data) || (data.lastUa is string && data.lastUa.size() <= 120))
         && data.createdAt is timestamp
@@ -78,6 +90,55 @@ service cloud.firestore {
         && data.keys().hasOnly(['uid', 'createdAt'])
         && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
         && data.createdAt is timestamp;
+    }
+
+    function isValidInvite(data) {
+      return data.keys().hasAll(['emailHash', 'name', 'playlists', 'enabled', 'invitedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['emailHash', 'name', 'playlists', 'enabled', 'invitedByUid', 'claimedUid', 'createdAt', 'updatedAt'])
+        && isValidEmailHash(data.emailHash)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && isValidPlaylistsList(data.playlists)
+        && data.enabled is bool
+        && data.invitedByUid is string && data.invitedByUid.size() >= 1 && data.invitedByUid.size() <= 128 && data.invitedByUid.matches('^[a-zA-Z0-9_\\-]+$')
+        && (!('claimedUid' in data) || (data.claimedUid is string && data.claimedUid.size() <= 128 && data.claimedUid.matches('^[a-zA-Z0-9_\\-]*$')))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidInvitePrivateInfo(data) {
+      return data.keys().hasAll(['emailHash', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['emailHash', 'email', 'createdAt', 'updatedAt'])
+        && isValidEmailHash(data.emailHash)
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 160
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAlertItems(items) {
+      return items is list
+        && items.size() <= 50
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['name', 'group', 'reason'])
+          && items[0].keys().hasOnly(['name', 'group', 'reason'])
+          && items[0].name is string && items[0].name.size() >= 1 && items[0].name.size() <= 120
+          && items[0].group is string && items[0].group.size() <= 80
+          && items[0].reason is string && items[0].reason.size() >= 1 && items[0].reason.size() <= 200
+        ));
+    }
+
+    function isValidChannelAlert(data) {
+      return data.keys().hasAll(['uid', 'userLogin', 'userName', 'totalChannels', 'unavailableCount', 'items', 'resolved', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'userLogin', 'userName', 'totalChannels', 'unavailableCount', 'items', 'resolved', 'createdAt', 'updatedAt'])
+        && data.uid is string && data.uid.size() >= 1 && data.uid.size() <= 128 && data.uid.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userLogin is string && data.userLogin.size() >= 1 && data.userLogin.size() <= 64
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 80
+        && data.totalChannels is int && data.totalChannels >= 0 && data.totalChannels <= 50000
+        && data.unavailableCount is int && data.unavailableCount >= 0 && data.unavailableCount <= 50000
+        && isValidAlertItems(data.items)
+        && data.resolved is bool
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
     }
 
     // ===== CONNECTION CHECK =====
@@ -102,6 +163,54 @@ service cloud.firestore {
       allow delete: if isBootstrappedAdmin() && isValidId(userId);
     }
 
+    // ===== INVITES (Google Email invitations with pre-assigned playlists) =====
+    match /invites/{inviteId} {
+      allow get: if isValidEmailHash(inviteId) && (isAdmin() || isInvitedEmailOwner(inviteId));
+      allow list: if isBootstrappedAdmin();
+      allow create: if isVerifiedEmail()
+        && isValidEmailHash(inviteId)
+        && isValidInvite(incoming())
+        && incoming().emailHash == inviteId
+        && incoming().invitedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isAdmin()
+        && existsAfter(/databases/$(database)/documents/invites/$(inviteId)/private/info);
+      allow update: if isVerifiedEmail()
+        && isValidEmailHash(inviteId)
+        && isValidInvite(incoming())
+        && incoming().emailHash == existing().emailHash
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'playlists', 'enabled', 'claimedUid', 'updatedAt'])) ||
+          (isInvitedEmailOwner(inviteId)
+            && incoming().claimedUid == request.auth.uid
+            && incoming().diff(existing()).affectedKeys().hasOnly(['claimedUid', 'updatedAt']))
+        );
+      allow delete: if isAdmin() && isValidEmailHash(inviteId);
+
+      match /private/info {
+        allow get: if isValidEmailHash(inviteId)
+          && (isAdmin() || (isVerifiedEmail() && existing().email == request.auth.token.email.lower()));
+        allow list: if false;
+        allow create: if isAdmin()
+          && isValidEmailHash(inviteId)
+          && isValidInvitePrivateInfo(incoming())
+          && incoming().emailHash == inviteId
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isAdmin()
+          && isValidEmailHash(inviteId)
+          && isValidInvitePrivateInfo(incoming())
+          && incoming().emailHash == existing().emailHash
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+        allow delete: if isAdmin() && isValidEmailHash(inviteId);
+      }
+    }
+
     // ===== USERS =====
     match /users/{userId} {
       allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
@@ -118,9 +227,20 @@ service cloud.firestore {
             isOwner(userId)
             && incoming().uid == request.auth.uid
             && incoming().role == 'user'
-            && incoming().enabled == false
-            && incoming().playlists.size() == 0
             && existsAfter(/databases/$(database)/documents/users/$(userId)/private/info)
+            && (
+              (
+                !('inviteId' in incoming())
+                && incoming().enabled == false
+                && incoming().playlists.size() == 0
+              ) ||
+              (
+                'inviteId' in incoming()
+                && isInvitedEmailOwner(incoming().inviteId)
+                && incoming().enabled == get(/databases/$(database)/documents/invites/$(incoming().inviteId)).data.enabled
+                && incoming().playlists == get(/databases/$(database)/documents/invites/$(incoming().inviteId)).data.playlists
+              )
+            )
           )
         );
 
@@ -131,7 +251,7 @@ service cloud.firestore {
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
-          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['login', 'name', 'playlists', 'enabled', 'role', 'lastPing', 'lastUa', 'updatedAt'])) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['login', 'name', 'playlists', 'enabled', 'role', 'inviteId', 'lastPing', 'lastUa', 'updatedAt'])) ||
           (
             isOwner(userId)
             && incoming().role == existing().role
@@ -167,6 +287,37 @@ service cloud.firestore {
           );
         allow delete: if isAdmin() && isValidId(userId);
       }
+    }
+
+    // ===== CHANNEL ALERTS (Unavailable channel reports from viewers) =====
+    match /channel_alerts/{alertId} {
+      allow get: if isValidId(alertId) && (isOwner(alertId) || isAdmin());
+      allow list: if isSignedIn() && (isBootstrappedAdmin() || resource.data.uid == request.auth.uid);
+
+      allow create: if isVerifiedEmail()
+        && isValidId(alertId)
+        && isValidChannelAlert(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (isOwner(alertId) && incoming().uid == request.auth.uid && incoming().resolved == false)
+        );
+
+      allow update: if isVerifiedEmail()
+        && isValidId(alertId)
+        && isValidChannelAlert(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['resolved', 'items', 'unavailableCount', 'totalChannels', 'updatedAt'])) ||
+          (isOwner(alertId)
+            && incoming().resolved == false
+            && incoming().diff(existing()).affectedKeys().hasOnly(['userLogin', 'userName', 'totalChannels', 'unavailableCount', 'items', 'resolved', 'updatedAt']))
+        );
+
+      allow delete: if isAdmin() && isValidId(alertId);
     }
   }
 }

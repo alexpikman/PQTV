@@ -7,7 +7,7 @@ import session from 'express-session';
 import { config, hashPassword, verifyPassword } from './src/config.js';
 import { storage } from './src/storage.js';
 import { parseM3uFile, Channel } from './src/m3uParser.js';
-import { userAuth } from './src/userAuth.js';
+import { userAuth, hashEmailId, ChannelAlertIssue } from './src/userAuth.js';
 import { StreamParser, SourceItem } from './src/streamParser.js';
 import { EpgParser, EpgSource } from './src/epgParser.js';
 import { catalogStore, checkStreamUrl } from './src/catalogStore.js';
@@ -424,6 +424,45 @@ async function fetchFirestoreUserProfile(
   }
 }
 
+async function fetchFirestoreInvite(
+  emailLower: string,
+  idToken: string
+): Promise<{ name?: string; playlists?: string[]; enabled?: boolean } | null> {
+  const cfg = getFirebaseCfg();
+  if (!cfg || !emailLower) return null;
+  const emailHash = hashEmailId(emailLower);
+  const url = `https://firestore.googleapis.com/v1/projects/${encodeURIComponent(cfg.projectId)}/databases/${encodeURIComponent(cfg.firestoreDatabaseId)}/documents/invites/${encodeURIComponent(emailHash)}`;
+  try {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${idToken}` },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return null;
+    const doc = (await res.json()) as {
+      fields?: Record<
+        string,
+        {
+          stringValue?: string;
+          booleanValue?: boolean;
+          arrayValue?: { values?: Array<{ stringValue?: string }> };
+        }
+      >;
+    };
+    const f = doc.fields || {};
+    return {
+      name: f.name?.stringValue,
+      enabled: f.enabled?.booleanValue,
+      playlists: Array.isArray(f.playlists?.arrayValue?.values)
+        ? f.playlists!.arrayValue!.values!
+            .map((v) => v.stringValue || '')
+            .filter(Boolean)
+        : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function getViewerFromRequest(req: Request): {
   userId: string;
   login: string;
@@ -477,6 +516,14 @@ app.get('/sw.js', (_req, res) => {
   res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
   res.type('application/javascript');
   res.sendFile(path.join(rootDir, 'sw.js'));
+});
+app.get('/favicon.ico', (_req, res) => {
+  const icoPath = path.join(rootDir, 'assets/icons/icon-192.png');
+  if (fs.existsSync(icoPath)) {
+    res.sendFile(icoPath);
+    return;
+  }
+  res.status(204).end();
 });
 
 // ============ PUBLIC APK OTA UPDATE & DOWNLOAD ROUTES ============
@@ -771,8 +818,10 @@ app.post('/api/auth/unified-google-login', async (req, res) => {
       return;
     }
 
-    // Viewer via Google Sign-In: check local synced DB AND authoritative Firestore profile
+    // Viewer via Google Sign-In: check Firestore profile, Firestore invite, local invite, and local synced DB
     const fsProfile = await fetchFirestoreUserProfile(decoded.uid, token);
+    const fsInvite = await fetchFirestoreInvite(emailLower, token);
+    const localInvite = userAuth.findInviteByEmail(emailLower);
     const fallbackLogin = (decoded.email.split('@')[0] || decoded.uid)
       .replace(/[^a-zA-Z0-9_.-]/g, '_')
       .slice(0, 32);
@@ -784,23 +833,37 @@ app.post('/api/auth/unified-google-login', async (req, res) => {
       : [];
 
     const existing = userAuth.find(decoded.uid) || userAuth.findByLogin(fallbackLogin);
-    const effectiveEnabled = fsProfile
+    const inviteSource = fsInvite || localInvite;
+
+    let effectiveEnabled = fsProfile
       ? Boolean(fsProfile.enabled)
       : existing
         ? Boolean(existing.enabled)
         : false;
-    const effectivePlaylists = fsProfile?.playlists ?? existing?.playlists ?? reqPlaylists;
+    let effectivePlaylists = fsProfile?.playlists ?? existing?.playlists ?? reqPlaylists;
+    if (!effectiveEnabled && (!effectivePlaylists || effectivePlaylists.length === 0) && inviteSource) {
+      effectiveEnabled = Boolean(inviteSource.enabled);
+      effectivePlaylists = Array.isArray(inviteSource.playlists) ? inviteSource.playlists : [];
+    }
+
     const effectiveLogin = fsProfile?.login || existing?.login || fallbackLogin;
     const effectiveName =
-      fsProfile?.name || existing?.name || decoded.name || effectiveLogin;
+      fsProfile?.name ||
+      (inviteSource?.name ? inviteSource.name : '') ||
+      existing?.name ||
+      decoded.name ||
+      effectiveLogin;
 
     const synced = userAuth.upsertSyncedUser({
       id: decoded.uid,
       login: effectiveLogin,
       name: effectiveName,
-      playlists: effectivePlaylists.filter((p: string) => storage.isValidFilename(p)),
+      playlists: (effectivePlaylists || []).filter((p: string) => storage.isValidFilename(p)),
       enabled: effectiveEnabled,
     });
+    if (localInvite) {
+      userAuth.markInviteClaimed(emailLower, decoded.uid);
+    }
 
     if (!synced.enabled) {
       noCacheJson(
@@ -960,18 +1023,32 @@ app.post('/watch/api/firebase-session', async (req, res) => {
       .replace(/[^a-zA-Z0-9_.-]/g, '_')
       .slice(0, 32);
     const fsProfile = await fetchFirestoreUserProfile(decoded.uid, token);
+    const fsInvite = await fetchFirestoreInvite(emailLower, token);
+    const localInvite = userAuth.findInviteByEmail(emailLower);
     const existing = userAuth.find(decoded.uid) || userAuth.findByLogin(fallbackLogin);
+    const inviteSource = fsInvite || localInvite;
 
-    const enabled = fsProfile ? Boolean(fsProfile.enabled) : Boolean(existing?.enabled);
+    let enabled = fsProfile ? Boolean(fsProfile.enabled) : Boolean(existing?.enabled);
+    let resolvedPlaylists = fsProfile?.playlists || existing?.playlists || reqPlaylists;
+    if (!enabled && (!resolvedPlaylists || resolvedPlaylists.length === 0) && inviteSource) {
+      enabled = Boolean(inviteSource.enabled);
+      resolvedPlaylists = Array.isArray(inviteSource.playlists) ? inviteSource.playlists : [];
+    }
+
     const synced = userAuth.upsertSyncedUser({
       id: decoded.uid,
       login: fsProfile?.login || existing?.login || String(req.body?.login || fallbackLogin).trim(),
-      name: fsProfile?.name || existing?.name || String(req.body?.name || decoded.name || fallbackLogin).trim(),
-      playlists: (fsProfile?.playlists || existing?.playlists || reqPlaylists).filter((p: string) =>
-        storage.isValidFilename(p)
-      ),
+      name:
+        fsProfile?.name ||
+        (inviteSource?.name ? inviteSource.name : '') ||
+        existing?.name ||
+        String(req.body?.name || decoded.name || fallbackLogin).trim(),
+      playlists: resolvedPlaylists.filter((p: string) => storage.isValidFilename(p)),
       enabled,
     });
+    if (localInvite) {
+      userAuth.markInviteClaimed(emailLower, decoded.uid);
+    }
 
     if (!synced.enabled) {
       noCacheJson(
@@ -1014,6 +1091,34 @@ app.use('/watch/api', (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+function diagnoseChannelUrl(
+  rawUrl: string,
+  statusMap: Map<string, { online: number; http_code: number; checked_at: number }>
+): string | null {
+  const url = (rawUrl || '').trim();
+  if (!url) return 'Отсутствует ссылка на поток';
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return 'Некорректная ссылка потока';
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return `Неподдерживаемый протокол (${parsed.protocol.replace(':', '')})`;
+  }
+  if (isBlockedProxyHostname(parsed.hostname)) {
+    return 'Заблокированный локальный/приватный адрес потока';
+  }
+  const st = statusMap.get(url);
+  if (st && st.checked_at > 0 && st.online === 0) {
+    if (st.http_code >= 400) {
+      return `Источник вернул ошибку HTTP ${st.http_code}`;
+    }
+    return 'Источник не отвечает (таймаут проверки в каталоге)';
+  }
+  return null;
+}
+
 app.get('/watch/api/channels', (req, res) => {
   const viewer = (
     req as Request & { currentViewer: NonNullable<ReturnType<typeof getViewerFromRequest>> }
@@ -1024,19 +1129,58 @@ app.get('/watch/api/channels', (req, res) => {
 
   const playlists = viewer.playlists;
   const all: Channel[] = [];
+  const unavailable: Array<{ name: string; group: string; reason: string; playlist?: string }> = [];
   const seen = new Set<string>();
+  const statusMap = catalogStore.getStreamStatusMap();
 
   for (const pl of playlists) {
-    if (!storage.isValidFilename(pl)) continue;
+    if (!storage.isValidFilename(pl)) {
+      unavailable.push({
+        name: `Плейлист ${pl}`,
+        group: 'Плейлист',
+        reason: 'Некорректное имя плейлиста',
+        playlist: pl,
+      });
+      continue;
+    }
     const filePath = storage.getPlaylistPath(pl);
-    if (!fs.existsSync(filePath)) continue;
+    if (!fs.existsSync(filePath)) {
+      unavailable.push({
+        name: `Плейлист ${pl}.m3u`,
+        group: 'Плейлист',
+        reason: 'Назначенный плейлист не найден на сервере',
+        playlist: pl,
+      });
+      continue;
+    }
     const chans = parseM3uFile(filePath);
+    if (chans.length === 0) {
+      unavailable.push({
+        name: `Плейлист ${pl}.m3u`,
+        group: 'Плейлист',
+        reason: 'Плейлист пуст (нет каналов)',
+        playlist: pl,
+      });
+      continue;
+    }
     for (const ch of chans) {
       const name = (ch.name || '').trim();
       if (!name) continue;
       const key = name.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
+
+      const urlReason = diagnoseChannelUrl(ch.url || '', statusMap);
+      if (urlReason) {
+        unavailable.push({
+          name,
+          group: ch.group || 'Без категории',
+          reason: urlReason,
+          playlist: pl,
+        });
+        continue;
+      }
+
       all.push({
         name,
         group: ch.group || '',
@@ -1047,14 +1191,41 @@ app.get('/watch/api/channels', (req, res) => {
     }
   }
 
+  const totalCount = all.length + unavailable.length;
+
   noCacheJson(res, {
     channels: all,
+    unavailable,
+    stats: {
+      total: totalCount,
+      available: all.length,
+      unavailable: unavailable.length,
+    },
+    playlists,
     user: {
       name: viewer.name,
       login: viewer.login,
       isAdmin: viewer.isAdminViewer,
     },
   });
+});
+
+app.post('/watch/api/report-unavailable', (req, res) => {
+  const viewer = (
+    req as Request & { currentViewer: NonNullable<ReturnType<typeof getViewerFromRequest>> }
+  ).currentViewer;
+  const totalChannels = Math.max(0, Number(req.body?.totalChannels) || 0);
+  const rawItems = Array.isArray(req.body?.items) ? (req.body.items as ChannelAlertIssue[]) : [];
+
+  const alert = userAuth.upsertAlert({
+    userId: viewer.userId,
+    userLogin: viewer.login,
+    userName: viewer.name,
+    totalChannels,
+    items: rawItems,
+  });
+
+  noCacheJson(res, { ok: true, alert });
 });
 
 app.all('/watch/api/ping', (req, res) => {
@@ -1081,6 +1252,159 @@ app.get('/watch/api/epg/now', async (req, res) => {
   } catch {
     noCacheJson(res, { current: null, next: null });
   }
+});
+
+// ============ WATCH ADMIN ROUTES (ADMIN VIEWER ONLY — FOR TV UI) ============
+function requireAdminViewer(req: Request, res: Response, next: NextFunction): void {
+  const viewer = (
+    req as Request & { currentViewer?: NonNullable<ReturnType<typeof getViewerFromRequest>> }
+  ).currentViewer;
+  if (!viewer || !viewer.isAdminViewer) {
+    noCacheJson(res, { error: 'Требуются права администратора' }, 403);
+    return;
+  }
+  next();
+}
+
+app.use('/watch/api/admin', requireAdminViewer);
+
+app.get('/watch/api/admin/playlists', (_req, res) => {
+  noCacheJson(res, { playlists: storage.getPlaylists() });
+});
+
+app.get('/watch/api/admin/users', (_req, res) => {
+  const users = userAuth.all();
+  const sessions = userAuth.getSessions();
+  const now = Math.floor(Date.now() / 1000);
+  const out = users.map((u) => {
+    const s = sessions[u.id];
+    const online = Boolean(s && now - (s.last_ping || 0) < 90);
+    return {
+      id: u.id,
+      login: u.login,
+      name: u.name || '',
+      playlists: u.playlists || [],
+      enabled: Boolean(u.enabled),
+      created_at: u.created_at || 0,
+      online,
+      last_ping: s?.last_ping || 0,
+      last_ip: s?.ip || '',
+      last_ua: s?.ua || '',
+    };
+  });
+  noCacheJson(res, {
+    users: out,
+    invites: userAuth.allInvites(),
+    playlists: storage.getPlaylists(),
+  });
+});
+
+app.post('/watch/api/admin/users/save', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const login = String(req.body?.login || '').trim();
+  const password = String(req.body?.password || '');
+  const name = String(req.body?.name || '').trim();
+  const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : [];
+  const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : true;
+
+  if (!id) {
+    const created = userAuth.create(login, password, name, playlists, enabled);
+    if (!created.ok) {
+      noCacheJson(res, { error: created.error || 'Ошибка' }, 400);
+      return;
+    }
+    noCacheJson(res, { ok: true, user: created.user });
+    return;
+  }
+
+  const existing = userAuth.find(id);
+  if (!existing) {
+    const synced = userAuth.upsertSyncedUser({
+      id,
+      login: login || id,
+      name: name || login || id,
+      playlists,
+      enabled,
+    });
+    if (password) {
+      const pwdRes = userAuth.update(synced.id, { password });
+      if (!pwdRes.ok) {
+        noCacheJson(res, { error: pwdRes.error || 'Ошибка' }, 400);
+        return;
+      }
+    }
+    noCacheJson(res, { ok: true, user: synced });
+    return;
+  }
+
+  const updated = userAuth.update(id, { name, playlists, enabled, password });
+  if (!updated.ok) {
+    noCacheJson(res, { error: updated.error || 'Ошибка' }, 400);
+    return;
+  }
+  noCacheJson(res, { ok: true });
+});
+
+app.post('/watch/api/admin/users/delete', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  if (!id) {
+    noCacheJson(res, { error: 'Пустой ID' }, 400);
+    return;
+  }
+  if (userAuth.delete(id)) {
+    noCacheJson(res, { ok: true });
+    return;
+  }
+  noCacheJson(res, { error: 'Пользователь не найден' }, 404);
+});
+
+app.post('/watch/api/admin/invites/save', (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const name = String(req.body?.name || '').trim();
+  const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : [];
+  const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : true;
+  const saved = userAuth.saveInvite({ email, name, playlists, enabled });
+  if (!saved.ok) {
+    noCacheJson(res, { error: saved.error || 'Ошибка сохранения приглашения' }, 400);
+    return;
+  }
+  noCacheJson(res, { ok: true, invite: saved.invite });
+});
+
+app.post('/watch/api/admin/invites/delete', (req, res) => {
+  const id = String(req.body?.id || req.body?.email || '').trim();
+  if (!id || !userAuth.deleteInvite(id)) {
+    noCacheJson(res, { error: 'Приглашение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, { ok: true });
+});
+
+app.get('/watch/api/admin/alerts', (_req, res) => {
+  const alerts = userAuth.allAlerts();
+  noCacheJson(res, {
+    alerts,
+    activeCount: alerts.filter((a) => !a.resolved && a.unavailableCount > 0).length,
+  });
+});
+
+app.post('/watch/api/admin/alerts/resolve', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const resolved = req.body?.resolved !== undefined ? Boolean(req.body.resolved) : true;
+  if (!id || !userAuth.resolveAlert(id, resolved)) {
+    noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, { ok: true });
+});
+
+app.post('/watch/api/admin/alerts/delete', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  if (!id || !userAuth.deleteAlert(id)) {
+    noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, { ok: true });
 });
 
 app.use('/watch/api', (_req, res) => {
@@ -1512,10 +1836,10 @@ app.post('/api/users/save', (req, res) => {
   const password = String(req.body?.password || '');
   const name = String(req.body?.name || '').trim();
   const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : [];
-  const enabled = Boolean(req.body?.enabled);
+  const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : true;
 
   if (!id) {
-    const created = userAuth.create(login, password, name, playlists);
+    const created = userAuth.create(login, password, name, playlists, enabled);
     if (!created.ok) {
       noCacheJson(res, { error: created.error || 'Ошибка' }, 400);
       return;
@@ -1603,6 +1927,83 @@ app.get('/api/users/online', (_req, res) => {
       ip: sessions[u.id].ip || '',
     }));
   noCacheJson(res, { online, count: online.length });
+});
+
+// Invites & Channel Alerts Admin API (for /editor)
+app.get('/api/invites', (_req, res) => {
+  noCacheJson(res, { invites: userAuth.allInvites() });
+});
+
+app.post('/api/invites/save', (req, res) => {
+  const email = String(req.body?.email || '').trim().toLowerCase();
+  const name = String(req.body?.name || '').trim();
+  const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : [];
+  const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : true;
+  const saved = userAuth.saveInvite({ email, name, playlists, enabled });
+  if (!saved.ok) {
+    noCacheJson(res, { error: saved.error || 'Ошибка сохранения приглашения' }, 400);
+    return;
+  }
+  noCacheJson(res, { ok: true, invite: saved.invite });
+});
+
+app.post('/api/invites/delete', (req, res) => {
+  const id = String(req.body?.id || req.body?.email || '').trim();
+  if (!id || !userAuth.deleteInvite(id)) {
+    noCacheJson(res, { error: 'Приглашение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, { ok: true });
+});
+
+app.post('/api/invites/sync-from-firebase', (req, res) => {
+  const list = Array.isArray(req.body?.invites) ? req.body.invites : [];
+  let count = 0;
+  for (const item of list) {
+    if (!item || typeof item !== 'object') continue;
+    const raw = item as Record<string, unknown>;
+    const email = String(raw.email || '').trim().toLowerCase();
+    if (!email) continue;
+    const playlists = Array.isArray(raw.playlists)
+      ? raw.playlists.filter((p): p is string => typeof p === 'string')
+      : [];
+    const saved = userAuth.saveInvite({
+      email,
+      name: String(raw.name || email.split('@')[0] || 'Пользователь').trim(),
+      playlists,
+      enabled: raw.enabled !== undefined ? Boolean(raw.enabled) : true,
+      claimed_uid: typeof raw.claimedUid === 'string' ? raw.claimedUid : '',
+    });
+    if (saved.ok) count++;
+  }
+  noCacheJson(res, { ok: true, count });
+});
+
+app.get('/api/alerts', (_req, res) => {
+  const alerts = userAuth.allAlerts();
+  noCacheJson(res, {
+    alerts,
+    activeCount: alerts.filter((a) => !a.resolved && a.unavailableCount > 0).length,
+  });
+});
+
+app.post('/api/alerts/resolve', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const resolved = req.body?.resolved !== undefined ? Boolean(req.body.resolved) : true;
+  if (!id || !userAuth.resolveAlert(id, resolved)) {
+    noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, { ok: true });
+});
+
+app.post('/api/alerts/delete', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  if (!id || !userAuth.deleteAlert(id)) {
+    noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, { ok: true });
 });
 
 // Catalog endpoints (persistent disk-backed CatalogStore)

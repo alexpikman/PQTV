@@ -120,6 +120,21 @@
                     <span>Установить</span>
                 </button>
                 <% if (isAdminViewer) { %>
+                <button type="button" class="tb-btn tb-alert-btn" id="tb-admin-alerts" title="Предупреждения о каналах (Админ)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                    <span id="tv-alerts-badge" class="tv-alerts-badge hidden">0</span>
+                </button>
+                <button type="button" class="tb-btn" id="tb-admin-users" title="Пользователи и приглашения (Админ)">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                        <circle cx="9" cy="7" r="4"/>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
+                        <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                </button>
                 <a class="tb-btn" href="/editor" title="Панель администратора">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/>
@@ -195,6 +210,16 @@
             </aside>
 
             <section class="watch-content" id="watch-content">
+                <div class="watch-summary-bar" id="watch-summary-bar">
+                    <div class="watch-summary-counts" id="watch-summary-counts">Доступно каналов: —</div>
+                    <button type="button" class="watch-unavail-btn hidden" id="btn-unavailable-channels">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                        </svg>
+                        <span>Недоступно: <strong id="watch-unavail-count">0</strong></span>
+                    </button>
+                </div>
                 <div class="channel-grid grid-mode" id="watch-grid">
                     <div class="watch-empty"><div class="spinner" style="margin: 0 auto 16px;"></div><div>Загрузка...</div></div>
                 </div>
@@ -247,6 +272,161 @@
             </div>
         </div>
     </div>
+
+    <!-- ============ UNAVAILABLE CHANNELS MODAL ============ -->
+    <div id="unavailable-modal" class="ch-menu hidden">
+        <div class="ch-menu-backdrop" data-unavail-close></div>
+        <div class="ch-menu-window tv-wide-window">
+            <div class="ch-menu-head">
+                <div class="ch-menu-logo-wrap" style="background:rgba(245,158,11,0.16); color:#fbbf24; border-color:rgba(245,158,11,0.35);">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:1;">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </div>
+                <div class="ch-menu-info">
+                    <div class="ch-menu-title">Недоступные каналы</div>
+                    <div class="ch-menu-cat" id="unavail-modal-subtitle">Список каналов, недоступных для просмотра, и причины</div>
+                </div>
+            </div>
+            <div class="tv-scroll-body" id="unavailable-list"></div>
+            <div class="ch-menu-actions" style="margin-top:14px; grid-template-columns:1fr;">
+                <button type="button" class="ch-menu-btn" data-unavail-close>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <span>Закрыть</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <% if (isAdminViewer) { %>
+    <!-- ============ TV ADMIN: USERS & INVITES MODAL ============ -->
+    <div id="tv-users-modal" class="ch-menu hidden">
+        <div class="ch-menu-backdrop" data-tv-users-close></div>
+        <div class="ch-menu-window tv-wide-window">
+            <div class="ch-menu-head">
+                <div class="ch-menu-logo-wrap" style="background:linear-gradient(135deg,var(--primary),var(--violet)); color:#fff;">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:1;">
+                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>
+                        <path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
+                    </svg>
+                </div>
+                <div class="ch-menu-info">
+                    <div class="ch-menu-title">Пользователи ТВ</div>
+                    <div class="ch-menu-cat">Облачные приглашения Google и локальные аккаунты</div>
+                </div>
+            </div>
+            <div class="ch-menu-actions" style="margin-bottom:12px;">
+                <button type="button" class="ch-menu-btn ch-menu-watch" id="tv-btn-add-user">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                    <span>+ Добавить пользователя</span>
+                </button>
+                <button type="button" class="ch-menu-btn" id="tv-btn-refresh-users">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <span>Обновить список</span>
+                </button>
+            </div>
+            <div class="tv-scroll-body" id="tv-users-list"></div>
+            <div class="ch-menu-actions" style="margin-top:12px; grid-template-columns:1fr;">
+                <button type="button" class="ch-menu-btn" data-tv-users-close>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <span>Закрыть</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ TV ADMIN: USER / INVITE POPUP MODAL ============ -->
+    <div id="tv-user-popup" class="ch-menu hidden" style="z-index:9200;">
+        <div class="ch-menu-backdrop" data-tv-popup-close></div>
+        <div class="ch-menu-window tv-wide-window" style="max-width:560px;">
+            <div class="ch-menu-head" style="margin-bottom:12px; padding-bottom:12px;">
+                <div class="ch-menu-info">
+                    <div class="ch-menu-title" id="tv-user-popup-title">Добавить пользователя</div>
+                    <div class="ch-menu-cat" id="tv-user-popup-sub">Выберите способ входа и доступные плейлисты</div>
+                </div>
+            </div>
+            <div class="tv-mode-tabs" id="tv-user-mode-tabs">
+                <button type="button" class="tv-mode-tab active" id="tv-tab-invite" data-mode="invite">Приглашение на Google Email</button>
+                <button type="button" class="tv-mode-tab" id="tv-tab-local" data-mode="local">Логин + Пароль</button>
+            </div>
+            <div class="tv-scroll-body" style="gap:10px;">
+                <input type="hidden" id="tv-u-id" value="">
+                <div id="tv-field-email-group" class="tv-field">
+                    <label for="tv-u-email">Google Email (Gmail)</label>
+                    <input type="email" id="tv-u-email" class="tv-input" placeholder="user@gmail.com" autocomplete="off">
+                </div>
+                <div id="tv-field-login-group" class="tv-field hidden">
+                    <label for="tv-u-login">Логин</label>
+                    <input type="text" id="tv-u-login" class="tv-input" placeholder="user1" autocomplete="off">
+                </div>
+                <div id="tv-field-password-group" class="tv-field hidden">
+                    <label for="tv-u-password">Пароль <span id="tv-u-pass-hint" style="font-weight:400; color:var(--muted);"></span></label>
+                    <input type="password" id="tv-u-password" class="tv-input" placeholder="Минимум 4 символа" autocomplete="new-password">
+                </div>
+                <div class="tv-field">
+                    <label for="tv-u-name">Отображаемое имя</label>
+                    <input type="text" id="tv-u-name" class="tv-input" placeholder="Например: Гостиная ТВ" autocomplete="off">
+                </div>
+                <div class="tv-field">
+                    <div class="tv-pl-head">
+                        <span>Доступные плейлисты</span>
+                        <div class="tv-pl-quick">
+                            <button type="button" class="tv-mini-btn" id="tv-u-pl-all">Все</button>
+                            <button type="button" class="tv-mini-btn" id="tv-u-pl-none">Сбросить</button>
+                        </div>
+                    </div>
+                    <div id="tv-u-playlists-box" class="tv-pl-grid"></div>
+                </div>
+                <button type="button" class="ch-menu-btn" id="tv-u-enabled-btn" style="justify-content:space-between;">
+                    <span>Доступ к просмотру</span>
+                    <strong id="tv-u-enabled-state" style="color:#6ee7b7;">Включён</strong>
+                </button>
+                <div id="tv-u-error" class="tv-form-error hidden"></div>
+            </div>
+            <div class="ch-menu-actions" style="margin-top:12px;">
+                <button type="button" class="ch-menu-btn ch-menu-watch" id="tv-u-save">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+                    <span>Сохранить</span>
+                </button>
+                <button type="button" class="ch-menu-btn" data-tv-popup-close>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <span>Отмена</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ============ TV ADMIN: CHANNEL ALERTS MODAL ============ -->
+    <div id="tv-alerts-modal" class="ch-menu hidden">
+        <div class="ch-menu-backdrop" data-tv-alerts-close></div>
+        <div class="ch-menu-window tv-wide-window">
+            <div class="ch-menu-head">
+                <div class="ch-menu-logo-wrap" style="background:rgba(239,68,68,0.16); color:#fca5a5; border-color:rgba(239,68,68,0.35);">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="opacity:1;">
+                        <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+                    </svg>
+                </div>
+                <div class="ch-menu-info">
+                    <div class="ch-menu-title">Предупреждения о каналах</div>
+                    <div class="ch-menu-cat">Отчёты о недоступных каналах при открытии приложения</div>
+                </div>
+            </div>
+            <div class="ch-menu-actions" style="margin-bottom:12px;">
+                <button type="button" class="ch-menu-btn" id="tv-btn-refresh-alerts">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+                    <span>Обновить</span>
+                </button>
+                <button type="button" class="ch-menu-btn" data-tv-alerts-close>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    <span>Закрыть</span>
+                </button>
+            </div>
+            <div class="tv-scroll-body" id="tv-alerts-list"></div>
+        </div>
+    </div>
+    <% } %>
 
     <!-- ============ CHANNEL ACTION MENU ============ -->
     <div id="channel-menu" class="ch-menu hidden">

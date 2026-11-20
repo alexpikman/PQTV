@@ -262,6 +262,23 @@ class CatalogStore {
     };
   }
 
+  getStreamStatusMap(): Map<string, { online: number; http_code: number; checked_at: number }> {
+    this.ensureInit();
+    const map = new Map<string, { online: number; http_code: number; checked_at: number }>();
+    for (const s of this.streams) {
+      if (!s.url || !s.checked_at) continue;
+      const prev = map.get(s.url);
+      if (!prev || s.online === 1 || (prev.online !== 1 && s.checked_at > prev.checked_at)) {
+        map.set(s.url, {
+          online: s.online,
+          http_code: s.http_code || 0,
+          checked_at: s.checked_at || 0,
+        });
+      }
+    }
+    return map;
+  }
+
   getUsedPlaylists(): string[] {
     this.ensureInit();
     const set = new Set<string>();

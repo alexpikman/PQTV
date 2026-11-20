@@ -814,3 +814,97 @@ a:hover { text-decoration: underline; }
     border-color: rgba(99,102,241,0.5);
     color: var(--primary-hi);
 }
+
+/* ========== USER POPUP TABS & ADMIN ALERTS ========== */
+.mode-tabs {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+.mode-tab {
+    padding: 9px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-1);
+    color: var(--muted);
+    font-size: 12.5px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: var(--t);
+}
+.mode-tab:hover {
+    color: #fff;
+    border-color: var(--border-hi);
+}
+.mode-tab.active {
+    background: linear-gradient(135deg, rgba(99,102,241,0.24), rgba(139,92,246,0.16));
+    border-color: rgba(99,102,241,0.55);
+    color: #fff;
+}
+.btn-link-sm {
+    background: transparent;
+    border: none;
+    color: var(--primary-hi);
+    font-size: 11.5px;
+    font-weight: 600;
+    cursor: pointer;
+    padding: 2px 4px;
+}
+.btn-link-sm:hover { text-decoration: underline; }
+.alerts-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    border-radius: 999px;
+    background: #ef4444;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 800;
+    margin-left: 4px;
+}
+.alert-card {
+    background: var(--bg-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    margin-bottom: 12px;
+}
+.alert-card.unresolved {
+    border-color: rgba(245,158,11,0.45);
+    background: rgba(245,158,11,0.06);
+}
+.alert-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+.alert-card-items {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 220px;
+    overflow-y: auto;
+}
+.alert-item-row {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 7px 10px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 12.5px;
+}
+.alert-item-reason {
+    color: #fca5a5;
+    font-size: 12px;
+    text-align: right;
+}
+

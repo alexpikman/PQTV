@@ -38,6 +38,13 @@
           "description": "Access role.",
           "enum": ["user", "admin"]
         },
+        "inviteId": {
+          "type": "string",
+          "description": "Optional SHA-256 lowercase email invite ID used to claim pre-assigned playlists.",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
         "lastPing": {
           "type": "string",
           "format": "date-time",
@@ -111,6 +118,143 @@
         }
       },
       "required": ["uid", "createdAt"]
+    },
+    "Invite": {
+      "title": "Invite",
+      "description": "Cloud invitation for a Google account with pre-assigned playlists (no PII in document).",
+      "type": "object",
+      "properties": {
+        "emailHash": {
+          "type": "string",
+          "description": "SHA-256 hex digest of normalized lowercase invited email.",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name assigned by admin.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "playlists": {
+          "type": "array",
+          "description": "Assigned playlist filenames (max 20)."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether the invite immediately grants viewing access."
+        },
+        "invitedByUid": {
+          "type": "string",
+          "description": "Admin UID who created the invite.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "claimedUid": {
+          "type": "string",
+          "description": "Firebase UID of the user who claimed this invite.",
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]*$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["emailHash", "name", "playlists", "enabled", "invitedByUid", "createdAt", "updatedAt"]
+    },
+    "InvitePrivateInfo": {
+      "title": "InvitePrivateInfo",
+      "description": "Isolated PII record holding the invited Google email.",
+      "type": "object",
+      "properties": {
+        "emailHash": {
+          "type": "string",
+          "description": "Matching SHA-256 hex digest of email.",
+          "minLength": 64,
+          "maxLength": 64,
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Normalized lowercase Google email address.",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["emailHash", "email", "createdAt", "updatedAt"]
+    },
+    "ChannelAlert": {
+      "title": "ChannelAlert",
+      "description": "Admin warning recorded when a viewer opens PQTV and encounters unavailable channels.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Viewer UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userLogin": {
+          "type": "string",
+          "description": "Viewer login or email handle.",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "userName": {
+          "type": "string",
+          "description": "Viewer display name.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "totalChannels": {
+          "type": "integer",
+          "description": "Total channels assigned to viewer."
+        },
+        "unavailableCount": {
+          "type": "integer",
+          "description": "Number of unavailable channels detected."
+        },
+        "items": {
+          "type": "array",
+          "description": "Bounded list (max 50) of unavailable channels with reasons."
+        },
+        "resolved": {
+          "type": "boolean",
+          "description": "Whether admin marked the alert resolved."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["uid", "userLogin", "userName", "totalChannels", "unavailableCount", "items", "resolved", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -125,6 +269,18 @@
     "/admins/{userId}": {
       "schema": { "$ref": "#/entities/AdminRole" },
       "description": "Trusted admin role documents checked by Firestore security rules."
+    },
+    "/invites/{inviteId}": {
+      "schema": { "$ref": "#/entities/Invite" },
+      "description": "Cloud Google email invites with pre-assigned playlists (keyed by email SHA-256)."
+    },
+    "/invites/{inviteId}/private/info": {
+      "schema": { "$ref": "#/entities/InvitePrivateInfo" },
+      "description": "Isolated PII document containing the invited email address."
+    },
+    "/channel_alerts/{alertId}": {
+      "schema": { "$ref": "#/entities/ChannelAlert" },
+      "description": "Admin alerts showing users who opened the app and discovered unavailable channels."
     }
   }
 }

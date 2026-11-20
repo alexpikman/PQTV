@@ -890,12 +890,20 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    // ===== USERS =====
+    // ===== USERS, INVITES & CHANNEL ALERTS =====
     let usersData = [];
     let localUsersCache = [];
     let firestoreUsersCache = [];
+    let invitesData = [];
+    let localInvitesCache = [];
+    let firestoreInvitesCache = [];
+    let alertsData = [];
+    let localAlertsCache = [];
+    let firestoreAlertsCache = [];
     let fbAdminConnected = false;
     let fbUnsubscribe = null;
+    let fbInvitesUnsubscribe = null;
+    let fbAlertsUnsubscribe = null;
 
     function showUsersError(msg) {
         const box = document.getElementById('users-fb-error');
@@ -910,7 +918,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function showUserFormError(msg) {
-        const box = document.getElementById('user-form-error');
+        const box = document.getElementById('popup-user-error');
         if (!box) return;
         if (!msg) {
             box.textContent = '';
@@ -924,7 +932,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function mergeAndRenderUsers() {
         if (!fbAdminConnected) {
             usersData = localUsersCache.map(u => Object.assign({}, u, { inFirestore: false }));
+            invitesData = localInvitesCache.map(inv => Object.assign({}, inv, { inFirestore: false }));
             renderUsers();
+            renderInvites();
             return;
         }
         const localById = new Map(localUsersCache.map(u => [u.id, u]));
@@ -947,12 +957,31 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         usersData = merged;
+
+        const invSeen = new Set();
+        const mergedInv = [];
+        for (const fi of firestoreInvitesCache) {
+            invSeen.add(fi.id);
+            mergedInv.push(Object.assign({}, fi, { inFirestore: true }));
+        }
+        for (const li of localInvitesCache) {
+            if (!invSeen.has(li.id)) {
+                mergedInv.push(Object.assign({}, li, { inFirestore: false }));
+            }
+        }
+        invitesData = mergedInv;
+
         renderUsers();
+        renderInvites();
     }
 
     async function loadUsers() {
-        const res = await apiRequest('/api/users');
-        localUsersCache = Array.isArray(res.users) ? res.users : [];
+        const [uRes, invRes] = await Promise.all([
+            apiRequest('/api/users'),
+            apiRequest('/api/invites')
+        ]);
+        localUsersCache = Array.isArray(uRes.users) ? uRes.users : [];
+        localInvitesCache = Array.isArray(invRes.invites) ? invRes.invites : [];
         mergeAndRenderUsers();
     }
 
@@ -1007,6 +1036,180 @@ document.addEventListener('DOMContentLoaded', () => {
         el.querySelectorAll('[data-user-del]').forEach(b => b.onclick = () => deleteUser(parseInt(b.dataset.userDel)));
     }
 
+    function renderInvites() {
+        const el = document.getElementById('invites-list-container');
+        if (!el) return;
+        if (invitesData.length === 0) {
+            el.innerHTML = '<p style="color:var(--muted); font-size:12.5px;">Приглашений по Google Email пока нет. Нажмите «Добавить пользователя» и выберите вкладку Google Email.</p>';
+            return;
+        }
+        let html = `<table class="ch-table"><thead><tr>
+            <th>Google Email</th>
+            <th>Имя</th>
+            <th>Плейлисты</th>
+            <th style="width:120px;">Статус</th>
+            <th style="width:100px; text-align:right;">Действия</th>
+        </tr></thead><tbody>`;
+        invitesData.forEach((inv, idx) => {
+            const claimed = Boolean(inv.claimedUid || inv.claimed_uid);
+            const stateBadge = claimed
+                ? `<span class="badge-status badge-online">принято</span>`
+                : (inv.enabled ? `<span class="badge-status badge-unknown">ожидает</span>` : `<span class="badge-status badge-offline">выкл</span>`);
+            const pls = Array.isArray(inv.playlists) && inv.playlists.length > 0
+                ? inv.playlists.map(p => escapeHtml(p)).join(', ')
+                : '—';
+            html += `<tr>
+                <td>
+                    <b style="color:#fff;">${escapeHtml(inv.email || inv.id)}</b>
+                    ${fbAdminConnected ? `<span style="font-size:10px; color:${inv.inFirestore ? 'var(--primary-hi)' : 'var(--muted)'}; margin-left:6px;">${inv.inFirestore ? 'Firestore' : 'локальное'}</span>` : ''}
+                </td>
+                <td>${escapeHtml(inv.name || '—')}</td>
+                <td style="font-size:12px; color:var(--text-dim);">${pls}</td>
+                <td>${stateBadge}</td>
+                <td>
+                    <div class="actions-cell">
+                        <button class="icon-btn" data-inv-edit="${idx}" title="Изменить">${I.edit}</button>
+                        <button class="icon-btn danger" data-inv-del="${idx}" title="Удалить">${I.trash}</button>
+                    </div>
+                </td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        el.innerHTML = html;
+        el.querySelectorAll('[data-inv-edit]').forEach(b => b.onclick = () => editInvite(parseInt(b.dataset.invEdit)));
+        el.querySelectorAll('[data-inv-del]').forEach(b => b.onclick = () => deleteInvite(parseInt(b.dataset.invDel)));
+    }
+
+    // ===== ADMIN CHANNEL ALERTS =====
+    function mergeAndRenderAlerts() {
+        const byId = new Map();
+        for (const la of localAlertsCache) {
+            byId.set(la.id, Object.assign({}, la, { inFirestore: false }));
+        }
+        if (fbAdminConnected) {
+            for (const fa of firestoreAlertsCache) {
+                const prev = byId.get(fa.id);
+                if (!prev || (fa.updated_at || 0) >= (prev.updated_at || 0)) {
+                    byId.set(fa.id, Object.assign({}, fa, { inFirestore: true }));
+                }
+            }
+        }
+        alertsData = Array.from(byId.values()).sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+        const activeCount = alertsData.filter(a => !a.resolved && (a.unavailableCount || (a.items && a.items.length) || 0) > 0).length;
+        const badge = document.getElementById('admin-alerts-badge');
+        if (badge) {
+            badge.textContent = String(activeCount);
+            badge.classList.toggle('hidden', activeCount === 0);
+        }
+        renderAdminAlertsModal();
+    }
+
+    async function loadAdminAlerts() {
+        const res = await apiRequest('/api/alerts');
+        localAlertsCache = Array.isArray(res.alerts) ? res.alerts : [];
+        mergeAndRenderAlerts();
+    }
+
+    function fmtDateTime(ts) {
+        if (!ts) return '—';
+        try {
+            return new Date(ts * 1000).toLocaleString('ru-RU', {
+                day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+            });
+        } catch {
+            return String(ts);
+        }
+    }
+
+    function renderAdminAlertsModal() {
+        const listEl = document.getElementById('admin-alerts-list');
+        if (!listEl) return;
+        if (alertsData.length === 0) {
+            listEl.innerHTML = '<p class="placeholder-text" style="margin:30px 0;">Предупреждений пока нет — у всех пользователей каналы работают.</p>';
+            return;
+        }
+        listEl.innerHTML = alertsData.map((a) => {
+            const items = Array.isArray(a.items) ? a.items : [];
+            const statusTag = a.resolved
+                ? '<span class="badge-status badge-online">Решено</span>'
+                : '<span class="badge-status badge-offline">Есть ошибки</span>';
+            const itemsHtml = items.length === 0
+                ? '<div style="font-size:12px; color:var(--muted);">Все каналы доступны</div>'
+                : items.map(it => `
+                    <div class="alert-item-row">
+                        <div>
+                            <b style="color:#fff;">${escapeHtml(it.name)}</b>
+                            ${it.group ? `<span style="color:var(--muted); font-size:11px; margin-left:6px;">(${escapeHtml(it.group)})</span>` : ''}
+                        </div>
+                        <div class="alert-item-reason">${escapeHtml(it.reason)}</div>
+                    </div>
+                `).join('');
+
+            return `<div class="alert-card ${a.resolved ? '' : 'unresolved'}">
+                <div class="alert-card-head">
+                    <div>
+                        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                            <b style="color:#fff; font-size:14px;">${escapeHtml(a.userName || a.userLogin)}</b>
+                            <code style="font-size:11.5px; color:var(--primary-hi);">${escapeHtml(a.userLogin)}</code>
+                            ${statusTag}
+                        </div>
+                        <div style="font-size:11.5px; color:var(--muted); margin-top:4px;">
+                            Недоступно: <b style="color:#fca5a5;">${items.length}</b> из ${a.totalChannels || 0} · Обновлено: ${fmtDateTime(a.updated_at)}
+                        </div>
+                    </div>
+                    <div style="display:flex; gap:6px;">
+                        <button type="button" class="btn btn-secondary" data-alert-resolve="${escapeHtml(a.id)}" data-alert-next="${a.resolved ? '0' : '1'}" style="padding:6px 10px; font-size:11.5px;">
+                            ${a.resolved ? 'Открыть снова' : 'Отметить решённым'}
+                        </button>
+                        <button type="button" class="icon-btn danger" data-alert-del="${escapeHtml(a.id)}" title="Удалить отчёт">${I.trash}</button>
+                    </div>
+                </div>
+                <div class="alert-card-items">${itemsHtml}</div>
+            </div>`;
+        }).join('');
+
+        listEl.querySelectorAll('[data-alert-resolve]').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.alertResolve;
+                const nextResolved = btn.dataset.alertNext === '1';
+                await apiRequest('/api/alerts/resolve', 'POST', { id, resolved: nextResolved });
+                if (fbAdminConnected && window.PQTVFirebase) {
+                    await window.PQTVFirebase.resolveAlertAdmin(id, nextResolved).catch(() => {});
+                }
+                await loadAdminAlerts();
+            };
+        });
+        listEl.querySelectorAll('[data-alert-del]').forEach(btn => {
+            btn.onclick = async () => {
+                const id = btn.dataset.alertDel;
+                await apiRequest('/api/alerts/delete', 'POST', { id });
+                if (fbAdminConnected && window.PQTVFirebase) {
+                    await window.PQTVFirebase.deleteAlertAdmin(id).catch(() => {});
+                }
+                await loadAdminAlerts();
+            };
+        });
+    }
+
+    (function initAdminAlertsModal() {
+        const modal = document.getElementById('admin-alerts-modal');
+        const btnOpen = document.getElementById('btn-admin-alerts');
+        const btnClose = document.getElementById('admin-alerts-close');
+        const btnRefresh = document.getElementById('admin-alerts-refresh');
+        const backdrop = document.getElementById('admin-alerts-backdrop');
+        const closeModal = () => { if (modal) modal.classList.add('hidden'); };
+        if (btnOpen && modal) {
+            btnOpen.onclick = async () => {
+                modal.classList.remove('hidden');
+                await loadAdminAlerts();
+            };
+        }
+        if (btnRefresh) btnRefresh.onclick = loadAdminAlerts;
+        if (btnClose) btnClose.onclick = closeModal;
+        if (backdrop) backdrop.onclick = closeModal;
+        loadAdminAlerts();
+    })();
+
     function initFirebaseUsers() {
         const statusEl = document.getElementById('fb-status-text');
         const btnConnect = document.getElementById('btn-fb-connect');
@@ -1021,10 +1224,12 @@ document.addEventListener('DOMContentLoaded', () => {
             currentSignedIn = info.signedIn;
             showUsersError('');
             if (fbUnsubscribe) { fbUnsubscribe(); fbUnsubscribe = null; }
+            if (fbInvitesUnsubscribe) { fbInvitesUnsubscribe(); fbInvitesUnsubscribe = null; }
+            if (fbAlertsUnsubscribe) { fbAlertsUnsubscribe(); fbAlertsUnsubscribe = null; }
 
             if (info.signedIn && info.isAdmin) {
                 fbAdminConnected = true;
-                if (statusEl) statusEl.textContent = `Подключено: ${info.email} (синхронизация активна)`;
+                if (statusEl) statusEl.textContent = `Подключено: ${info.email} (облачная синхронизация активна)`;
                 if (btnConnect) btnConnect.textContent = 'Выйти из Google';
                 if (btnSync) btnSync.classList.remove('hidden');
 
@@ -1042,7 +1247,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 }))
                             });
                         } catch (syncErr) {
-                            console.error('Sync to server failed:', syncErr);
+                            console.error('Sync users to server failed:', syncErr);
                         }
                         await loadUsers();
                     },
@@ -1050,9 +1255,36 @@ document.addEventListener('DOMContentLoaded', () => {
                         showUsersError('Ошибка чтения Firestore: ' + (err && err.message ? err.message : String(err)));
                     }
                 );
+
+                fbInvitesUnsubscribe = window.PQTVFirebase.subscribeAdminInvites(
+                    async (fbInvites) => {
+                        firestoreInvitesCache = Array.isArray(fbInvites) ? fbInvites : [];
+                        try {
+                            await apiRequest('/api/invites/sync-from-firebase', 'POST', {
+                                invites: firestoreInvitesCache
+                            });
+                        } catch (syncErr) {
+                            console.error('Sync invites to server failed:', syncErr);
+                        }
+                        await loadUsers();
+                    },
+                    (err) => {
+                        showUsersError('Ошибка чтения приглашений Firestore: ' + (err && err.message ? err.message : String(err)));
+                    }
+                );
+
+                fbAlertsUnsubscribe = window.PQTVFirebase.subscribeAdminAlerts(
+                    (fbAlerts) => {
+                        firestoreAlertsCache = Array.isArray(fbAlerts) ? fbAlerts : [];
+                        mergeAndRenderAlerts();
+                    },
+                    () => {}
+                );
             } else {
                 fbAdminConnected = false;
                 firestoreUsersCache = [];
+                firestoreInvitesCache = [];
+                firestoreAlertsCache = [];
                 if (btnSync) btnSync.classList.add('hidden');
                 if (info.signedIn && !info.isAdmin) {
                     if (statusEl) statusEl.textContent = `Вход выполнен как ${info.email} (нет прав администратора Firestore)`;
@@ -1062,6 +1294,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (btnConnect) btnConnect.textContent = 'Войти в Google (Firebase)';
                 }
                 loadUsers();
+                loadAdminAlerts();
             }
         });
 
@@ -1105,8 +1338,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     initFirebaseUsers();
 
+    // ===== USER POPUP MODAL =====
     function renderUserPlaylistCheckboxes(selected) {
-        const box = document.getElementById('user-playlists-box');
+        const box = document.getElementById('popup-user-playlists-box');
         if (!box) return;
         const set = new Set(selected || []);
         if (playlistsList.length === 0) {
@@ -1121,52 +1355,139 @@ document.addEventListener('DOMContentLoaded', () => {
         `).join('');
     }
 
+    function setUserPopupMode(mode) {
+        const modeInput = document.getElementById('popup-user-mode');
+        const emailWrap = document.getElementById('user-popup-email-wrap');
+        const credsWrap = document.getElementById('user-popup-creds-wrap');
+        const emailInput = document.getElementById('popup-user-email');
+        const loginInput = document.getElementById('popup-user-login');
+        if (modeInput) modeInput.value = mode;
+        document.querySelectorAll('#user-popup-tabs .mode-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.userMode === mode);
+        });
+        if (emailWrap) emailWrap.classList.toggle('hidden', mode !== 'invite');
+        if (credsWrap) credsWrap.classList.toggle('hidden', mode !== 'password');
+        if (emailInput) emailInput.required = (mode === 'invite');
+        if (loginInput) loginInput.required = (mode === 'password');
+    }
+
+    function openUserPopup({ mode, id, email, login, name, playlists, enabled, lockMode }) {
+        const modal = document.getElementById('user-popup-modal');
+        const form = document.getElementById('user-popup-form');
+        if (!modal || !form) return;
+        form.reset();
+        showUserFormError('');
+
+        document.getElementById('popup-user-id').value = id || '';
+        document.getElementById('popup-user-email').value = email || '';
+        document.getElementById('popup-user-email').disabled = Boolean(lockMode && mode === 'invite');
+        document.getElementById('popup-user-login').value = login || '';
+        document.getElementById('popup-user-login').disabled = Boolean(id && !fbAdminConnected);
+        document.getElementById('popup-user-password').value = '';
+        document.getElementById('popup-user-password').required = (mode === 'password' && !id);
+        document.getElementById('popup-user-pwd-hint').textContent = id ? '(оставьте пустым, чтобы не менять)' : '(минимум 4 символа)';
+        document.getElementById('popup-user-name').value = name || '';
+        document.getElementById('popup-user-enabled').checked = enabled !== undefined ? Boolean(enabled) : true;
+        document.getElementById('user-popup-title').textContent = id ? 'Редактировать пользователя' : 'Новый пользователь';
+
+        const tabs = document.getElementById('user-popup-tabs');
+        if (tabs) tabs.classList.toggle('hidden', Boolean(lockMode));
+
+        setUserPopupMode(mode || 'invite');
+        renderUserPlaylistCheckboxes(playlists || []);
+        modal.classList.remove('hidden');
+    }
+
+    function closeUserPopup() {
+        const modal = document.getElementById('user-popup-modal');
+        if (modal) modal.classList.add('hidden');
+    }
+
+    (function initUserPopupControls() {
+        document.querySelectorAll('#user-popup-tabs .mode-tab').forEach(btn => {
+            btn.onclick = () => {
+                showUserFormError('');
+                const mode = btn.dataset.userMode || 'invite';
+                const id = document.getElementById('popup-user-id').value;
+                document.getElementById('popup-user-password').required = (mode === 'password' && !id);
+                setUserPopupMode(mode);
+            };
+        });
+        const selAll = document.getElementById('popup-pl-select-all');
+        const clrAll = document.getElementById('popup-pl-clear-all');
+        if (selAll) selAll.onclick = () => {
+            document.querySelectorAll('#popup-user-playlists-box input[type=checkbox]').forEach(cb => { cb.checked = true; });
+        };
+        if (clrAll) clrAll.onclick = () => {
+            document.querySelectorAll('#popup-user-playlists-box input[type=checkbox]').forEach(cb => { cb.checked = false; });
+        };
+        ['user-popup-backdrop', 'user-popup-close', 'popup-user-cancel'].forEach(elId => {
+            const el = document.getElementById(elId);
+            if (el) el.onclick = closeUserPopup;
+        });
+    })();
+
     const btnAddUser = document.getElementById('btn-add-user');
     if (btnAddUser) {
         btnAddUser.onclick = () => {
-            const f = document.getElementById('user-form');
-            if (f) f.reset();
-            showUserFormError('');
-            document.getElementById('user-id').value = '';
-            document.getElementById('user-form-title').textContent = 'Новый пользователь';
-            document.getElementById('user-login').disabled = false;
-            document.getElementById('user-pwd-hint').textContent = fbAdminConnected ? '(необязательно для Firestore)' : '';
-            document.getElementById('user-password').required = !fbAdminConnected;
-            document.getElementById('user-enabled').checked = true;
-            renderUserPlaylistCheckboxes([]);
-
-            if (formChannelContainer) formChannelContainer.classList.add('hidden');
-            if (formSourceContainer) formSourceContainer.classList.add('hidden');
-            const fe = document.getElementById('form-epg-container');
-            if (fe) fe.classList.add('hidden');
-            const fu = document.getElementById('form-user-container');
-            if (fu) fu.classList.remove('hidden');
-            if (colRight) colRight.classList.remove('hidden');
+            openUserPopup({
+                mode: 'invite',
+                id: '',
+                email: '',
+                login: '',
+                name: '',
+                playlists: [],
+                enabled: true,
+                lockMode: false
+            });
         };
     }
 
     function editUser(idx) {
         const u = usersData[idx];
         if (!u) return;
-        showUserFormError('');
-        document.getElementById('user-id').value = u.id;
-        document.getElementById('user-login').value = u.login;
-        document.getElementById('user-login').disabled = !fbAdminConnected;
-        document.getElementById('user-password').value = '';
-        document.getElementById('user-password').required = false;
-        document.getElementById('user-pwd-hint').textContent = '(оставьте пустым, чтобы не менять)';
-        document.getElementById('user-name').value = u.name || '';
-        document.getElementById('user-enabled').checked = !!u.enabled;
-        document.getElementById('user-form-title').textContent = 'Редактировать пользователя';
-        renderUserPlaylistCheckboxes(u.playlists || []);
+        openUserPopup({
+            mode: 'password',
+            id: u.id,
+            email: u.email || '',
+            login: u.login,
+            name: u.name || '',
+            playlists: u.playlists || [],
+            enabled: !!u.enabled,
+            lockMode: true
+        });
+    }
 
-        if (formChannelContainer) formChannelContainer.classList.add('hidden');
-        if (formSourceContainer) formSourceContainer.classList.add('hidden');
-        const fe = document.getElementById('form-epg-container');
-        if (fe) fe.classList.add('hidden');
-        const fu = document.getElementById('form-user-container');
-        if (fu) fu.classList.remove('hidden');
-        if (colRight) colRight.classList.remove('hidden');
+    function editInvite(idx) {
+        const inv = invitesData[idx];
+        if (!inv) return;
+        openUserPopup({
+            mode: 'invite',
+            id: inv.id,
+            email: inv.email || '',
+            login: '',
+            name: inv.name || '',
+            playlists: inv.playlists || [],
+            enabled: !!inv.enabled,
+            lockMode: true
+        });
+    }
+
+    async function deleteInvite(idx) {
+        const inv = invitesData[idx];
+        if (!inv) return;
+        if (!(await uiConfirm(`Удалить приглашение для "${inv.email || inv.id}"?`))) return;
+        showUsersError('');
+        try {
+            if (fbAdminConnected && inv.inFirestore && window.PQTVFirebase) {
+                await window.PQTVFirebase.deleteInviteAdmin(inv.id);
+            }
+            await apiRequest('/api/invites/delete', 'POST', { id: inv.id, email: inv.email });
+            await loadUsers();
+            showToast('Приглашение удалено', 'ok');
+        } catch (err) {
+            showUsersError((err && err.message) ? err.message : 'Ошибка удаления приглашения');
+        }
     }
 
     async function deleteUser(idx) {
@@ -1192,59 +1513,75 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    const userForm = document.getElementById('user-form');
-    if (userForm) {
-        userForm.onsubmit = async (e) => {
+    const userPopupForm = document.getElementById('user-popup-form');
+    if (userPopupForm) {
+        userPopupForm.onsubmit = async (e) => {
             e.preventDefault();
             showUserFormError('');
-            const id = document.getElementById('user-id').value;
+            const id = document.getElementById('popup-user-id').value;
+            const mode = document.getElementById('popup-user-mode').value || 'invite';
             const playlists = [];
-            document.querySelectorAll('#user-playlists-box input[type=checkbox]:checked').forEach(cb => {
+            document.querySelectorAll('#popup-user-playlists-box input[type=checkbox]:checked').forEach(cb => {
                 playlists.push(cb.value);
             });
-            const payload = {
-                id: id || '',
-                login: document.getElementById('user-login').value.trim(),
-                password: document.getElementById('user-password').value,
-                name: document.getElementById('user-name').value.trim(),
-                playlists: playlists,
-                enabled: document.getElementById('user-enabled').checked
-            };
+            const name = document.getElementById('popup-user-name').value.trim();
+            const enabled = document.getElementById('popup-user-enabled').checked;
 
             try {
+                if (mode === 'invite') {
+                    const email = document.getElementById('popup-user-email').value.trim().toLowerCase();
+                    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+                        showUserFormError('Введите корректный Google Email');
+                        return;
+                    }
+                    const res = await apiRequest('/api/invites/save', 'POST', {
+                        email,
+                        name,
+                        playlists,
+                        enabled
+                    });
+                    if (!res.ok) {
+                        showUserFormError(res.error || 'Ошибка сохранения приглашения');
+                        return;
+                    }
+                    if (fbAdminConnected && window.PQTVFirebase) {
+                        await window.PQTVFirebase.saveInviteAdmin({
+                            email,
+                            name,
+                            playlists,
+                            enabled
+                        });
+                    }
+                    closeUserPopup();
+                    await loadUsers();
+                    showToast(`Приглашение для ${email} сохранено`, 'ok');
+                    return;
+                }
+
+                // Mode: Login + Password
+                const payload = {
+                    id: id || '',
+                    login: document.getElementById('popup-user-login').value.trim(),
+                    password: document.getElementById('popup-user-password').value,
+                    name,
+                    playlists,
+                    enabled
+                };
+
                 if (!id) {
-                    if (payload.password || !fbAdminConnected) {
-                        const res = await apiRequest('/api/users/save', 'POST', payload);
-                        if (!res.ok) {
-                            showUserFormError(res.error || 'Ошибка сохранения');
-                            return;
-                        }
-                        if (fbAdminConnected && res.user && window.PQTVFirebase) {
-                            await window.PQTVFirebase.saveUserAdmin({
-                                id: res.user.id,
-                                login: payload.login,
-                                name: payload.name || payload.login,
-                                playlists: payload.playlists,
-                                enabled: payload.enabled,
-                                role: 'user'
-                            });
-                        }
-                    } else if (fbAdminConnected && window.PQTVFirebase) {
-                        const newId = await window.PQTVFirebase.saveUserAdmin({
+                    const res = await apiRequest('/api/users/save', 'POST', payload);
+                    if (!res.ok) {
+                        showUserFormError(res.error || 'Ошибка сохранения');
+                        return;
+                    }
+                    if (fbAdminConnected && res.user && window.PQTVFirebase) {
+                        await window.PQTVFirebase.saveUserAdmin({
+                            id: res.user.id,
                             login: payload.login,
                             name: payload.name || payload.login,
                             playlists: payload.playlists,
                             enabled: payload.enabled,
                             role: 'user'
-                        });
-                        await apiRequest('/api/users/sync-from-firebase', 'POST', {
-                            users: [{
-                                id: newId,
-                                login: payload.login,
-                                name: payload.name || payload.login,
-                                playlists: payload.playlists,
-                                enabled: payload.enabled
-                            }]
                         });
                     }
                 } else {
@@ -1266,9 +1603,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
 
-                closeForm();
+                closeUserPopup();
                 await loadUsers();
                 loadPlaylists();
+                showToast('Пользователь сохранён', 'ok');
             } catch (err) {
                 showUserFormError((err && err.message) ? err.message : 'Ошибка сохранения');
             }
@@ -1808,7 +2146,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (formChannelContainer) formChannelContainer.classList.add('hidden');
             if (formSourceContainer) formSourceContainer.classList.add('hidden');
             const fe = document.getElementById('form-epg-container'); if (fe) fe.classList.add('hidden');
-            const fu = document.getElementById('form-user-container'); if (fu) fu.classList.add('hidden');
             const fc = document.getElementById('form-catalog-source-container');
             if (fc) fc.classList.remove('hidden');
             if (colRight) colRight.classList.remove('hidden');
@@ -1921,8 +2258,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (colRight) colRight.classList.add('hidden');
         const fe = document.getElementById('form-epg-container');
         if (fe) fe.classList.add('hidden');
-        const fu = document.getElementById('form-user-container');
-        if (fu) fu.classList.add('hidden');
         const fc = document.getElementById('form-catalog-source-container');
         if (fc) fc.classList.add('hidden');
     }

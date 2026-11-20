@@ -115,6 +115,144 @@ async function isCurrentUserAdmin(user: User | null): Promise<boolean> {
   }
 }
 
+export interface FirestoreInviteRecord {
+  id: string;
+  emailHash: string;
+  email: string;
+  name: string;
+  playlists: string[];
+  enabled: boolean;
+  invitedByUid: string;
+  claimedUid: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FirestoreChannelAlertItem {
+  name: string;
+  group: string;
+  reason: string;
+}
+
+export interface FirestoreChannelAlertRecord {
+  id: string;
+  uid: string;
+  userLogin: string;
+  userName: string;
+  totalChannels: number;
+  unavailableCount: number;
+  items: FirestoreChannelAlertItem[];
+  resolved: boolean;
+  created_at: number;
+  updated_at: number;
+}
+
+async function sha256Hex(text: string): Promise<string> {
+  const normalized = text.trim().toLowerCase();
+  const data = new TextEncoder().encode(normalized);
+  const digest = await window.crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+async function fetchMyInvite(user: User): Promise<{
+  emailHash: string;
+  name: string;
+  playlists: string[];
+  enabled: boolean;
+} | null> {
+  const email = (user.email || '').trim().toLowerCase();
+  if (!email || !user.emailVerified) return null;
+  const emailHash = await sha256Hex(email);
+  try {
+    const snap = await getDoc(doc(db, 'invites', emailHash));
+    if (!snap.exists()) return null;
+    const d = snap.data();
+    return {
+      emailHash,
+      name: typeof d.name === 'string' ? d.name : '',
+      playlists: Array.isArray(d.playlists)
+        ? (d.playlists as unknown[]).filter((p): p is string => typeof p === 'string').slice(0, 20)
+        : [],
+      enabled: Boolean(d.enabled),
+    };
+  } catch {
+    // Firestore returns permission-denied when no matching /invites/{emailHash}/private/info exists
+    return null;
+  }
+}
+
+async function ensureViewerProfileInFirestore(user: User): Promise<void> {
+  const userPath = `users/${user.uid}`;
+  const userRef = doc(db, 'users', user.uid);
+  let snap;
+  try {
+    snap = await getDoc(userRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, userPath);
+  }
+
+  if (!snap.exists()) {
+    const invite = await fetchMyInvite(user);
+    const baseLogin = sanitizeLogin(
+      (user.email || user.displayName || user.uid).split('@')[0] || user.uid
+    );
+    const displayName = (
+      (invite && invite.name) ||
+      user.displayName ||
+      baseLogin
+    ).slice(0, userProps.name.maxLength);
+
+    const batch = writeBatch(db);
+    const userPayload: Record<string, unknown> = {
+      uid: user.uid,
+      login: baseLogin,
+      name: displayName,
+      playlists: invite ? invite.playlists : [],
+      enabled: invite ? Boolean(invite.enabled) : false,
+      role: 'user',
+      lastPing: serverTimestamp(),
+      lastUa: navigator.userAgent.slice(0, 120),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+    if (invite) {
+      userPayload.inviteId = invite.emailHash;
+    }
+
+    batch.set(userRef, userPayload);
+    batch.set(doc(db, 'users', user.uid, 'private', 'info'), {
+      uid: user.uid,
+      email: (user.email || '').slice(0, 160),
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    if (invite) {
+      batch.update(doc(db, 'invites', invite.emailHash), {
+        claimedUid: user.uid,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, userPath);
+    }
+  } else {
+    try {
+      await updateDoc(userRef, {
+        lastPing: serverTimestamp(),
+        lastUa: navigator.userAgent.slice(0, 120),
+        updatedAt: serverTimestamp(),
+      });
+    } catch {
+      // ignore non-critical ping update failure
+    }
+  }
+}
+
 export const PQTVFirebase = {
   onAuthChange(cb: (info: { signedIn: boolean; isAdmin: boolean; uid: string; email: string; displayName: string }) => void) {
     return onAuthStateChanged(auth, async (user) => {
@@ -136,6 +274,14 @@ export const PQTVFirebase = {
         displayName: user.displayName || user.email || '',
       });
     });
+  },
+
+  async isSignedInAdmin(): Promise<boolean> {
+    try {
+      return await isCurrentUserAdmin(auth.currentUser);
+    } catch {
+      return false;
+    }
   },
 
   async signInWithGoogle() {
@@ -171,60 +317,8 @@ export const PQTVFirebase = {
     }
 
     const isAdmin = await isCurrentUserAdmin(user);
-
-    // Ensure viewer profile exists in Firestore so admins can approve them
     if (!isAdmin) {
-      const userPath = `users/${user.uid}`;
-      const userRef = doc(db, 'users', user.uid);
-      let snap;
-      try {
-        snap = await getDoc(userRef);
-      } catch (error) {
-        handleFirestoreError(error, OperationType.GET, userPath);
-      }
-
-      if (!snap.exists()) {
-        const baseLogin = sanitizeLogin(
-          (user.email || user.displayName || user.uid).split('@')[0] || user.uid
-        );
-        const displayName = (user.displayName || baseLogin).slice(0, userProps.name.maxLength);
-
-        const batch = writeBatch(db);
-        batch.set(userRef, {
-          uid: user.uid,
-          login: baseLogin,
-          name: displayName,
-          playlists: [],
-          enabled: false,
-          role: 'user',
-          lastPing: serverTimestamp(),
-          lastUa: navigator.userAgent.slice(0, 120),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        batch.set(doc(db, 'users', user.uid, 'private', 'info'), {
-          uid: user.uid,
-          email: (user.email || '').slice(0, 160),
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-
-        try {
-          await batch.commit();
-        } catch (error) {
-          handleFirestoreError(error, OperationType.WRITE, userPath);
-        }
-      } else {
-        try {
-          await updateDoc(userRef, {
-            lastPing: serverTimestamp(),
-            lastUa: navigator.userAgent.slice(0, 120),
-            updatedAt: serverTimestamp(),
-          });
-        } catch {
-          // ignore non-critical ping update failure
-        }
-      }
+      await ensureViewerProfileInFirestore(user);
     }
 
     const idToken = await user.getIdToken();
@@ -373,6 +467,274 @@ export const PQTVFirebase = {
     }
   },
 
+  // ===== GOOGLE EMAIL INVITES =====
+  subscribeAdminInvites(
+    onData: (invites: FirestoreInviteRecord[]) => void,
+    onError: (err: Error) => void
+  ) {
+    const path = 'invites';
+    const q = query(collection(db, 'invites'));
+    return onSnapshot(
+      q,
+      async (snapshot) => {
+        const list: FirestoreInviteRecord[] = [];
+        for (const d of snapshot.docs) {
+          const data = d.data();
+          let email = '';
+          try {
+            const piiSnap = await getDoc(doc(db, 'invites', d.id, 'private', 'info'));
+            if (piiSnap.exists()) {
+              email = String(piiSnap.data().email || '');
+            }
+          } catch {
+            // Optional private info
+          }
+          list.push({
+            id: d.id,
+            emailHash: String(data.emailHash || d.id),
+            email,
+            name: String(data.name || ''),
+            playlists: Array.isArray(data.playlists) ? (data.playlists as string[]) : [],
+            enabled: Boolean(data.enabled),
+            invitedByUid: String(data.invitedByUid || ''),
+            claimedUid: String(data.claimedUid || ''),
+            created_at: tsToSeconds(data.createdAt),
+            updated_at: tsToSeconds(data.updatedAt),
+          });
+        }
+        list.sort((a, b) => b.updated_at - a.updated_at);
+        onData(list);
+      },
+      (error) => {
+        try {
+          handleFirestoreError(error, OperationType.LIST, path);
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
+  },
+
+  async saveInviteAdmin(payload: {
+    email: string;
+    name: string;
+    playlists: string[];
+    enabled: boolean;
+  }): Promise<string> {
+    const currentUser = auth.currentUser;
+    if (!currentUser || !(await isCurrentUserAdmin(currentUser))) {
+      throw new Error('Для облачного приглашения войдите через Google как администратор');
+    }
+    const cleanEmail = payload.email.trim().toLowerCase().slice(0, 160);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(cleanEmail)) {
+      throw new Error('Введите корректный Google Email');
+    }
+    const emailHash = await sha256Hex(cleanEmail);
+    const cleanName = (payload.name.trim() || cleanEmail.split('@')[0] || 'Пользователь').slice(0, 80);
+    const cleanPlaylists = Array.isArray(payload.playlists)
+      ? payload.playlists
+          .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+          .map((p) => p.trim().slice(0, 64))
+          .slice(0, 20)
+      : [];
+
+    const invitePath = `invites/${emailHash}`;
+    const inviteRef = doc(db, 'invites', emailHash);
+    const piiRef = doc(db, 'invites', emailHash, 'private', 'info');
+
+    let existingSnap;
+    try {
+      existingSnap = await getDoc(inviteRef);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.GET, invitePath);
+    }
+
+    const batch = writeBatch(db);
+    if (!existingSnap.exists()) {
+      batch.set(inviteRef, {
+        emailHash,
+        name: cleanName,
+        playlists: cleanPlaylists,
+        enabled: Boolean(payload.enabled),
+        invitedByUid: currentUser.uid,
+        claimedUid: '',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      batch.set(piiRef, {
+        emailHash,
+        email: cleanEmail,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      batch.update(inviteRef, {
+        name: cleanName,
+        playlists: cleanPlaylists,
+        enabled: Boolean(payload.enabled),
+        updatedAt: serverTimestamp(),
+      });
+      batch.update(piiRef, {
+        email: cleanEmail,
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    try {
+      await batch.commit();
+    } catch (error) {
+      handleFirestoreError(error, OperationType.WRITE, invitePath);
+    }
+    return emailHash;
+  },
+
+  async deleteInviteAdmin(emailHash: string): Promise<void> {
+    const cleanHash = emailHash.trim().toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(cleanHash)) throw new Error('Invalid invite ID');
+    try {
+      const piiRef = doc(db, 'invites', cleanHash, 'private', 'info');
+      const piiSnap = await getDoc(piiRef);
+      if (piiSnap.exists()) {
+        await deleteDoc(piiRef);
+      }
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `invites/${cleanHash}/private/info`);
+    }
+    try {
+      await deleteDoc(doc(db, 'invites', cleanHash));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, `invites/${cleanHash}`);
+    }
+  },
+
+  // ===== CHANNEL AVAILABILITY ALERTS =====
+  async reportViewerUnavailable(payload: {
+    userLogin: string;
+    userName: string;
+    totalChannels: number;
+    items: FirestoreChannelAlertItem[];
+  }): Promise<void> {
+    const user = auth.currentUser;
+    if (!user || !user.emailVerified) return;
+
+    const cleanItems = Array.isArray(payload.items)
+      ? payload.items
+          .filter((it) => it && typeof it.name === 'string' && it.name.trim() && typeof it.reason === 'string' && it.reason.trim())
+          .slice(0, 50)
+          .map((it) => ({
+            name: it.name.trim().slice(0, 120),
+            group: (it.group || '').trim().slice(0, 80),
+            reason: it.reason.trim().slice(0, 200),
+          }))
+      : [];
+
+    // Viewers only write non-empty alert reports (rules require resolved == false for viewer writes)
+    if (cleanItems.length === 0) return;
+
+    const alertPath = `channel_alerts/${user.uid}`;
+    const alertRef = doc(db, 'channel_alerts', user.uid);
+    const totalChannels = Math.max(0, Math.min(50000, Math.floor(Number(payload.totalChannels) || 0)));
+    const userLogin = (payload.userLogin || user.email || user.uid).trim().slice(0, 64) || user.uid;
+    const userName = (payload.userName || user.displayName || userLogin).trim().slice(0, 80) || userLogin;
+
+    try {
+      const snap = await getDoc(alertRef);
+      if (!snap.exists()) {
+        await setDoc(alertRef, {
+          uid: user.uid,
+          userLogin,
+          userName,
+          totalChannels,
+          unavailableCount: cleanItems.length,
+          items: cleanItems,
+          resolved: false,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        await updateDoc(alertRef, {
+          userLogin,
+          userName,
+          totalChannels,
+          unavailableCount: cleanItems.length,
+          items: cleanItems,
+          resolved: false,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch {
+      // Best-effort Firestore alert sync alongside Express report endpoint
+    }
+  },
+
+  subscribeAdminAlerts(
+    onData: (alerts: FirestoreChannelAlertRecord[]) => void,
+    onError: (err: Error) => void
+  ) {
+    const path = 'channel_alerts';
+    const q = query(collection(db, 'channel_alerts'));
+    return onSnapshot(
+      q,
+      (snapshot) => {
+        const list: FirestoreChannelAlertRecord[] = [];
+        for (const d of snapshot.docs) {
+          const data = d.data();
+          const rawItems = Array.isArray(data.items) ? data.items : [];
+          list.push({
+            id: d.id,
+            uid: String(data.uid || d.id),
+            userLogin: String(data.userLogin || ''),
+            userName: String(data.userName || ''),
+            totalChannels: Number(data.totalChannels) || 0,
+            unavailableCount: Number(data.unavailableCount) || rawItems.length,
+            items: rawItems.map((it: Record<string, unknown>) => ({
+              name: String(it.name || ''),
+              group: String(it.group || ''),
+              reason: String(it.reason || ''),
+            })),
+            resolved: Boolean(data.resolved),
+            created_at: tsToSeconds(data.createdAt),
+            updated_at: tsToSeconds(data.updatedAt),
+          });
+        }
+        list.sort((a, b) => b.updated_at - a.updated_at);
+        onData(list);
+      },
+      (error) => {
+        try {
+          handleFirestoreError(error, OperationType.LIST, path);
+        } catch (wrapped) {
+          onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+        }
+      }
+    );
+  },
+
+  async resolveAlertAdmin(alertId: string, resolved = true): Promise<void> {
+    const cleanId = alertId.trim();
+    if (!UID_REGEX.test(cleanId)) return;
+    const alertPath = `channel_alerts/${cleanId}`;
+    try {
+      await updateDoc(doc(db, 'channel_alerts', cleanId), {
+        resolved: Boolean(resolved),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, alertPath);
+    }
+  },
+
+  async deleteAlertAdmin(alertId: string): Promise<void> {
+    const cleanId = alertId.trim();
+    if (!UID_REGEX.test(cleanId)) return;
+    const alertPath = `channel_alerts/${cleanId}`;
+    try {
+      await deleteDoc(doc(db, 'channel_alerts', cleanId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, alertPath);
+    }
+  },
+
   async importLocalUsers(
     localUsers: Array<{
       id: string;
@@ -417,64 +779,12 @@ export const PQTVFirebase = {
       return { ok: false, error: 'Email аккаунта Google не подтверждён' };
     }
 
-    const userPath = `users/${user.uid}`;
-    const userRef = doc(db, 'users', user.uid);
-    let snap;
-    try {
-      snap = await getDoc(userRef);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.GET, userPath);
-    }
-
     const isAdmin = await isCurrentUserAdmin(user);
-
-    if (!snap.exists()) {
-      const baseLogin = sanitizeLogin(
-        (user.email || user.displayName || user.uid).split('@')[0] || user.uid
-      );
-      const displayName = (user.displayName || baseLogin).slice(0, userProps.name.maxLength);
-
-      const batch = writeBatch(db);
-      batch.set(userRef, {
-        uid: user.uid,
-        login: baseLogin,
-        name: displayName,
-        playlists: [],
-        enabled: false,
-        role: 'user',
-        lastPing: serverTimestamp(),
-        lastUa: navigator.userAgent.slice(0, 120),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      batch.set(doc(db, 'users', user.uid, 'private', 'info'), {
-        uid: user.uid,
-        email: (user.email || '').slice(0, 160),
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-
-      try {
-        await batch.commit();
-      } catch (error) {
-        handleFirestoreError(error, OperationType.WRITE, userPath);
-      }
-
-      if (!isAdmin) {
-        return { ok: false, pendingApproval: true };
-      }
-    } else {
-      try {
-        await updateDoc(userRef, {
-          lastPing: serverTimestamp(),
-          lastUa: navigator.userAgent.slice(0, 120),
-          updatedAt: serverTimestamp(),
-        });
-      } catch (error) {
-        handleFirestoreError(error, OperationType.UPDATE, userPath);
-      }
+    if (!isAdmin) {
+      await ensureViewerProfileInFirestore(user);
     }
 
+    const userRef = doc(db, 'users', user.uid);
     const latestSnap = await getDoc(userRef);
     const profile = latestSnap.exists() ? latestSnap.data() : {};
     const enabled = isAdmin || Boolean(profile.enabled);
@@ -507,7 +817,6 @@ export const PQTVFirebase = {
   async pingViewerPresence(): Promise<void> {
     const user = auth.currentUser;
     if (!user) return;
-    const userPath = `users/${user.uid}`;
     try {
       const q = query(collection(db, 'users'), where('uid', '==', user.uid));
       const snap = await getDocs(q);

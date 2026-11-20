@@ -16,6 +16,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let channelMenuTarget = null;
     let epgCache = new Map();       // keyOf(ch) → {loaded, current, next}
     let epgLoadQueue = new Set();
+    let serverUnavailable = [];
+    let serverStats = { total: 0, available: 0, unavailable: 0 };
+    const runtimeUnavailable = new Map();
+    let reportTimer = null;
+    let lastReportSig = '';
 
     const USER = window.USER_LOGIN || 'guest';
     const FAV_KEY = 'pqtv_favs_' + USER;
@@ -346,14 +351,202 @@ document.addEventListener('DOMContentLoaded', () => {
         settingsModal.querySelectorAll('[data-settings-close]').forEach(el => { el.onclick = closeSettingsModal; });
     }
 
+    // ===== AVAILABILITY TRACKING & UNAVAILABLE MODAL =====
+    const summaryCountsEl = $('watch-summary-counts');
+    const unavailBtnEl = $('btn-unavailable-channels');
+    const unavailCountEl = $('watch-unavail-count');
+    const unavailModal = $('unavailable-modal');
+    const unavailListEl = $('unavailable-list');
+    const unavailSubEl = $('unavail-modal-subtitle');
+
+    function getCombinedUnavailable(includeHidden) {
+        const list = [];
+        const seen = new Set();
+        const addItem = (name, group, reason, extra) => {
+            const cleanName = String(name || '').trim();
+            if (!cleanName) return;
+            const k = cleanName.toLowerCase();
+            if (seen.has(k)) return;
+            seen.add(k);
+            list.push(Object.assign({
+                name: cleanName,
+                group: String(group || '').trim(),
+                reason: String(reason || 'Недоступен')
+            }, extra || {}));
+        };
+
+        for (const item of serverUnavailable) {
+            addItem(item.name, item.group || item.playlist || '', item.reason || 'Недоступен на сервере');
+        }
+        for (const item of runtimeUnavailable.values()) {
+            if (hidden.has((item.name || '').toLowerCase())) continue;
+            addItem(item.name, item.group || '', item.reason || 'Ошибка воспроизведения');
+        }
+        if (includeHidden) {
+            for (const ch of channels) {
+                const k = keyOf(ch);
+                if (hidden.has(k)) {
+                    addItem(ch.name, ch.group || '', 'Скрыт пользователем', { hiddenKey: k });
+                }
+            }
+        }
+        return list;
+    }
+
+    function updateAvailabilitySummary() {
+        const total = Math.max(Number(serverStats.total) || 0, channels.length + serverUnavailable.length);
+        let available = 0;
+        for (const ch of channels) {
+            const k = keyOf(ch);
+            if (!hidden.has(k) && !runtimeUnavailable.has(k)) available++;
+        }
+        if (summaryCountsEl) {
+            summaryCountsEl.innerHTML = 'Доступно каналов: <strong>' + available + '</strong> из <strong>' + total + '</strong>';
+        }
+        const allUnavail = getCombinedUnavailable(true);
+        if (unavailCountEl) unavailCountEl.textContent = String(allUnavail.length);
+        if (unavailBtnEl) unavailBtnEl.classList.toggle('hidden', allUnavail.length === 0);
+    }
+
+    function scheduleUnavailableReport() {
+        clearTimeout(reportTimer);
+        reportTimer = setTimeout(async () => {
+            const reportItems = getCombinedUnavailable(false).map(it => ({
+                name: it.name,
+                group: it.group || '',
+                reason: it.reason
+            }));
+            const totalChannels = Math.max(Number(serverStats.total) || 0, channels.length + serverUnavailable.length);
+            const sig = totalChannels + '|' + JSON.stringify(reportItems);
+            if (sig === lastReportSig) return;
+            lastReportSig = sig;
+
+            try {
+                await fetch('/watch/api/report-unavailable', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: Object.assign({ 'Content-Type': 'application/json' }, authHeaders()),
+                    body: JSON.stringify({ totalChannels, items: reportItems })
+                });
+            } catch {}
+
+            if (reportItems.length > 0 && window.PQTVFirebase && typeof window.PQTVFirebase.reportViewerUnavailable === 'function') {
+                window.PQTVFirebase.reportViewerUnavailable({
+                    userLogin: USER,
+                    userName: window.USER_NAME || USER,
+                    totalChannels,
+                    items: reportItems
+                }).catch(() => {});
+            }
+        }, 600);
+    }
+
+    function recordRuntimeUnavailable(ch, reason) {
+        if (!ch || !ch.name) return;
+        const k = keyOf(ch);
+        if (hidden.has(k)) return;
+        const cleanReason = String(reason || 'Ошибка воспроизведения потока');
+        const prev = runtimeUnavailable.get(k);
+        if (prev && prev.reason === cleanReason) return;
+        runtimeUnavailable.set(k, {
+            name: ch.name,
+            group: ch.group || '',
+            reason: cleanReason
+        });
+        updateAvailabilitySummary();
+        scheduleUnavailableReport();
+    }
+
+    function clearRuntimeUnavailable(ch) {
+        if (!ch || !ch.name) return;
+        const k = keyOf(ch);
+        if (!runtimeUnavailable.has(k)) return;
+        runtimeUnavailable.delete(k);
+        updateAvailabilitySummary();
+        scheduleUnavailableReport();
+    }
+
+    function renderUnavailableModal() {
+        if (!unavailListEl) return;
+        const items = getCombinedUnavailable(true);
+        if (unavailSubEl) {
+            unavailSubEl.textContent = items.length > 0
+                ? ('Всего проблемных или скрытых каналов: ' + items.length)
+                : 'Все каналы доступны';
+        }
+        if (items.length === 0) {
+            unavailListEl.innerHTML = '<div style="padding:18px; text-align:center; color:var(--muted);">Недоступных каналов не обнаружено</div>';
+            return;
+        }
+        unavailListEl.innerHTML = items.map(it => {
+            const actionHtml = it.hiddenKey
+                ? '<div class="tv-row-actions"><button type="button" class="tv-inline-btn" data-unhide-key="' + esc(it.hiddenKey) + '">Вернуть</button></div>'
+                : '';
+            return '<div class="tv-row-card">' +
+                '<div class="tv-row-main">' +
+                    '<div class="tv-row-title">' + esc(it.name) +
+                        (it.group ? ' <span class="tv-badge tv-badge-blue">' + esc(it.group) + '</span>' : '') +
+                    '</div>' +
+                    '<div class="tv-row-reason">' + esc(it.reason) + '</div>' +
+                '</div>' +
+                actionHtml +
+            '</div>';
+        }).join('');
+
+        unavailListEl.querySelectorAll('[data-unhide-key]').forEach(btn => {
+            btn.onclick = () => {
+                const k = btn.dataset.unhideKey;
+                if (k && hidden.has(k)) {
+                    hidden.delete(k);
+                    saveHidden();
+                    renderCategories();
+                    renderChannels();
+                    updateAvailabilitySummary();
+                    renderUnavailableModal();
+                }
+            };
+        });
+    }
+
+    function openUnavailableModal() {
+        if (!unavailModal) return;
+        renderUnavailableModal();
+        unavailModal.classList.remove('hidden');
+        const first = unavailModal.querySelector('button');
+        if (first) setFocus(first);
+    }
+
+    function closeUnavailableModal() {
+        if (!unavailModal) return;
+        unavailModal.classList.add('hidden');
+        if (unavailBtnEl && !unavailBtnEl.classList.contains('hidden')) {
+            setFocus(unavailBtnEl);
+        }
+    }
+
+    if (unavailBtnEl) unavailBtnEl.onclick = openUnavailableModal;
+    if (unavailModal) {
+        unavailModal.querySelectorAll('[data-unavail-close]').forEach(el => { el.onclick = closeUnavailableModal; });
+    }
+
     // ===== LOAD CHANNELS =====
     async function loadChannels() {
         const res = await api('/watch/api/channels?_=' + Date.now());
         channels = Array.isArray(res.channels) ? res.channels : [];
+        serverUnavailable = Array.isArray(res.unavailable) ? res.unavailable : [];
+        serverStats = (res.stats && typeof res.stats === 'object')
+            ? res.stats
+            : { total: channels.length + serverUnavailable.length, available: channels.length, unavailable: serverUnavailable.length };
+        const activeKeys = new Set(channels.map(c => keyOf(c)));
+        for (const k of [...runtimeUnavailable.keys()]) {
+            if (!activeKeys.has(k)) runtimeUnavailable.delete(k);
+        }
         loadFavs();
         loadHidden();
         renderCategories();
         renderChannels();
+        updateAvailabilitySummary();
+        scheduleUnavailableReport();
     }
 
     function groupCounts() {
@@ -692,18 +885,20 @@ document.addEventListener('DOMContentLoaded', () => {
             previewLoading.classList.add('hidden');
             previewVideoHost.classList.add('active');
             previewLogoWrap.classList.add('hidden');
+            clearRuntimeUnavailable(ch);
         };
-        const onErr = () => {
+        const onErr = (reason) => {
             previewLoading.classList.add('hidden');
             previewVideoHost.classList.remove('active');
             previewLogoWrap.classList.remove('hidden');
+            if (!ready && reason) recordRuntimeUnavailable(ch, reason);
         };
 
-        const timeoutId = setTimeout(onErr, 10000);
+        const timeoutId = setTimeout(() => onErr('Таймаут загрузки потока (10 сек)'), 10000);
 
         previewVideo.onloadeddata = () => { clearTimeout(timeoutId); onReady(); };
         previewVideo.oncanplay = () => { clearTimeout(timeoutId); onReady(); };
-        previewVideo.onerror = () => { clearTimeout(timeoutId); onErr(); };
+        previewVideo.onerror = () => { clearTimeout(timeoutId); onErr('Поток недоступен или формат не поддерживается'); };
 
         // Пытаемся играть
         const tryPlay = () => {
@@ -733,7 +928,10 @@ document.addEventListener('DOMContentLoaded', () => {
             previewHls.attachMedia(previewVideo);
             previewHls.on(Hls.Events.MANIFEST_PARSED, tryPlay);
             previewHls.on(Hls.Events.ERROR, (e, d) => {
-                if (d && d.fatal) { clearTimeout(timeoutId); onErr(); }
+                if (d && d.fatal) {
+                    clearTimeout(timeoutId);
+                    onErr('Ошибка потока HLS: ' + (d.details || 'недоступен'));
+                }
             });
         } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
             previewMpegts = mpegts.createPlayer({
@@ -744,7 +942,10 @@ document.addEventListener('DOMContentLoaded', () => {
             previewMpegts.attachMediaElement(previewVideo);
             previewMpegts.load();
             previewMpegts.play().catch(()=>{});
-            previewMpegts.on(mpegts.Events.ERROR, () => { clearTimeout(timeoutId); onErr(); });
+            previewMpegts.on(mpegts.Events.ERROR, (t, d) => {
+                clearTimeout(timeoutId);
+                onErr('Ошибка потока MPEG-TS: ' + (d || t || 'сбой'));
+            });
         } else {
             previewVideo.src = proxied;
             tryPlay();
@@ -848,6 +1049,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 saveHidden();
                 renderCategories();
                 renderChannels();
+                updateAvailabilitySummary();
                 closeChannelMenu();
             }
         };
@@ -914,8 +1116,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const isM3u8 = low.includes('.m3u8');
         const isTs = low.endsWith('.ts');
 
-        const ready = () => overlay.classList.add('hidden');
-        const err = (m) => { overlay.classList.remove('hidden'); text.textContent = m || 'Ошибка воспроизведения'; };
+        const ch = window.__playerChannel || previewChannel;
+        const ready = () => {
+            overlay.classList.add('hidden');
+            clearRuntimeUnavailable(ch);
+        };
+        const err = (m) => {
+            const msg = m || 'Ошибка воспроизведения';
+            overlay.classList.remove('hidden');
+            text.textContent = msg;
+            recordRuntimeUnavailable(ch, msg);
+        };
         v.onloadeddata = ready;
         v.oncanplay = ready;
         v.onerror = () => err('Поток недоступен или формат не поддерживается');
@@ -956,6 +1167,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (v && v.videoWidth === 0 && v.currentTime > 1 && !v.paused && toast) {
                     toast.textContent = 'Видео не отображается. Возможно формат H.265/HEVC или MPEG-2 не поддерживается.';
                     toast.style.display = 'block';
+                    recordRuntimeUnavailable(ch, 'Видео не отображается (H.265/HEVC или MPEG-2 не поддерживается)');
                     setTimeout(() => { toast.style.display = 'none'; }, 10000);
                 }
             } catch (e) {}
@@ -1001,8 +1213,578 @@ document.addEventListener('DOMContentLoaded', () => {
         openFullscreenPlayer(filtered[next]);
     }
 
+// ============ TV ADMIN: CLOUD USERS, INVITES & ALERTS ============
+    const tvUsersBtn = $('tb-admin-users');
+    const tvUsersModal = $('tv-users-modal');
+    const tvUsersListEl = $('tv-users-list');
+    const tvBtnAddUser = $('tv-btn-add-user');
+    const tvBtnRefreshUsers = $('tv-btn-refresh-users');
+
+    const tvUserPopup = $('tv-user-popup');
+    const tvUserPopupTitle = $('tv-user-popup-title');
+    const tvTabInvite = $('tv-tab-invite');
+    const tvTabLocal = $('tv-tab-local');
+    const tvFieldEmailGroup = $('tv-field-email-group');
+    const tvFieldLoginGroup = $('tv-field-login-group');
+    const tvFieldPasswordGroup = $('tv-field-password-group');
+    const tvUId = $('tv-u-id');
+    const tvUEmail = $('tv-u-email');
+    const tvULogin = $('tv-u-login');
+    const tvUPassword = $('tv-u-password');
+    const tvUPassHint = $('tv-u-pass-hint');
+    const tvUName = $('tv-u-name');
+    const tvUPlaylistsBox = $('tv-u-playlists-box');
+    const tvUPlAll = $('tv-u-pl-all');
+    const tvUPlNone = $('tv-u-pl-none');
+    const tvUEnabledBtn = $('tv-u-enabled-btn');
+    const tvUEnabledState = $('tv-u-enabled-state');
+    const tvUError = $('tv-u-error');
+    const tvUSave = $('tv-u-save');
+
+    const tvAlertsBtn = $('tb-admin-alerts');
+    const tvAlertsBadge = $('tv-alerts-badge');
+    const tvAlertsModal = $('tv-alerts-modal');
+    const tvAlertsListEl = $('tv-alerts-list');
+    const tvBtnRefreshAlerts = $('tv-btn-refresh-alerts');
+
+    let tvPlaylists = [];
+    let tvUsers = [];
+    let tvInvites = [];
+    let tvAlerts = [];
+    let tvPopupMode = 'invite';
+    let tvPopupEnabled = true;
+    let tvPopupEditingType = null; // null | 'invite' | 'local'
+    let tvPopupSelectedPlaylists = new Set();
+    let tvFirebaseUsersCache = [];
+    let tvFirebaseInvitesCache = [];
+    let tvFirebaseAlertsCache = [];
+    let tvFirebaseSubscribed = false;
+
+    async function apiAdmin(url, method, body) {
+        const opts = {
+            method: method || 'GET',
+            credentials: 'same-origin',
+            headers: Object.assign({}, authHeaders())
+        };
+        if (body !== undefined && body !== null) {
+            opts.headers['Content-Type'] = 'application/json';
+            opts.body = JSON.stringify(body);
+        }
+        const r = await fetch(url, opts);
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok) {
+            throw new Error(data.error || ('HTTP ' + r.status));
+        }
+        return data;
+    }
+
+    function fmtTs(ts) {
+        if (!ts) return '';
+        try {
+            return new Date(ts * 1000).toLocaleString('ru-RU', {
+                day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit'
+            });
+        } catch { return ''; }
+    }
+
+    async function ensureTvFirebaseAdminSync() {
+        if (!window.IS_ADMIN_VIEWER || tvFirebaseSubscribed) return;
+        if (!window.PQTVFirebase || typeof window.PQTVFirebase.isSignedInAdmin !== 'function') return;
+        const ok = await window.PQTVFirebase.isSignedInAdmin().catch(() => false);
+        if (!ok) return;
+        tvFirebaseSubscribed = true;
+
+        window.PQTVFirebase.subscribeAdminUsers((list) => {
+            tvFirebaseUsersCache = Array.isArray(list) ? list : [];
+            if (tvUsersModal && !tvUsersModal.classList.contains('hidden')) {
+                mergeAndRenderTvUsers();
+            }
+        }, () => {});
+
+        window.PQTVFirebase.subscribeAdminInvites((list) => {
+            tvFirebaseInvitesCache = Array.isArray(list) ? list : [];
+            if (tvUsersModal && !tvUsersModal.classList.contains('hidden')) {
+                mergeAndRenderTvUsers();
+            }
+        }, () => {});
+
+        window.PQTVFirebase.subscribeAdminAlerts((list) => {
+            tvFirebaseAlertsCache = Array.isArray(list) ? list : [];
+            mergeAndRenderTvAlerts();
+        }, () => {});
+    }
+
+    let tvLocalUsersCache = [];
+    let tvLocalInvitesCache = [];
+    let tvLocalAlertsCache = [];
+
+    function mergeAndRenderTvUsers() {
+        const byLogin = new Map();
+        for (const u of tvLocalUsersCache) {
+            byLogin.set((u.login || u.id || '').toLowerCase(), Object.assign({}, u, { inCloud: false }));
+        }
+        for (const fu of tvFirebaseUsersCache) {
+            const key = (fu.login || fu.id || '').toLowerCase();
+            const prev = byLogin.get(key);
+            byLogin.set(key, Object.assign({}, prev || {}, fu, {
+                online: prev ? prev.online : Boolean(fu.online),
+                inCloud: true
+            }));
+        }
+        tvUsers = [...byLogin.values()].sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+
+        const invById = new Map();
+        for (const inv of tvLocalInvitesCache) {
+            invById.set(inv.id || inv.email, Object.assign({}, inv, { inCloud: false }));
+        }
+        for (const finv of tvFirebaseInvitesCache) {
+            const key = finv.id || finv.emailHash || finv.email;
+            const prev = invById.get(key);
+            invById.set(key, Object.assign({}, prev || {}, finv, {
+                email: finv.email || (prev && prev.email) || '',
+                inCloud: true
+            }));
+        }
+        tvInvites = [...invById.values()].sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
+        renderTvUsersModal();
+    }
+
+    function mergeAndRenderTvAlerts() {
+        const byKey = new Map();
+        for (const a of tvLocalAlertsCache) {
+            byKey.set(a.id || a.userId || a.userLogin, Object.assign({}, a));
+        }
+        for (const fa of tvFirebaseAlertsCache) {
+            const key = fa.id || fa.uid || fa.userLogin;
+            const prev = byKey.get(key);
+            if (!prev || (fa.updated_at || 0) >= (prev.updated_at || 0)) {
+                byKey.set(key, Object.assign({}, prev || {}, fa, { id: fa.id || fa.uid || (prev && prev.id) || key }));
+            }
+        }
+        tvAlerts = [...byKey.values()].sort((a, b) => {
+            if (Boolean(a.resolved) !== Boolean(b.resolved)) return a.resolved ? 1 : -1;
+            return (b.updated_at || 0) - (a.updated_at || 0);
+        });
+        const activeCount = tvAlerts.filter(a => !a.resolved && (a.unavailableCount > 0 || (a.items && a.items.length > 0))).length;
+        if (tvAlertsBadge) {
+            tvAlertsBadge.textContent = String(activeCount);
+            tvAlertsBadge.classList.toggle('hidden', activeCount === 0);
+        }
+        if (tvAlertsModal && !tvAlertsModal.classList.contains('hidden')) {
+            renderTvAlertsModal();
+        }
+    }
+
+    async function loadTvAdminUsers() {
+        if (!window.IS_ADMIN_VIEWER) return;
+        try {
+            const data = await apiAdmin('/watch/api/admin/users');
+            tvPlaylists = Array.isArray(data.playlists) ? data.playlists : [];
+            tvLocalUsersCache = Array.isArray(data.users) ? data.users : [];
+            tvLocalInvitesCache = Array.isArray(data.invites) ? data.invites : [];
+            await ensureTvFirebaseAdminSync();
+            mergeAndRenderTvUsers();
+        } catch (err) {
+            if (tvUsersListEl) {
+                tvUsersListEl.innerHTML = '<div class="tv-form-error">Ошибка загрузки: ' + esc(err.message || 'нет доступа') + '</div>';
+            }
+        }
+    }
+
+    function renderTvUsersModal() {
+        if (!tvUsersListEl) return;
+        let html = '';
+
+        html += '<div class="tv-section-label">Облачные приглашения Google (' + tvInvites.length + ')</div>';
+        if (tvInvites.length === 0) {
+            html += '<div class="tv-row-sub" style="padding:6px 4px;">Приглашений пока нет.</div>';
+        } else {
+            tvInvites.forEach((inv, idx) => {
+                const pls = (inv.playlists || []).join(', ') || 'нет плейлистов';
+                const statusBadge = inv.claimedUid
+                    ? '<span class="tv-badge tv-badge-green">Активировано</span>'
+                    : (inv.enabled ? '<span class="tv-badge tv-badge-amber">Ожидает входа</span>' : '<span class="tv-badge tv-badge-red">Отключено</span>');
+                html += '<div class="tv-row-card">' +
+                    '<div class="tv-row-main">' +
+                        '<div class="tv-row-title">' + esc(inv.name || inv.email || inv.id) + ' ' + statusBadge + '</div>' +
+                        '<div class="tv-row-sub">Email: ' + esc(inv.email || '—') + ' · Плейлисты: ' + esc(pls) + '</div>' +
+                    '</div>' +
+                    '<div class="tv-row-actions">' +
+                        '<button type="button" class="tv-inline-btn" data-tv-edit-invite="' + idx + '">Изменить</button>' +
+                        '<button type="button" class="tv-inline-btn tv-inline-btn-danger" data-tv-del-invite="' + idx + '">Удалить</button>' +
+                    '</div>' +
+                '</div>';
+            });
+        }
+
+        html += '<div class="tv-section-label" style="margin-top:10px;">Пользователи (' + tvUsers.length + ')</div>';
+        if (tvUsers.length === 0) {
+            html += '<div class="tv-row-sub" style="padding:6px 4px;">Пользователей пока нет.</div>';
+        } else {
+            tvUsers.forEach((u, idx) => {
+                const pls = (u.playlists || []).join(', ') || 'нет плейлистов';
+                const statusBadge = !u.enabled
+                    ? '<span class="tv-badge tv-badge-red">Заблокирован</span>'
+                    : (u.online ? '<span class="tv-badge tv-badge-green">Онлайн</span>' : '<span class="tv-badge tv-badge-blue">Активен</span>');
+                html += '<div class="tv-row-card">' +
+                    '<div class="tv-row-main">' +
+                        '<div class="tv-row-title">' + esc(u.name || u.login) + ' ' + statusBadge + '</div>' +
+                        '<div class="tv-row-sub">Логин: ' + esc(u.login) + ' · Плейлисты: ' + esc(pls) + '</div>' +
+                    '</div>' +
+                    '<div class="tv-row-actions">' +
+                        '<button type="button" class="tv-inline-btn" data-tv-edit-user="' + idx + '">Изменить</button>' +
+                        '<button type="button" class="tv-inline-btn tv-inline-btn-danger" data-tv-del-user="' + idx + '">Удалить</button>' +
+                    '</div>' +
+                '</div>';
+            });
+        }
+
+        tvUsersListEl.innerHTML = html;
+
+        tvUsersListEl.querySelectorAll('[data-tv-edit-invite]').forEach(btn => {
+            btn.onclick = () => {
+                const inv = tvInvites[+btn.dataset.tvEditInvite];
+                if (inv) openTvUserPopup('invite', inv);
+            };
+        });
+        tvUsersListEl.querySelectorAll('[data-tv-edit-user]').forEach(btn => {
+            btn.onclick = () => {
+                const u = tvUsers[+btn.dataset.tvEditUser];
+                if (u) openTvUserPopup('local', u);
+            };
+        });
+
+        const armDelete = (btn, onConfirm) => {
+            btn.onclick = async () => {
+                if (btn.dataset.armed !== '1') {
+                    btn.dataset.armed = '1';
+                    btn.textContent = 'Точно удалить?';
+                    setTimeout(() => {
+                        if (btn.isConnected && btn.dataset.armed === '1') {
+                            btn.dataset.armed = '';
+                            btn.textContent = 'Удалить';
+                        }
+                    }, 4000);
+                    return;
+                }
+                btn.disabled = true;
+                await onConfirm();
+            };
+        };
+
+        tvUsersListEl.querySelectorAll('[data-tv-del-invite]').forEach(btn => {
+            const inv = tvInvites[+btn.dataset.tvDelInvite];
+            if (!inv) return;
+            armDelete(btn, async () => {
+                try {
+                    await apiAdmin('/watch/api/admin/invites/delete', 'POST', { id: inv.id, email: inv.email });
+                } catch {}
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.deleteInviteAdmin === 'function' && inv.id && /^[a-f0-9]{64}$/i.test(inv.id)) {
+                    await window.PQTVFirebase.deleteInviteAdmin(inv.id).catch(() => {});
+                }
+                await loadTvAdminUsers();
+            });
+        });
+
+        tvUsersListEl.querySelectorAll('[data-tv-del-user]').forEach(btn => {
+            const u = tvUsers[+btn.dataset.tvDelUser];
+            if (!u) return;
+            armDelete(btn, async () => {
+                try {
+                    await apiAdmin('/watch/api/admin/users/delete', 'POST', { id: u.id });
+                } catch {}
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.deleteUserAdmin === 'function' && u.inCloud) {
+                    await window.PQTVFirebase.deleteUserAdmin(u.id).catch(() => {});
+                }
+                await loadTvAdminUsers();
+            });
+        });
+    }
+
+    function setTvPopupMode(mode) {
+        tvPopupMode = mode === 'local' ? 'local' : 'invite';
+        if (tvTabInvite) tvTabInvite.classList.toggle('active', tvPopupMode === 'invite');
+        if (tvTabLocal) tvTabLocal.classList.toggle('active', tvPopupMode === 'local');
+        if (tvFieldEmailGroup) tvFieldEmailGroup.classList.toggle('hidden', tvPopupMode !== 'invite');
+        if (tvFieldLoginGroup) tvFieldLoginGroup.classList.toggle('hidden', tvPopupMode !== 'local');
+        if (tvFieldPasswordGroup) tvFieldPasswordGroup.classList.toggle('hidden', tvPopupMode !== 'local');
+    }
+
+    function renderTvPlaylistChips() {
+        if (!tvUPlaylistsBox) return;
+        if (tvPlaylists.length === 0) {
+            tvUPlaylistsBox.innerHTML = '<div class="tv-row-sub">Нет плейлистов на сервере</div>';
+            return;
+        }
+        tvUPlaylistsBox.innerHTML = tvPlaylists.map(pl => {
+            const sel = tvPopupSelectedPlaylists.has(pl);
+            return '<button type="button" class="tv-pl-chip ' + (sel ? 'selected' : '') + '" data-tv-pl="' + esc(pl) + '">' +
+                (sel ? '✓ ' : '') + esc(pl) + '</button>';
+        }).join('');
+        tvUPlaylistsBox.querySelectorAll('[data-tv-pl]').forEach(chip => {
+            chip.onclick = () => {
+                const pl = chip.dataset.tvPl;
+                if (!pl) return;
+                if (tvPopupSelectedPlaylists.has(pl)) tvPopupSelectedPlaylists.delete(pl);
+                else tvPopupSelectedPlaylists.add(pl);
+                renderTvPlaylistChips();
+                const updated = tvUPlaylistsBox.querySelector('[data-tv-pl="' + CSS.escape(pl) + '"]');
+                if (updated) setFocus(updated);
+            };
+        });
+    }
+
+    function syncTvEnabledLabel() {
+        if (!tvUEnabledState) return;
+        tvUEnabledState.textContent = tvPopupEnabled ? 'Включён' : 'Отключён';
+        tvUEnabledState.style.color = tvPopupEnabled ? '#6ee7b7' : '#fca5a5';
+    }
+
+    function showTvPopupError(msg) {
+        if (!tvUError) return;
+        if (!msg) {
+            tvUError.classList.add('hidden');
+            tvUError.textContent = '';
+        } else {
+            tvUError.textContent = msg;
+            tvUError.classList.remove('hidden');
+        }
+    }
+
+    function openTvUserPopup(mode, record) {
+        if (!tvUserPopup) return;
+        showTvPopupError('');
+        const isEdit = Boolean(record);
+        tvPopupEditingType = isEdit ? mode : null;
+        setTvPopupMode(mode);
+
+        if (tvUserPopupTitle) {
+            tvUserPopupTitle.textContent = isEdit
+                ? (mode === 'invite' ? 'Редактировать приглашение Google' : 'Редактировать пользователя')
+                : 'Добавить пользователя';
+        }
+        if (tvTabInvite && tvTabLocal) {
+            tvTabInvite.disabled = isEdit && mode === 'local';
+            tvTabLocal.disabled = isEdit && mode === 'invite';
+        }
+
+        if (tvUId) tvUId.value = isEdit && mode === 'local' ? (record.id || '') : '';
+        if (tvUEmail) {
+            tvUEmail.value = isEdit && mode === 'invite' ? (record.email || '') : '';
+            tvUEmail.readOnly = isEdit && mode === 'invite' && Boolean(record.email);
+        }
+        if (tvULogin) {
+            tvULogin.value = isEdit && mode === 'local' ? (record.login || '') : '';
+            tvULogin.readOnly = isEdit && mode === 'local';
+        }
+        if (tvUPassword) tvUPassword.value = '';
+        if (tvUPassHint) tvUPassHint.textContent = isEdit ? '(оставьте пустым, чтобы не менять)' : '';
+        if (tvUName) tvUName.value = isEdit ? (record.name || '') : '';
+
+        tvPopupSelectedPlaylists = new Set(isEdit && Array.isArray(record.playlists) ? record.playlists : []);
+        tvPopupEnabled = isEdit ? Boolean(record.enabled) : true;
+        syncTvEnabledLabel();
+        renderTvPlaylistChips();
+
+        tvUserPopup.classList.remove('hidden');
+        const focusTarget = mode === 'invite' ? (tvUEmail || tvUName) : (isEdit ? tvUName : tvULogin);
+        if (focusTarget) setFocus(focusTarget);
+    }
+
+    function closeTvUserPopup() {
+        if (!tvUserPopup) return;
+        tvUserPopup.classList.add('hidden');
+        if (tvUsersModal && !tvUsersModal.classList.contains('hidden') && tvBtnAddUser) {
+            setFocus(tvBtnAddUser);
+        }
+    }
+
+    async function saveTvUserPopup() {
+        showTvPopupError('');
+        const playlists = [...tvPopupSelectedPlaylists];
+        const name = (tvUName ? tvUName.value : '').trim();
+
+        try {
+            if (tvPopupMode === 'invite') {
+                const email = (tvUEmail ? tvUEmail.value : '').trim().toLowerCase();
+                if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) {
+                    showTvPopupError('Введите корректный Google Email');
+                    return;
+                }
+                await apiAdmin('/watch/api/admin/invites/save', 'POST', {
+                    email,
+                    name: name || email.split('@')[0],
+                    playlists,
+                    enabled: tvPopupEnabled
+                });
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.saveInviteAdmin === 'function') {
+                    const isCloudAdmin = await window.PQTVFirebase.isSignedInAdmin().catch(() => false);
+                    if (isCloudAdmin) {
+                        await window.PQTVFirebase.saveInviteAdmin({
+                            email,
+                            name: name || email.split('@')[0],
+                            playlists,
+                            enabled: tvPopupEnabled
+                        });
+                    }
+                }
+            } else {
+                const id = (tvUId ? tvUId.value : '').trim();
+                const login = (tvULogin ? tvULogin.value : '').trim();
+                const password = tvUPassword ? tvUPassword.value : '';
+                if (!id && login.length < 2) {
+                    showTvPopupError('Логин должен быть не менее 2 символов');
+                    return;
+                }
+                if (!id && password.length < 4) {
+                    showTvPopupError('Пароль должен быть не менее 4 символов');
+                    return;
+                }
+                const saved = await apiAdmin('/watch/api/admin/users/save', 'POST', {
+                    id,
+                    login,
+                    password,
+                    name: name || login,
+                    playlists,
+                    enabled: tvPopupEnabled
+                });
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.saveUserAdmin === 'function') {
+                    const isCloudAdmin = await window.PQTVFirebase.isSignedInAdmin().catch(() => false);
+                    if (isCloudAdmin) {
+                        const cloudId = id || (saved.user && saved.user.id) || '';
+                        await window.PQTVFirebase.saveUserAdmin({
+                            id: cloudId,
+                            login: login || cloudId,
+                            name: name || login || cloudId,
+                            playlists,
+                            enabled: tvPopupEnabled,
+                            role: 'user'
+                        });
+                    }
+                }
+            }
+            closeTvUserPopup();
+            await loadTvAdminUsers();
+        } catch (err) {
+            showTvPopupError(err && err.message ? err.message : 'Ошибка сохранения');
+        }
+    }
+
+    function openTvUsersModal() {
+        if (!tvUsersModal) return;
+        tvUsersModal.classList.remove('hidden');
+        loadTvAdminUsers();
+        if (tvBtnAddUser) setFocus(tvBtnAddUser);
+    }
+
+    function closeTvUsersModal() {
+        if (!tvUsersModal) return;
+        tvUsersModal.classList.add('hidden');
+        if (tvUsersBtn) setFocus(tvUsersBtn);
+    }
+
+    async function loadTvAlerts() {
+        if (!window.IS_ADMIN_VIEWER) return;
+        try {
+            const data = await apiAdmin('/watch/api/admin/alerts');
+            tvLocalAlertsCache = Array.isArray(data.alerts) ? data.alerts : [];
+            await ensureTvFirebaseAdminSync();
+            mergeAndRenderTvAlerts();
+        } catch {}
+    }
+
+    function renderTvAlertsModal() {
+        if (!tvAlertsListEl) return;
+        if (tvAlerts.length === 0) {
+            tvAlertsListEl.innerHTML = '<div style="padding:18px; text-align:center; color:var(--muted);">Предупреждений о недоступных каналах нет</div>';
+            return;
+        }
+        tvAlertsListEl.innerHTML = tvAlerts.map((a, idx) => {
+            const badge = a.resolved
+                ? '<span class="tv-badge tv-badge-green">Решено</span>'
+                : '<span class="tv-badge tv-badge-red">Проблема: ' + (a.unavailableCount || (a.items ? a.items.length : 0)) + '</span>';
+            const itemsHtml = (a.items || []).map(it =>
+                '<div class="tv-alert-item"><span>' + esc(it.name) + (it.group ? ' (' + esc(it.group) + ')' : '') + '</span><span>' + esc(it.reason) + '</span></div>'
+            ).join('');
+            return '<div class="tv-row-card" style="align-items:flex-start;">' +
+                '<div class="tv-row-main">' +
+                    '<div class="tv-row-title">' + esc(a.userName || a.userLogin || a.id) + ' ' + badge + '</div>' +
+                    '<div class="tv-row-sub">Аккаунт: ' + esc(a.userLogin || '—') + ' · Каналов: ' + Number(a.totalChannels || 0) + (a.updated_at ? ' · ' + esc(fmtTs(a.updated_at)) : '') + '</div>' +
+                    (itemsHtml ? '<div class="tv-alert-items">' + itemsHtml + '</div>' : '') +
+                '</div>' +
+                '<div class="tv-row-actions">' +
+                    '<button type="button" class="tv-inline-btn" data-tv-alert-resolve="' + idx + '">' + (a.resolved ? 'Вернуть' : 'Решено') + '</button>' +
+                    '<button type="button" class="tv-inline-btn tv-inline-btn-danger" data-tv-alert-del="' + idx + '">Удалить</button>' +
+                '</div>' +
+            '</div>';
+        }).join('');
+
+        tvAlertsListEl.querySelectorAll('[data-tv-alert-resolve]').forEach(btn => {
+            btn.onclick = async () => {
+                const a = tvAlerts[+btn.dataset.tvAlertResolve];
+                if (!a) return;
+                const nextResolved = !a.resolved;
+                try {
+                    await apiAdmin('/watch/api/admin/alerts/resolve', 'POST', { id: a.id, resolved: nextResolved });
+                } catch {}
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.resolveAlertAdmin === 'function') {
+                    await window.PQTVFirebase.resolveAlertAdmin(a.id, nextResolved).catch(() => {});
+                }
+                await loadTvAlerts();
+            };
+        });
+
+        tvAlertsListEl.querySelectorAll('[data-tv-alert-del]').forEach(btn => {
+            btn.onclick = async () => {
+                const a = tvAlerts[+btn.dataset.tvAlertDel];
+                if (!a) return;
+                try {
+                    await apiAdmin('/watch/api/admin/alerts/delete', 'POST', { id: a.id });
+                } catch {}
+                if (window.PQTVFirebase && typeof window.PQTVFirebase.deleteAlertAdmin === 'function') {
+                    await window.PQTVFirebase.deleteAlertAdmin(a.id).catch(() => {});
+                }
+                await loadTvAlerts();
+            };
+        });
+    }
+
+    function openTvAlertsModal() {
+        if (!tvAlertsModal) return;
+        tvAlertsModal.classList.remove('hidden');
+        loadTvAlerts();
+        if (tvBtnRefreshAlerts) setFocus(tvBtnRefreshAlerts);
+    }
+
+    function closeTvAlertsModal() {
+        if (!tvAlertsModal) return;
+        tvAlertsModal.classList.add('hidden');
+        if (tvAlertsBtn) setFocus(tvAlertsBtn);
+    }
+
+    if (window.IS_ADMIN_VIEWER) {
+        if (tvUsersBtn) tvUsersBtn.onclick = openTvUsersModal;
+        if (tvBtnRefreshUsers) tvBtnRefreshUsers.onclick = loadTvAdminUsers;
+        if (tvBtnAddUser) tvBtnAddUser.onclick = () => openTvUserPopup('invite', null);
+        if (tvTabInvite) tvTabInvite.onclick = () => { if (!tvPopupEditingType) setTvPopupMode('invite'); };
+        if (tvTabLocal) tvTabLocal.onclick = () => { if (!tvPopupEditingType) setTvPopupMode('local'); };
+        if (tvUPlAll) tvUPlAll.onclick = () => { tvPlaylists.forEach(p => tvPopupSelectedPlaylists.add(p)); renderTvPlaylistChips(); };
+        if (tvUPlNone) tvUPlNone.onclick = () => { tvPopupSelectedPlaylists.clear(); renderTvPlaylistChips(); };
+        if (tvUEnabledBtn) tvUEnabledBtn.onclick = () => { tvPopupEnabled = !tvPopupEnabled; syncTvEnabledLabel(); };
+        if (tvUSave) tvUSave.onclick = saveTvUserPopup;
+        if (tvUsersModal) tvUsersModal.querySelectorAll('[data-tv-users-close]').forEach(el => { el.onclick = closeTvUsersModal; });
+        if (tvUserPopup) tvUserPopup.querySelectorAll('[data-tv-popup-close]').forEach(el => { el.onclick = closeTvUserPopup; });
+
+        if (tvAlertsBtn) tvAlertsBtn.onclick = openTvAlertsModal;
+        if (tvBtnRefreshAlerts) tvBtnRefreshAlerts.onclick = loadTvAlerts;
+        if (tvAlertsModal) tvAlertsModal.querySelectorAll('[data-tv-alerts-close]').forEach(el => { el.onclick = closeTvAlertsModal; });
+
+        loadTvAlerts();
+        setInterval(loadTvAlerts, 60000);
+    }
+
 // ============ SPATIAL NAVIGATION (стрелки по координатам) ============
-    const FOCUS_SELECTOR = '.tb-btn, .tb-update-btn, .tb-install, .tb-profile, #watch-search, .tb-btn-exit, .preview-btn, .cat-btn, .ch-card, .btn-ice, .group-btn, .admin-access';
+    const FOCUS_SELECTOR = '.tb-btn, .tb-update-btn, .tb-install, .tb-profile, #watch-search, .tb-btn-exit, .watch-unavail-btn, .preview-btn, .cat-btn, .ch-card, .btn-ice, .group-btn, .admin-access';
 
     function getVisibleFocusables() {
         return Array.from(document.querySelectorAll(FOCUS_SELECTOR))
@@ -1027,16 +1809,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!current || !all.includes(current)) return all[0];
 
         const cur = rectCenter(current);
-        const W = window.innerWidth;
-        const H = window.innerHeight;
 
         // Собираем кандидатов в нужном направлении
         const candidates = [];
         for (const el of all) {
             if (el === current) continue;
             const c = rectCenter(el);
-            let dx = c.x - cur.x;
-            let dy = c.y - cur.y;
+            const dx = c.x - cur.x;
+            const dy = c.y - cur.y;
 
             let ok = false;
             // Главная ось для стрелки, второстепенная — отклонение
@@ -1114,9 +1894,48 @@ document.addEventListener('DOMContentLoaded', () => {
         scrollIntoViewSmooth(el);
     }
 
+    function handleModalDpad(modalEl, key, e, closeFn) {
+        const cur = document.activeElement;
+        const inTextInput = Boolean(cur && cur.tagName === 'INPUT');
+        if (key === 'Escape' || key === 'BrowserBack' || (key === 'Backspace' && !inTextInput)) {
+            e.preventDefault();
+            closeFn();
+            return true;
+        }
+        const focusables = [...modalEl.querySelectorAll('button, input')].filter(el =>
+            el.offsetParent !== null && !el.disabled && !el.classList.contains('hidden') && el.type !== 'hidden'
+        );
+        if (focusables.length === 0) return true;
+        const idx = focusables.indexOf(cur);
+
+        if (inTextInput && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+            return true;
+        }
+        if (key === 'ArrowDown' || (!inTextInput && key === 'ArrowRight')) {
+            e.preventDefault();
+            setFocus(focusables[(idx + 1 + focusables.length) % focusables.length]);
+            return true;
+        }
+        if (key === 'ArrowUp' || (!inTextInput && key === 'ArrowLeft')) {
+            e.preventDefault();
+            setFocus(focusables[(idx - 1 + focusables.length) % focusables.length]);
+            return true;
+        }
+        if (key === 'Enter' && cur && cur.tagName === 'BUTTON' && focusables.includes(cur)) {
+            e.preventDefault();
+            cur.click();
+            return true;
+        }
+        return true;
+    }
+
     document.addEventListener('keydown', (e) => {
         const key = e.key;
         const playerOpen = playerModal && !playerModal.classList.contains('hidden');
+        const userPopupOpen = tvUserPopup && !tvUserPopup.classList.contains('hidden');
+        const usersOpen = tvUsersModal && !tvUsersModal.classList.contains('hidden');
+        const alertsOpen = tvAlertsModal && !tvAlertsModal.classList.contains('hidden');
+        const unavailOpen = unavailModal && !unavailModal.classList.contains('hidden');
         const menuOpen = menu && !menu.classList.contains('hidden');
         const settingsOpen = settingsModal && !settingsModal.classList.contains('hidden');
 
@@ -1147,6 +1966,12 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             return;
         }
+
+        // === TV Admin / Unavailable Modals (priority top-down) ===
+        if (userPopupOpen && handleModalDpad(tvUserPopup, key, e, closeTvUserPopup)) return;
+        if (usersOpen && handleModalDpad(tvUsersModal, key, e, closeTvUsersModal)) return;
+        if (alertsOpen && handleModalDpad(tvAlertsModal, key, e, closeTvAlertsModal)) return;
+        if (unavailOpen && handleModalDpad(unavailModal, key, e, closeUnavailableModal)) return;
 
         // === Окно настроек и обновления ТВ открыто ===
         if (settingsOpen) {
@@ -1227,20 +2052,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (first) setFocus(first);
         }
     });
-
-
-    function focusCard(el) {
-        if (!el) return;
-        el.focus({ preventScroll: false });
-        el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    }
-    function getCols(cards) {
-        if (cards.length < 2) return 1;
-        const top = cards[0].offsetTop;
-        let n = 0;
-        for (const c of cards) { if (c.offsetTop === top) n++; else break; }
-        return Math.max(1, n);
-    }
 
     // ===== PING =====
     function sendPing() {
