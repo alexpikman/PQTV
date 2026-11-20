@@ -606,7 +606,7 @@ class CatalogStore {
       const batch = target.slice(i, i + batchSize);
       await Promise.all(
         batch.map(async (s) => {
-          const res = await checkStreamUrl(s.url, 3000);
+          const res = await checkStreamUrl(s.url);
           s.online = res.status === 'online' ? 1 : res.status === 'offline' ? -1 : 0;
           s.http_code = res.code;
           s.response_ms = res.ms;
