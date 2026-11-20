@@ -15,6 +15,10 @@ export interface CloudChannelItem {
   logo: string;
   url: string;
   tvg_id: string;
+  paused?: boolean;
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
 }
 
 export interface CloudSourceItem {
@@ -23,6 +27,11 @@ export interface CloudSourceItem {
   type: string;
   url: string;
   enabled: boolean;
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
+  timeoutSec?: number;
+  ignoreTlsErrors?: boolean;
 }
 
 export interface CloudEpgSourceItem {
@@ -38,12 +47,20 @@ export interface CloudIndexedItem {
   logo: string;
   group: string;
   tvg_id: string;
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
 }
 
 export interface CloudStreamingSettings {
   mode: 'auto_proxy_first' | 'auto_direct_first' | 'proxy_only' | 'direct_only';
   tryHttpsUpgrade: boolean;
   proxyTimeoutSec: number;
+}
+
+export interface CloudChannelHealthState {
+  urlDiagnostics?: Record<string, Record<string, unknown>>;
+  issues?: Record<string, Record<string, unknown>>;
 }
 
 export interface CloudExportPayload {
@@ -60,6 +77,7 @@ export interface CloudExportPayload {
     sources: Array<Record<string, unknown>>;
   };
   streamingSettings: CloudStreamingSettings;
+  channelHealth?: CloudChannelHealthState;
   users: Array<{
     id: string;
     login: string;
@@ -233,13 +251,21 @@ async function writeManifestPatch(patch: Partial<{
 }
 
 function normalizeChannelItem(raw: Partial<CloudChannelItem>): CloudChannelItem {
-  return {
+  const out: CloudChannelItem = {
     name: s(raw.name, 200),
     group: s(raw.group, 120),
     logo: s(raw.logo, 1000),
     url: s(raw.url, 1500),
     tvg_id: s(raw.tvg_id, 160),
   };
+  if (raw.paused) out.paused = true;
+  const ua = s(raw.userAgent, 400).trim();
+  const ref = s(raw.referer, 500).trim();
+  const orig = s(raw.origin, 300).trim();
+  if (ua) out.userAgent = ua;
+  if (ref) out.referer = ref;
+  if (orig) out.origin = orig;
+  return out;
 }
 
 export async function savePlaylistToCloud(
@@ -340,6 +366,7 @@ export async function saveSourcesToCloud(
   for (const src of (Array.isArray(sources) ? sources : []).slice(0, 100)) {
     const id = safeId(src.id);
     if (!nextIds.includes(id)) nextIds.push(id);
+    const timeoutSec = Math.max(3, Math.min(60, Math.round(Number(src.timeoutSec) || 15)));
     await upsertDoc(
       doc(db, 'sources', id),
       {
@@ -348,8 +375,23 @@ export async function saveSourcesToCloud(
         type: sReq(src.type, 32, 'm3u'),
         url: sReq(src.url, 1000, 'https://example.com'),
         enabled: Boolean(src.enabled),
+        userAgent: s(src.userAgent, 400),
+        referer: s(src.referer, 500),
+        origin: s(src.origin, 300),
+        timeoutSec,
+        ignoreTlsErrors: Boolean(src.ignoreTlsErrors),
       },
-      ['name', 'type', 'url', 'enabled']
+      [
+        'name',
+        'type',
+        'url',
+        'enabled',
+        'userAgent',
+        'referer',
+        'origin',
+        'timeoutSec',
+        'ignoreTlsErrors',
+      ]
     );
   }
 
@@ -378,13 +420,22 @@ export async function saveSourceIndexToCloud(
     if (!entry || !Array.isArray(entry.items)) continue;
     if (!nextIds.includes(sourceId)) nextIds.push(sourceId);
 
-    const cleanItems = entry.items.slice(0, 100000).map((it) => ({
-      name: s(it.name, 200),
-      url: s(it.url, 1500),
-      logo: s(it.logo, 1000),
-      group: s(it.group, 120),
-      tvg_id: s(it.tvg_id, 160),
-    }));
+    const cleanItems = entry.items.slice(0, 100000).map((it) => {
+      const item: CloudIndexedItem = {
+        name: s(it.name, 200),
+        url: s(it.url, 1500),
+        logo: s(it.logo, 1000),
+        group: s(it.group, 120),
+        tvg_id: s(it.tvg_id, 160),
+      };
+      const ua = s(it.userAgent, 400).trim();
+      const ref = s(it.referer, 500).trim();
+      const orig = s(it.origin, 300).trim();
+      if (ua) item.userAgent = ua;
+      if (ref) item.referer = ref;
+      if (orig) item.origin = orig;
+      return item;
+    });
     const chunks = chunkArray(cleanItems, 200);
     const metaRef = doc(db, 'source_index', sourceId);
     let prevChunks = 0;
@@ -535,19 +586,25 @@ export async function saveCatalogToCloud(
     updated_at: Number(c.updated_at) || 0,
   }));
 
-  const cleanStreams = (Array.isArray(catalog.streams) ? catalog.streams : []).map((st) => ({
-    id: Number(st.id) || 0,
-    channel_id: Number(st.channel_id) || 0,
-    url: s(st.url, 1500),
-    source_id: st.source_id !== null && st.source_id !== undefined ? Number(st.source_id) : null,
-    source_name: st.source_name ? s(st.source_name, 120) : null,
-    source_type: st.source_type ? s(st.source_type, 32) : null,
-    online: Number(st.online) === 1 ? 1 : Number(st.online) === -1 ? -1 : 0,
-    http_code: Number(st.http_code) || 0,
-    response_ms: Number(st.response_ms) || 0,
-    checked_at: Number(st.checked_at) || 0,
-    added_at: Number(st.added_at) || 0,
-  }));
+  const cleanStreams = (Array.isArray(catalog.streams) ? catalog.streams : []).map((st) => {
+    const out: Record<string, unknown> = {
+      id: Number(st.id) || 0,
+      channel_id: Number(st.channel_id) || 0,
+      url: s(st.url, 1500),
+      source_id: st.source_id !== null && st.source_id !== undefined ? Number(st.source_id) : null,
+      source_name: st.source_name ? s(st.source_name, 120) : null,
+      source_type: st.source_type ? s(st.source_type, 32) : null,
+      online: Number(st.online) === 1 ? 1 : Number(st.online) === -1 ? -1 : 0,
+      http_code: Number(st.http_code) || 0,
+      response_ms: Number(st.response_ms) || 0,
+      checked_at: Number(st.checked_at) || 0,
+      added_at: Number(st.added_at) || 0,
+    };
+    if (st.diag_code) out.diag_code = s(st.diag_code, 32);
+    if (st.diag_reason) out.diag_reason = s(st.diag_reason, 220);
+    if (st.codec_warning) out.codec_warning = s(st.codec_warning, 220);
+    return out;
+  });
 
   const cleanSources = (Array.isArray(catalog.sources) ? catalog.sources : []).slice(0, 100).map((cs) => {
     const out: Record<string, unknown> = {
@@ -705,6 +762,102 @@ export async function saveAdminSettingsToCloud(adminSettings?: {
   }
 }
 
+export async function saveChannelHealthToCloud(
+  health?: CloudChannelHealthState
+): Promise<void> {
+  const uid = auth.currentUser?.uid;
+  if (!uid || !health || typeof health !== 'object') return;
+
+  const rawDiags = Object.values(health.urlDiagnostics || {})
+    .filter((d) => d && typeof d === 'object' && typeof d.url === 'string' && String(d.url).trim())
+    .sort((a, b) => (Number(b.checkedAt) || 0) - (Number(a.checkedAt) || 0))
+    .slice(0, 400);
+
+  const diagnostics = rawDiags.map((d) => ({
+    url: s(d.url, 1500),
+    online: d.online === true ? true : d.online === false ? false : null,
+    status: d.status === 'online' || d.status === 'offline' ? String(d.status) : 'unknown',
+    code: Math.max(0, Math.min(999, Math.floor(Number(d.code) || 0))),
+    ms: Math.max(0, Math.min(600000, Math.floor(Number(d.ms) || 0))),
+    diagCode: s(d.diagCode || 'unknown', 32),
+    reason: s(d.reason, 220),
+    contentType: s(d.contentType, 120),
+    hlsOk: Boolean(d.hlsOk),
+    segmentOk: d.segmentOk === undefined ? true : Boolean(d.segmentOk),
+    codecWarning: s(d.codecWarning, 200),
+    checkedAt: Math.max(0, Math.floor(Number(d.checkedAt) || 0)),
+  }));
+
+  const rawIssues = Object.values(health.issues || {})
+    .filter((iss) => iss && typeof iss === 'object' && typeof iss.channelKey === 'string' && String(iss.channelKey).trim())
+    .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))
+    .slice(0, 250);
+
+  const issues = rawIssues.map((iss) => {
+    const rawErrors = Array.isArray(iss.viewerErrors) ? iss.viewerErrors : [];
+    const viewerErrors = rawErrors.slice(0, 10).map((ve: Record<string, unknown>) => ({
+      userId: s(ve?.userId, 128),
+      userLogin: s(ve?.userLogin, 64),
+      userName: s(ve?.userName, 80),
+      reason: s(ve?.reason, 200),
+      diagCode: s(ve?.diagCode || 'network', 32),
+      reportedAt: Math.max(0, Math.floor(Number(ve?.reportedAt) || 0)),
+    }));
+    const rStatus =
+      iss.resolveCheckStatus === 'verified_ok' || iss.resolveCheckStatus === 'still_broken_after_resolve'
+        ? String(iss.resolveCheckStatus)
+        : 'none';
+    return {
+      channelKey: s(iss.channelKey, 200),
+      channelName: s(iss.channelName, 200),
+      resolved: Boolean(iss.resolved),
+      resolveCheckStatus: rStatus,
+      resolveCheckMessage: s(iss.resolveCheckMessage, 250),
+      resolveAttemptedAt: Math.max(0, Math.floor(Number(iss.resolveAttemptedAt) || 0)),
+      updatedAt: Math.max(0, Math.floor(Number(iss.updatedAt) || 0)),
+      viewerErrors,
+    };
+  });
+
+  await upsertDoc(
+    doc(db, 'channel_health', 'main'),
+    {
+      docId: 'main',
+      diagnostics,
+      issues,
+      updatedByUid: uid,
+    },
+    ['diagnostics', 'issues', 'updatedByUid']
+  );
+}
+
+export async function loadChannelHealthFromCloud(): Promise<CloudChannelHealthState | undefined> {
+  try {
+    const snap = await getDoc(doc(db, 'channel_health', 'main'));
+    if (!snap.exists()) return undefined;
+    const d = snap.data();
+    const urlDiagnostics: Record<string, Record<string, unknown>> = {};
+    if (Array.isArray(d.diagnostics)) {
+      for (const item of d.diagnostics) {
+        if (item && typeof item === 'object' && typeof item.url === 'string' && item.url) {
+          urlDiagnostics[item.url] = item as Record<string, unknown>;
+        }
+      }
+    }
+    const issues: Record<string, Record<string, unknown>> = {};
+    if (Array.isArray(d.issues)) {
+      for (const iss of d.issues) {
+        if (iss && typeof iss === 'object' && typeof iss.channelKey === 'string' && iss.channelKey) {
+          issues[iss.channelKey] = iss as Record<string, unknown>;
+        }
+      }
+    }
+    return { urlDiagnostics, issues };
+  } catch {
+    return undefined;
+  }
+}
+
 export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<void> {
   const plNames: string[] = [];
   for (const [rawName, channels] of Object.entries(data.playlists || {})) {
@@ -720,6 +873,7 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
   const epgIds = await saveEpgToCloud(data.epgSources || [], false);
   const catInfo = await saveCatalogToCloud(data.catalog, false);
   await saveStreamingSettingsToCloud(data.streamingSettings);
+  await saveChannelHealthToCloud(data.channelHealth);
   await saveAdminSettingsToCloud(data.adminSettings);
 
   // Also ensure local users exist in /users and store their password hashes in /private/credentials
@@ -799,13 +953,19 @@ export async function loadFullCloudSnapshot(): Promise<{
         const snap = await getDoc(doc(db, 'sources', sid));
         if (snap.exists()) {
           const d = snap.data();
-          sources.push({
+          const item: CloudSourceItem = {
             id: String(d.id || sid),
             name: String(d.name || ''),
             type: String(d.type || 'm3u'),
             url: String(d.url || ''),
             enabled: Boolean(d.enabled),
-          });
+          };
+          if (typeof d.userAgent === 'string' && d.userAgent) item.userAgent = d.userAgent;
+          if (typeof d.referer === 'string' && d.referer) item.referer = d.referer;
+          if (typeof d.origin === 'string' && d.origin) item.origin = d.origin;
+          if (typeof d.timeoutSec === 'number' && d.timeoutSec > 0) item.timeoutSec = d.timeoutSec;
+          if (typeof d.ignoreTlsErrors === 'boolean') item.ignoreTlsErrors = d.ignoreTlsErrors;
+          sources.push(item);
         }
       } catch (err) {
         throw err;
@@ -895,6 +1055,9 @@ export async function loadFullCloudSnapshot(): Promise<{
   // Streaming settings
   const streamingSettings = await fetchStreamingSettingsFromCloud();
 
+  // Channel Health state
+  const channelHealth = await loadChannelHealthFromCloud();
+
   // Admin settings
   const adminSettings: Record<string, string> = {};
   try {
@@ -944,6 +1107,7 @@ export async function loadFullCloudSnapshot(): Promise<{
       epgSources,
       catalog,
       streamingSettings,
+      channelHealth,
       users,
       adminSettings,
     },

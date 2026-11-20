@@ -182,6 +182,7 @@ document.addEventListener('DOMContentLoaded', () => {
             loadEpg().catch(() => {}),
             loadUsers().catch(() => {}),
             loadAdminAlerts().catch(() => {}),
+            typeof loadHealthOverview === 'function' ? loadHealthOverview().catch(() => {}) : Promise.resolve(),
         ]);
         catalogOffset = 0;
         await loadCatalogChannels().catch(() => {});
@@ -336,6 +337,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ===== NAV =====
     const navBtnEpg = document.getElementById('nav-btn-epg');
+    const navBtnHealth = document.getElementById('nav-btn-health');
     if (navBtnEditor) navBtnEditor.onclick = () => { showScreen('editor'); setNavActive('editor'); };
     if (navBtnParser) navBtnParser.onclick = () => { showScreen('parser'); setNavActive('parser'); };
     if (navBtnSources) navBtnSources.onclick = () => { showScreen('sources'); setNavActive('sources'); loadSources(); };
@@ -344,6 +346,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (navBtnUsers) navBtnUsers.onclick = () => { showScreen('users'); setNavActive('users'); loadUsers(); };
     const navBtnCatalog = document.getElementById('nav-btn-catalog');
     if (navBtnCatalog) navBtnCatalog.onclick = () => { showScreen('catalog'); setNavActive('catalog'); loadCatalog(); };
+    if (navBtnHealth) navBtnHealth.onclick = () => { showScreen('health'); setNavActive('health'); loadHealthOverview(); };
     const navBtnApk = document.getElementById('nav-btn-apk');
     if (navBtnApk) navBtnApk.onclick = () => { showScreen('apk'); setNavActive('apk'); loadApkReleases(); };
 
@@ -357,14 +360,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const screenEpg = document.getElementById('screen-epg');
         const screenUsers = document.getElementById('screen-users');
         const screenCatalog = document.getElementById('screen-catalog');
+        const screenHealth = document.getElementById('screen-health');
         const screenApk = document.getElementById('screen-apk');
-        [screenEditor, screenParser, screenSources, screenEpg, screenUsers, screenCatalog, screenApk].forEach(s => s && s.classList.add('hidden'));
+        [screenEditor, screenParser, screenSources, screenEpg, screenUsers, screenCatalog, screenHealth, screenApk].forEach(s => s && s.classList.add('hidden'));
         if (name === 'editor' && screenEditor) screenEditor.classList.remove('hidden');
         if (name === 'parser' && screenParser) screenParser.classList.remove('hidden');
         if (name === 'sources' && screenSources) screenSources.classList.remove('hidden');
         if (name === 'epg' && screenEpg) screenEpg.classList.remove('hidden');
         if (name === 'users' && screenUsers) screenUsers.classList.remove('hidden');
         if (name === 'catalog' && screenCatalog) screenCatalog.classList.remove('hidden');
+        if (name === 'health' && screenHealth) screenHealth.classList.remove('hidden');
         if (name === 'apk' && screenApk) screenApk.classList.remove('hidden');
         if (name !== 'editor') closeForm();
         if (name !== 'apk' && typeof stopGithubPoll === 'function') stopGithubPoll();
@@ -465,18 +470,23 @@ document.addEventListener('DOMContentLoaded', () => {
             const isFirst = idx === 0 ? 'disabled' : '';
             const isLast = idx === channelsData.length - 1 ? 'disabled' : '';
 
-            const st = streamStatusCache[ch.url];
+            const stRaw = streamStatusCache[ch.url];
+            const st = typeof stRaw === 'string' ? stRaw : (stRaw && stRaw.status);
+            const stReason = (stRaw && stRaw.reason) ? stRaw.reason : '';
+            const stDiag = (stRaw && stRaw.diagCode && stRaw.diagCode !== 'ok') ? stRaw.diagCode : '';
             let badge = `<button class="badge-status badge-unknown" data-action="check" data-idx="${idx}">Проверить</button>`;
             if (st === 'checking') badge = `<span class="badge-status badge-checking">…</span>`;
-            else if (st === 'online') badge = `<span class="badge-status badge-online" data-action="check" data-idx="${idx}" title="Перепроверить">online</span>`;
-            else if (st === 'offline') badge = `<span class="badge-status badge-offline" data-action="check" data-idx="${idx}" title="Перепроверить">offline</span>`;
-            else if (st === 'unknown') badge = `<span class="badge-status badge-unknown" data-action="check" data-idx="${idx}" title="Не удалось подтвердить статус">неизвестно</span>`;
+            else if (st === 'online') badge = `<span class="badge-status badge-online" data-action="check" data-idx="${idx}" title="${escapeHtml(stReason || 'Перепроверить')}">online</span>`;
+            else if (st === 'offline') badge = `<span class="badge-status badge-offline" data-action="check" data-idx="${idx}" title="${escapeHtml(stReason || 'Перепроверить')}">${escapeHtml(stDiag ? 'off:' + stDiag : 'offline')}</span>`;
+            else if (st === 'unknown') badge = `<span class="badge-status badge-unknown" data-action="check" data-idx="${idx}" title="${escapeHtml(stReason || 'Не удалось подтвердить статус')}">неизвестно</span>`;
+
+            const pausedTag = ch.paused ? ' <span class="health-badge warn" style="margin-left:6px;">Приостановлен</span>' : '';
 
             html += `
                 <tr data-idx="${idx}">
                     <td>${logoHtml}</td>
                     <td>
-                        <div class="ch-title">${escapeHtml(ch.name)}</div>
+                        <div class="ch-title">${escapeHtml(ch.name)}${pausedTag}</div>
                         <div class="ch-group">${escapeHtml(ch.group || '—')}</div>
                     </td>
                     <td>${badge}</td>
@@ -525,8 +535,18 @@ document.addEventListener('DOMContentLoaded', () => {
         streamStatusCache[ch.url] = 'checking';
         renderChannels();
         try {
-            const res = await apiRequest('/api/stream/check', 'POST', { url: ch.url, force: true });
-            streamStatusCache[ch.url] = res.status || (res.online === true ? 'online' : res.online === false ? 'offline' : 'unknown');
+            const res = await apiRequest('/api/stream/check', 'POST', {
+                url: ch.url,
+                force: true,
+                userAgent: ch.userAgent || undefined,
+                referer: ch.referer || undefined,
+                origin: ch.origin || undefined,
+            });
+            streamStatusCache[ch.url] = {
+                status: res.status || (res.online === true ? 'online' : res.online === false ? 'offline' : 'unknown'),
+                diagCode: res.diagCode || '',
+                reason: res.reason || '',
+            };
         } catch (e) { streamStatusCache[ch.url] = 'unknown'; }
         renderChannels();
     }
@@ -804,6 +824,16 @@ document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('src-id').value = '';
             document.getElementById('src-form-title').textContent = 'Новый источник';
             document.getElementById('src-enabled').checked = true;
+            const uaEl = document.getElementById('src-ua');
+            const refEl = document.getElementById('src-ref');
+            const origEl = document.getElementById('src-origin');
+            const toEl = document.getElementById('src-timeout');
+            const tlsEl = document.getElementById('src-ignore-tls');
+            if (uaEl) uaEl.value = '';
+            if (refEl) refEl.value = '';
+            if (origEl) origEl.value = '';
+            if (toEl) toEl.value = '';
+            if (tlsEl) tlsEl.checked = false;
             if (formChannelContainer) formChannelContainer.classList.add('hidden');
             if (formSourceContainer) formSourceContainer.classList.remove('hidden');
             if (colRight) colRight.classList.remove('hidden');
@@ -818,6 +848,16 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('src-type').value = src.type;
         document.getElementById('src-url').value = src.url;
         document.getElementById('src-enabled').checked = !!src.enabled;
+        const uaEl = document.getElementById('src-ua');
+        const refEl = document.getElementById('src-ref');
+        const origEl = document.getElementById('src-origin');
+        const toEl = document.getElementById('src-timeout');
+        const tlsEl = document.getElementById('src-ignore-tls');
+        if (uaEl) uaEl.value = src.userAgent || '';
+        if (refEl) refEl.value = src.referer || '';
+        if (origEl) origEl.value = src.origin || '';
+        if (toEl) toEl.value = src.timeoutSec ? String(src.timeoutSec) : '';
+        if (tlsEl) tlsEl.checked = !!src.ignoreTlsErrors;
         document.getElementById('src-form-title').textContent = 'Редактировать источник';
         if (formChannelContainer) formChannelContainer.classList.add('hidden');
         if (formSourceContainer) formSourceContainer.classList.remove('hidden');
@@ -834,6 +874,11 @@ document.addEventListener('DOMContentLoaded', () => {
         sourceForm.onsubmit = async (e) => {
             e.preventDefault();
             const id = document.getElementById('src-id').value;
+            const ua = (document.getElementById('src-ua')?.value || '').trim();
+            const ref = (document.getElementById('src-ref')?.value || '').trim();
+            const orig = (document.getElementById('src-origin')?.value || '').trim();
+            const timeoutVal = parseInt(document.getElementById('src-timeout')?.value || '', 10) || 0;
+            const ignoreTls = !!(document.getElementById('src-ignore-tls')?.checked);
             const srcData = {
                 id: id || ('src_' + Date.now()),
                 name: document.getElementById('src-name').value.trim(),
@@ -841,6 +886,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 url: document.getElementById('src-url').value.trim(),
                 enabled: document.getElementById('src-enabled').checked
             };
+            if (ua) srcData.userAgent = ua;
+            if (ref) srcData.referer = ref;
+            if (orig) srcData.origin = orig;
+            if (timeoutVal >= 3) srcData.timeoutSec = timeoutVal;
+            if (ignoreTls) srcData.ignoreTlsErrors = true;
             if (id) {
                 const i = sourcesData.findIndex(s => s.id === id);
                 if (i >= 0) sourcesData[i] = srcData;
@@ -1337,11 +1387,29 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.onclick = async () => {
                 const id = btn.dataset.alertResolve;
                 const nextResolved = btn.dataset.alertNext === '1';
-                await apiRequest('/api/alerts/resolve', 'POST', { id, resolved: nextResolved });
-                if (fbAdminConnected && window.PQTVFirebase) {
-                    await window.PQTVFirebase.resolveAlertAdmin(id, nextResolved).catch(() => {});
+                const origTxt = btn.textContent;
+                btn.disabled = true;
+                if (nextResolved) btn.textContent = 'Проверка...';
+                try {
+                    const res = await apiRequest('/api/alerts/resolve', 'POST', { id, resolved: nextResolved });
+                    if (nextResolved && res && res.stillBroken) {
+                        showToast(res.message || 'Поток всё ещё не работает — статус «Решено» не применён, каналы отмечены в Контроле каналов', 'err');
+                        await loadAdminAlerts();
+                        if (typeof loadHealthOverview === 'function') await loadHealthOverview().catch(() => {});
+                        return;
+                    }
+                    if (fbAdminConnected && window.PQTVFirebase) {
+                        await window.PQTVFirebase.resolveAlertAdmin(id, nextResolved).catch(() => {});
+                    }
+                    if (nextResolved) {
+                        showToast('Потоки проверены и отмечены как решённые', 'ok');
+                    }
+                    await loadAdminAlerts();
+                    if (typeof loadHealthOverview === 'function') await loadHealthOverview().catch(() => {});
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = origTxt;
                 }
-                await loadAdminAlerts();
             };
         });
         listEl.querySelectorAll('[data-alert-del]').forEach(btn => {
@@ -2389,6 +2457,14 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('ch-group').value = ch.group || '';
         document.getElementById('ch-logo').value = ch.logo || '';
         document.getElementById('ch-url').value = ch.url;
+        const pausedEl = document.getElementById('ch-paused');
+        const uaEl = document.getElementById('ch-ua');
+        const refEl = document.getElementById('ch-ref');
+        const origEl = document.getElementById('ch-orig');
+        if (pausedEl) pausedEl.checked = !!ch.paused;
+        if (uaEl) uaEl.value = ch.userAgent || '';
+        if (refEl) refEl.value = ch.referer || '';
+        if (origEl) origEl.value = ch.origin || '';
         document.getElementById('form-title').textContent = 'Редактировать канал';
         updateLogoPreview();
         populateCopyTarget();
@@ -2454,6 +2530,14 @@ document.addEventListener('DOMContentLoaded', () => {
             if (channelForm) channelForm.reset();
             document.getElementById('channel-index').value = -1;
             document.getElementById('form-title').textContent = 'Добавить канал';
+            const pausedEl = document.getElementById('ch-paused');
+            const uaEl = document.getElementById('ch-ua');
+            const refEl = document.getElementById('ch-ref');
+            const origEl = document.getElementById('ch-orig');
+            if (pausedEl) pausedEl.checked = false;
+            if (uaEl) uaEl.value = '';
+            if (refEl) refEl.value = '';
+            if (origEl) origEl.value = '';
             if (logoPreviewBox) logoPreviewBox.classList.add('hidden');
             const copySel = document.getElementById('copy-target-playlist');
             if (copySel) copySel.value = '';
@@ -2485,12 +2569,22 @@ document.addEventListener('DOMContentLoaded', () => {
         channelForm.onsubmit = async (e) => {
             e.preventDefault();
             const idx = parseInt(document.getElementById('channel-index').value);
+            const prev = idx >= 0 ? (channelsData[idx] || {}) : {};
             const data = {
                 name: document.getElementById('ch-name').value.trim(),
                 group: document.getElementById('ch-group').value.trim(),
                 logo: document.getElementById('ch-logo').value.trim(),
-                url: document.getElementById('ch-url').value.trim()
+                url: document.getElementById('ch-url').value.trim(),
+                tvg_id: prev.tvg_id || '',
             };
+            const paused = !!(document.getElementById('ch-paused')?.checked);
+            const ua = (document.getElementById('ch-ua')?.value || '').trim();
+            const ref = (document.getElementById('ch-ref')?.value || '').trim();
+            const orig = (document.getElementById('ch-orig')?.value || '').trim();
+            if (paused) data.paused = true;
+            if (ua) data.userAgent = ua;
+            if (ref) data.referer = ref;
+            if (orig) data.origin = orig;
             if (idx === -1) channelsData.push(data);
             else channelsData[idx] = data;
             await saveAllChannels();
@@ -3423,6 +3517,414 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
     // Экспорт для внешнего запуска EPG авто-обновления
     window.__startEpgAuto = startEpgAutoRefresh;
     window.__stopEpgAuto = stopEpgAutoRefresh;
+
+    // ===== CHANNEL HEALTH & GLOBAL REMEDIATION =====
+    let healthOverviewData = null;
+
+    const DIAG_LABELS = {
+        '401': 'HTTP 401 (Авторизация)',
+        '403': 'HTTP 403 (Доступ)',
+        '404': 'HTTP 404/410',
+        '429': 'HTTP 429 (Лимит)',
+        '5xx': 'HTTP 5xx',
+        timeout: 'Timeout',
+        tls: 'TLS / SSL',
+        codec: 'Codec / TS',
+        hls_segment: 'HLS сегмент',
+        hls_empty: 'HLS пуст',
+        html_error: 'HTML ошибка',
+        network: 'Сеть',
+    };
+
+    function updateHealthNavBadge(data) {
+        const badge = document.getElementById('nav-health-badge');
+        if (!badge || !data || !data.stats) return;
+        const problemCount = (data.stats.stillBroken || 0) + (data.stats.offline || 0) + (data.stats.viewerReported || 0);
+        badge.textContent = String(problemCount);
+        badge.classList.toggle('hidden', problemCount === 0);
+    }
+
+    async function loadHealthOverview() {
+        try {
+            const res = await apiRequest('/api/health/overview');
+            if (!res || !res.ok) return;
+            healthOverviewData = res;
+            updateHealthNavBadge(res);
+            renderHealthView();
+        } catch (err) {
+            console.error('loadHealthOverview failed:', err);
+        }
+    }
+
+    function renderHealthView() {
+        const data = healthOverviewData;
+        const statsEl = document.getElementById('health-stats');
+        const diagEl = document.getElementById('health-diag-breakdown');
+        const plSel = document.getElementById('health-filter-playlist');
+        const listEl = document.getElementById('health-list-container');
+        if (!data || !listEl) return;
+
+        const st = data.stats || {};
+        if (statsEl) {
+            statsEl.innerHTML = `
+                <div class="cat-stat-box"><span class="cat-stat-label">Всего каналов</span><span class="cat-stat-value">${st.totalChannels || 0}</span></div>
+                <div class="cat-stat-box"><span class="cat-stat-label">Работают</span><span class="cat-stat-value online">${st.online || 0}</span></div>
+                <div class="cat-stat-box"><span class="cat-stat-label">Недоступны</span><span class="cat-stat-value" style="color:#fca5a5;">${st.offline || 0}</span></div>
+                <div class="cat-stat-box"><span class="cat-stat-label">Жалобы зрителей</span><span class="cat-stat-value" style="color:#fcd34d;">${st.viewerReported || 0}</span></div>
+                <div class="cat-stat-box"><span class="cat-stat-label">Скрыты у зрителей</span><span class="cat-stat-value accent">${st.hiddenForViewers || 0}</span></div>
+                <div class="cat-stat-box"><span class="cat-stat-label">Не работают после «Решено»</span><span class="cat-stat-value" style="color:#f87171;">${st.stillBroken || 0}</span></div>
+            `;
+        }
+
+        const currentDiag = document.getElementById('health-filter-diag')?.value || '';
+        if (diagEl) {
+            const dc = data.diagCounts || {};
+            const chips = Object.entries(dc)
+                .filter(([, count]) => count > 0)
+                .map(([code, count]) => {
+                    const active = currentDiag === code ? 'active' : '';
+                    return `<button type="button" class="health-diag-chip ${active}" data-diag-chip="${escapeHtml(code)}">${escapeHtml(DIAG_LABELS[code] || code)}: <b>${count}</b></button>`;
+                });
+            diagEl.innerHTML = chips.join('');
+            diagEl.querySelectorAll('[data-diag-chip]').forEach((btn) => {
+                btn.onclick = () => {
+                    const sel = document.getElementById('health-filter-diag');
+                    if (!sel) return;
+                    sel.value = sel.value === btn.dataset.diagChip ? '' : btn.dataset.diagChip;
+                    renderHealthView();
+                };
+            });
+        }
+
+        if (plSel) {
+            const prevPl = plSel.value;
+            const pls = Array.isArray(data.playlists) ? data.playlists : [];
+            plSel.innerHTML = '<option value="">Все плейлисты</option>' +
+                pls.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+            if (pls.includes(prevPl)) plSel.value = prevPl;
+        }
+
+        const filterPl = plSel ? plSel.value : '';
+        const filterStatus = document.getElementById('health-filter-status')?.value ?? 'problems';
+        const filterDiag = document.getElementById('health-filter-diag')?.value || '';
+        const q = (document.getElementById('health-search')?.value || '').trim().toLowerCase();
+
+        const rows = (data.channels || []).filter((ch) => {
+            if (filterPl && !(ch.playlists || []).includes(filterPl)) return false;
+            if (filterDiag && ch.diagCode !== filterDiag) return false;
+            if (filterStatus === 'problems') {
+                if (ch.overallStatus === 'online' || ch.overallStatus === 'unknown') return false;
+            } else if (filterStatus === 'hidden') {
+                if (!ch.hiddenForViewers) return false;
+            } else if (filterStatus === 'still_broken') {
+                if (!ch.stillBrokenAfterResolve) return false;
+            } else if (filterStatus === 'paused') {
+                if (!ch.paused) return false;
+            } else if (filterStatus && ch.overallStatus !== filterStatus) {
+                return false;
+            }
+            if (q) {
+                const hay = (ch.name + ' ' + ch.primaryUrl + ' ' + ch.reason + ' ' + (ch.playlists || []).join(' ')).toLowerCase();
+                if (!hay.includes(q)) return false;
+            }
+            return true;
+        });
+
+        if (rows.length === 0) {
+            listEl.innerHTML = '<p class="placeholder-text">Каналов по выбранному фильтру не найдено</p>';
+            return;
+        }
+
+        listEl.innerHTML = rows.map((ch) => {
+            const badges = [];
+            if (ch.stillBrokenAfterResolve) {
+                badges.push('<span class="health-badge danger">Не работает после «Решено»</span>');
+            }
+            if (ch.paused) {
+                badges.push('<span class="health-badge warn">Приостановлен</span>');
+            }
+            if (ch.hiddenForViewers) {
+                badges.push('<span class="health-badge muted">Скрыт у зрителей</span>');
+            }
+            if (ch.overallStatus === 'online') {
+                badges.push(`<span class="health-badge ok">Online${ch.ms ? ' · ' + ch.ms + 'ms' : ''}</span>`);
+            } else if (ch.overallStatus === 'offline' || ch.overallStatus === 'still_broken') {
+                badges.push(`<span class="health-badge danger">${escapeHtml(ch.diagCode || 'offline')}${ch.code ? ' · HTTP ' + ch.code : ''}</span>`);
+            } else if (ch.overallStatus === 'viewer_reported') {
+                badges.push(`<span class="health-badge warn">Жалобы: ${ch.viewerErrorCount}</span>`);
+            } else if (ch.overallStatus === 'codec_warn') {
+                badges.push('<span class="health-badge warn">Кодек HEVC/AC-3</span>');
+            } else if (!ch.paused) {
+                badges.push('<span class="health-badge muted">Не проверялся</span>');
+            }
+
+            const plsBadges = (ch.playlists || []).map(p => `<span class="cat-badge violet">${escapeHtml(p)}</span>`).join(' ');
+            const viewerErrsHtml = (ch.viewerErrors && ch.viewerErrors.length > 0)
+                ? `<div style="font-size:11.5px; color:#fcd34d; margin-top:4px;">Зрители: ${ch.viewerErrors.slice(0, 3).map(ve => `${escapeHtml(ve.userName || ve.userLogin)} (${escapeHtml(ve.reason)})`).join('; ')}</div>`
+                : '';
+
+            const encodedName = escapeHtml(ch.name);
+            return `<div class="health-card ${ch.stillBrokenAfterResolve ? 'still-broken' : (ch.paused ? 'paused-card' : '')}">
+                <div style="flex:1; min-width:260px;">
+                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
+                        <b style="color:#fff; font-size:14px;">${encodedName}</b>
+                        ${badges.join(' ')}
+                        ${plsBadges}
+                    </div>
+                    <div style="font-size:12px; color:${ch.overallStatus === 'online' ? '#6ee7b7' : '#fca5a5'}; margin-bottom:4px;">
+                        ${escapeHtml(ch.reason)}
+                    </div>
+                    <div style="font-size:11.5px; color:var(--muted); word-break:break-all;">
+                        <code>${escapeHtml(ch.primaryUrl)}</code>
+                    </div>
+                    ${viewerErrsHtml}
+                </div>
+                <div class="health-actions-col">
+                    <button type="button" class="btn btn-secondary" data-h-act="check" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Проверить</button>
+                    <button type="button" class="btn btn-primary" data-h-act="replace" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Заменить URL</button>
+                    <button type="button" class="btn btn-secondary" data-h-act="pause" data-h-paused="${ch.paused ? '0' : '1'}" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">${ch.paused ? 'Возобновить' : 'Пауза'}</button>
+                    <button type="button" class="btn btn-secondary" data-h-act="resolve" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Решено</button>
+                    <button type="button" class="btn btn-danger" data-h-act="delete" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Удалить</button>
+                </div>
+            </div>`;
+        }).join('');
+
+        listEl.querySelectorAll('[data-h-act]').forEach((btn) => {
+            btn.onclick = async () => {
+                const act = btn.dataset.hAct;
+                const chName = btn.dataset.hCh;
+                if (!chName) return;
+
+                if (act === 'check') {
+                    btn.disabled = true;
+                    btn.textContent = '...';
+                    await apiRequest('/api/health/check', 'POST', { channelName: chName, force: true });
+                    await loadHealthOverview();
+                    return;
+                }
+                if (act === 'replace') {
+                    openHealthReplaceModal(chName);
+                    return;
+                }
+                if (act === 'pause') {
+                    const nextPaused = btn.dataset.hPaused === '1';
+                    const res = await apiRequest('/api/health/pause', 'POST', { channelName: chName, paused: nextPaused });
+                    if (res && res.ok) {
+                        showToast(`${chName}: ${nextPaused ? 'приостановлен во всех плейлистах' : 'возобновлён'}`, 'ok');
+                        await syncLocalMutationToPlaylists();
+                        await loadHealthOverview();
+                    }
+                    return;
+                }
+                if (act === 'resolve') {
+                    btn.disabled = true;
+                    btn.textContent = 'Проверка...';
+                    const res = await apiRequest('/api/health/resolve', 'POST', { channelName: chName });
+                    if (res && res.stillBroken) {
+                        showToast(res.message || 'Канал всё ещё не работает — возвращён в нерабочие с меткой!', 'err');
+                    } else if (res && res.ok) {
+                        showToast('Поток проверен и отмечен решённым', 'ok');
+                    }
+                    await Promise.all([
+                        loadHealthOverview(),
+                        loadAdminAlerts().catch(() => {}),
+                    ]);
+                    return;
+                }
+                if (act === 'delete') {
+                    if (!(await uiConfirm(`Удалить канал «${chName}» из всех плейлистов?`))) return;
+                    const res = await apiRequest('/api/health/delete-channel', 'POST', { channelName: chName });
+                    if (res && res.ok) {
+                        showToast(`Канал «${chName}» удалён из плейлистов: ${(res.updatedPlaylists || []).join(', ')}`, 'ok');
+                        await syncLocalMutationToPlaylists();
+                        await loadHealthOverview();
+                    }
+                }
+            };
+        });
+    }
+
+    async function syncLocalMutationToPlaylists() {
+        await loadPlaylists();
+        if (currentPlaylist) await loadChannels();
+        scheduleCloudSync();
+    }
+
+    function openHealthReplaceModal(channelName) {
+        const modal = document.getElementById('health-replace-modal');
+        if (!modal || !healthOverviewData) return;
+        const ch = (healthOverviewData.channels || []).find(c => c.name === channelName);
+        document.getElementById('health-replace-channel').value = channelName;
+        document.getElementById('health-replace-title').textContent = 'Замена потока: ' + channelName;
+        document.getElementById('health-replace-url').value = ch ? ch.primaryUrl : '';
+        const primaryUrlObj = ch && ch.urls && ch.urls[0] ? ch.urls[0] : {};
+        document.getElementById('health-replace-ua').value = primaryUrlObj.userAgent || '';
+        document.getElementById('health-replace-ref').value = primaryUrlObj.referer || '';
+        document.getElementById('health-replace-orig').value = primaryUrlObj.origin || '';
+
+        const plsBox = document.getElementById('health-replace-playlists');
+        if (plsBox) {
+            const pls = ch ? (ch.playlists || []) : [];
+            plsBox.innerHTML = pls.map(p =>
+                `<label style="display:flex; align-items:center; gap:6px; font-size:12.5px; color:#fff; cursor:pointer;">
+                    <input type="checkbox" name="health-pl-chk" value="${escapeHtml(p)}" checked>
+                    <span>${escapeHtml(p)}</span>
+                </label>`
+            ).join('');
+        }
+        const candList = document.getElementById('health-candidates-list');
+        if (candList) {
+            candList.innerHTML = '<p class="placeholder-text" style="margin:14px 0;">Нажмите «Найти рабочие в источниках» для поиска и проверки альтернатив</p>';
+        }
+        modal.classList.remove('hidden');
+    }
+
+    (function initHealthControls() {
+        const btnCheckAll = document.getElementById('btn-health-check-all');
+        const btnAutoRepair = document.getElementById('btn-health-auto-repair');
+        const btnRefresh = document.getElementById('btn-health-refresh');
+        const selPl = document.getElementById('health-filter-playlist');
+        const selSt = document.getElementById('health-filter-status');
+        const selDiag = document.getElementById('health-filter-diag');
+        const inpSearch = document.getElementById('health-search');
+
+        if (selPl) selPl.onchange = renderHealthView;
+        if (selSt) selSt.onchange = renderHealthView;
+        if (selDiag) selDiag.onchange = renderHealthView;
+        if (inpSearch) inpSearch.oninput = renderHealthView;
+        if (btnRefresh) btnRefresh.onclick = loadHealthOverview;
+
+        if (btnCheckAll) {
+            btnCheckAll.onclick = async () => {
+                const txt = document.getElementById('btn-health-check-all-text');
+                btnCheckAll.disabled = true;
+                if (txt) txt.textContent = 'Глубокая проверка...';
+                try {
+                    const pl = selPl ? selPl.value : '';
+                    const res = await apiRequest('/api/health/check-all', 'POST', { playlist: pl || undefined, force: true });
+                    showToast(`Проверено ${res.checked || 0}: ${res.online || 0} работает, ${res.offline || 0} не работает`, 'ok');
+                    await loadHealthOverview();
+                    scheduleCloudSync();
+                } finally {
+                    btnCheckAll.disabled = false;
+                    if (txt) txt.textContent = 'Проверить все каналы';
+                }
+            };
+        }
+
+        if (btnAutoRepair) {
+            btnAutoRepair.onclick = async () => {
+                const txt = document.getElementById('btn-health-auto-repair-text');
+                btnAutoRepair.disabled = true;
+                if (txt) txt.textContent = 'Поиск и замена...';
+                try {
+                    const res = await apiRequest('/api/health/auto-repair', 'POST', { onlyDead: true });
+                    showToast(`Сканировано ${res.scanned || 0}: заменено ${res.repairedCount || 0}, без замены ${res.unfixableCount || 0}`, res.repairedCount > 0 ? 'ok' : 'err');
+                    await syncLocalMutationToPlaylists();
+                    await loadHealthOverview();
+                } finally {
+                    btnAutoRepair.disabled = false;
+                    if (txt) txt.textContent = 'Обновить неработающие URL';
+                }
+            };
+        }
+
+        const repModal = document.getElementById('health-replace-modal');
+        const repClose = document.getElementById('health-replace-close');
+        const repBack = document.getElementById('health-replace-backdrop');
+        const repForm = document.getElementById('health-replace-form');
+        const btnProbe = document.getElementById('health-probe-candidates');
+
+        const closeRepModal = () => { if (repModal) repModal.classList.add('hidden'); };
+        if (repClose) repClose.onclick = closeRepModal;
+        if (repBack) repBack.onclick = closeRepModal;
+
+        if (repForm) {
+            repForm.onsubmit = async (e) => {
+                e.preventDefault();
+                const channelName = document.getElementById('health-replace-channel').value;
+                const newUrl = document.getElementById('health-replace-url').value.trim();
+                const userAgent = document.getElementById('health-replace-ua').value.trim();
+                const referer = document.getElementById('health-replace-ref').value.trim();
+                const origin = document.getElementById('health-replace-orig').value.trim();
+                const checkedPls = Array.from(document.querySelectorAll('input[name="health-pl-chk"]:checked')).map(el => el.value);
+                const subBtn = document.getElementById('health-replace-submit');
+                if (subBtn) { subBtn.disabled = true; subBtn.textContent = 'Сохранение...'; }
+                try {
+                    const res = await apiRequest('/api/health/replace-url', 'POST', {
+                        channelName,
+                        newUrl,
+                        playlists: checkedPls.length > 0 ? checkedPls : undefined,
+                        userAgent,
+                        referer,
+                        origin,
+                        unpause: true,
+                    });
+                    if (res && res.ok) {
+                        const diagOk = res.checkResult && res.checkResult.status === 'online';
+                        showToast(
+                            `URL обновлён в: ${(res.updatedPlaylists || []).join(', ')} (${res.checkResult ? res.checkResult.reason : ''})`,
+                            diagOk ? 'ok' : 'err'
+                        );
+                        closeRepModal();
+                        await syncLocalMutationToPlaylists();
+                        await loadHealthOverview();
+                    } else {
+                        showToast((res && res.error) || 'Не удалось заменить URL', 'err');
+                    }
+                } finally {
+                    if (subBtn) { subBtn.disabled = false; subBtn.textContent = 'Сохранить и проверить'; }
+                }
+            };
+        }
+
+        if (btnProbe) {
+            btnProbe.onclick = async () => {
+                const channelName = document.getElementById('health-replace-channel').value;
+                const candList = document.getElementById('health-candidates-list');
+                if (!channelName || !candList) return;
+                btnProbe.disabled = true;
+                candList.innerHTML = '<div style="padding:12px; color:var(--muted);">Поиск альтернативных потоков и глубокая проверка сегментов...</div>';
+                try {
+                    const res = await apiRequest('/api/health/candidates?name=' + encodeURIComponent(channelName));
+                    const cands = (res && Array.isArray(res.candidates)) ? res.candidates : [];
+                    if (cands.length === 0) {
+                        candList.innerHTML = '<p class="placeholder-text" style="margin:10px 0;">Альтернативных потоков в каталоге и источниках не найдено</p>';
+                        return;
+                    }
+                    candList.innerHTML = cands.map((c, idx) => {
+                        const d = c.diag || {};
+                        const isOk = d.status === 'online';
+                        return `<div class="health-cand-row">
+                            <div style="flex:1; min-width:220px;">
+                                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:2px;">
+                                    <span class="health-badge ${isOk ? 'ok' : 'danger'}">${isOk ? 'OK · ' + (d.ms || 0) + 'ms' : escapeHtml(d.diagCode || 'offline')}</span>
+                                    <b style="color:#fff; font-size:12.5px;">${escapeHtml(c.source || 'Источник')}</b>
+                                    <span style="font-size:11.5px; color:var(--muted);">${escapeHtml(d.reason || '')}</span>
+                                </div>
+                                <div style="font-size:11px; color:var(--muted); word-break:break-all;"><code>${escapeHtml(c.url)}</code></div>
+                            </div>
+                            <button type="button" class="btn ${isOk ? 'btn-primary' : 'btn-secondary'}" data-pick-cand="${idx}" style="padding:6px 10px; font-size:11.5px;">Выбрать</button>
+                        </div>`;
+                    }).join('');
+                    candList.querySelectorAll('[data-pick-cand]').forEach((b) => {
+                        b.onclick = () => {
+                            const picked = cands[parseInt(b.dataset.pickCand, 10)];
+                            if (!picked) return;
+                            document.getElementById('health-replace-url').value = picked.url;
+                            document.getElementById('health-replace-ua').value = picked.userAgent || '';
+                            document.getElementById('health-replace-ref').value = picked.referer || '';
+                            document.getElementById('health-replace-orig').value = picked.origin || '';
+                        };
+                    });
+                } finally {
+                    btnProbe.disabled = false;
+                }
+            };
+        }
+
+        loadHealthOverview();
+    })();
 
     // ===== СТАРТ: открываем каталог по умолчанию =====
     try {

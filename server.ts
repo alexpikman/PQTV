@@ -1,17 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { Readable } from 'node:stream';
+import http, { IncomingMessage } from 'node:http';
+import https from 'node:https';
 import express, { Request, Response, NextFunction } from 'express';
 import session from 'express-session';
 import { config, hashPassword, verifyPassword } from './src/config.js';
 import { storage } from './src/storage.js';
-import { parseM3uFile, Channel } from './src/m3uParser.js';
+import { parseM3uFile, generateM3u, Channel } from './src/m3uParser.js';
 import { userAuth, hashEmailId, ChannelAlertIssue } from './src/userAuth.js';
 import { StreamParser, SourceItem } from './src/streamParser.js';
 import { EpgParser, EpgSource } from './src/epgParser.js';
 import { catalogStore } from './src/catalogStore.js';
 import { verifyFirebaseIdToken } from './src/firebaseJwt.js';
+import { channelHealth, ChannelHealthState } from './src/channelHealth.js';
+import {
+  checkStreamDeep,
+  buildOutboundHeaders,
+  classifyNetworkError,
+  isBlockedHostname,
+} from './src/streamChecker.js';
 import { apkManager, buildAndroidTvProjectZip, isValidApkBuffer } from './src/apkManager.js';
 import {
   getPublicGithubConfig,
@@ -523,6 +531,27 @@ function getViewerFromRequest(req: Request): {
 // Static assets
 app.use('/assets', express.static(path.join(rootDir, 'assets')));
 app.use('/logo', express.static(path.join(rootDir, 'logo')));
+app.get('/playlist/:filename', (req, res, next) => {
+  const raw = String(req.params.filename || '');
+  if (!raw.endsWith('.m3u')) {
+    next();
+    return;
+  }
+  const cleanName = raw.slice(0, -4);
+  if (!storage.isValidFilename(cleanName)) {
+    res.status(400).send('Invalid playlist name');
+    return;
+  }
+  const filePath = storage.getPlaylistPath(cleanName);
+  if (!fs.existsSync(filePath)) {
+    res.status(404).send('Playlist not found');
+    return;
+  }
+  const active = parseM3uFile(filePath).filter((ch) => !ch.paused);
+  res.setHeader('Content-Type', 'audio/x-mpegurl; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.send(generateM3u(active));
+});
 app.use('/playlist', express.static(config.playlistDir));
 app.get('/manifest.webmanifest', (_req, res) => {
   res.type('application/manifest+json');
@@ -1116,13 +1145,13 @@ app.get('/watch/api/channels', (req, res) => {
   }
 
   const playlists = viewer.playlists;
-  const all: Channel[] = [];
-  const unavailable: Array<{ name: string; group: string; reason: string; playlist?: string }> = [];
-  const seen = new Set<string>();
+  const availableMap = new Map<string, Channel>();
+  const excludedMap = new Map<string, { name: string; group: string; reason: string; diagCode?: string; playlist: string }>();
+  const playlistErrors: Array<{ name: string; group: string; reason: string; diagCode?: string; playlist?: string }> = [];
 
   for (const pl of playlists) {
     if (!storage.isValidFilename(pl)) {
-      unavailable.push({
+      playlistErrors.push({
         name: `Плейлист ${pl}`,
         group: 'Плейлист',
         reason: 'Некорректное имя плейлиста',
@@ -1132,7 +1161,7 @@ app.get('/watch/api/channels', (req, res) => {
     }
     const filePath = storage.getPlaylistPath(pl);
     if (!fs.existsSync(filePath)) {
-      unavailable.push({
+      playlistErrors.push({
         name: `Плейлист ${pl}.m3u`,
         group: 'Плейлист',
         reason: 'Назначенный плейлист не найден на сервере',
@@ -1142,7 +1171,7 @@ app.get('/watch/api/channels', (req, res) => {
     }
     const chans = parseM3uFile(filePath);
     if (chans.length === 0) {
-      unavailable.push({
+      playlistErrors.push({
         name: `Плейлист ${pl}.m3u`,
         group: 'Плейлист',
         reason: 'Плейлист пуст (нет каналов)',
@@ -1154,20 +1183,40 @@ app.get('/watch/api/channels', (req, res) => {
       const name = (ch.name || '').trim();
       if (!name) continue;
       const key = name.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
+      if (availableMap.has(key)) continue;
 
-      all.push({
+      const excl = channelHealth.shouldExcludeForViewer(ch);
+      if (excl.excluded) {
+        if (!excludedMap.has(key)) {
+          excludedMap.set(key, {
+            name,
+            group: ch.group || '',
+            reason: excl.reason || 'Канал отключён или недоступен',
+            diagCode: excl.diagCode,
+            playlist: pl,
+          });
+        }
+        continue;
+      }
+
+      excludedMap.delete(key);
+      const item: Channel = {
         name,
         group: ch.group || '',
         logo: ch.logo || '',
         url: ch.url || '',
         tvg_id: ch.tvg_id || '',
-      });
+      };
+      if (ch.userAgent) item.userAgent = ch.userAgent;
+      if (ch.referer) item.referer = ch.referer;
+      if (ch.origin) item.origin = ch.origin;
+      availableMap.set(key, item);
     }
   }
 
-  const totalCount = all.length;
+  const all = Array.from(availableMap.values());
+  const unavailable = [...playlistErrors, ...Array.from(excludedMap.values())];
+  const totalCount = all.length + excludedMap.size;
 
   noCacheJson(res, {
     channels: all,
@@ -1175,7 +1224,7 @@ app.get('/watch/api/channels', (req, res) => {
     stats: {
       total: totalCount,
       available: all.length,
-      unavailable: 0,
+      unavailable: excludedMap.size,
     },
     playlists,
     streaming: getStreamingSettings(),
@@ -1237,6 +1286,10 @@ app.post('/watch/api/report-unavailable', (req, res) => {
     totalChannels,
     items: rawItems,
   });
+
+  if (rawItems.length > 0) {
+    channelHealth.recordViewerReports(viewer, rawItems);
+  }
 
   noCacheJson(res, { ok: true, alert });
 });
@@ -1421,14 +1474,27 @@ app.get('/watch/api/admin/alerts', (_req, res) => {
   });
 });
 
-app.post('/watch/api/admin/alerts/resolve', (req, res) => {
+app.post('/watch/api/admin/alerts/resolve', async (req, res) => {
   const id = String(req.body?.id || '').trim();
   const resolved = req.body?.resolved !== undefined ? Boolean(req.body.resolved) : true;
-  if (!id || !userAuth.resolveAlert(id, resolved)) {
+  if (!id) {
     noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
     return;
   }
-  noCacheJson(res, { ok: true });
+  if (!resolved) {
+    if (!userAuth.resolveAlert(id, false)) {
+      noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
+      return;
+    }
+    noCacheJson(res, { ok: true, resolved: false, stillBroken: false });
+    return;
+  }
+  const verifyRes = await channelHealth.resolveWithVerification({ alertId: id });
+  if (!verifyRes.ok) {
+    noCacheJson(res, { error: verifyRes.error || 'Предупреждение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, verifyRes);
 });
 
 app.post('/watch/api/admin/alerts/delete', (req, res) => {
@@ -1498,7 +1564,7 @@ app.post('/editor', (req, res) => {
   res.redirect('/login?clear_token=1');
 });
 
-// ============ PUBLIC STREAM PROXY (WITH SSRF PROTECTION) ============
+// ============ PUBLIC STREAM PROXY (SSRF PROTECTION, HEADER FORWARDING, CLEAN ABORT) ============
 function resolveProxyUrl(raw: string, baseOrigin: string, basePath: string): string {
   if (/^https?:\/\//i.test(raw)) return raw;
   if (raw.startsWith('//')) return 'https:' + raw;
@@ -1506,14 +1572,183 @@ function resolveProxyUrl(raw: string, baseOrigin: string, basePath: string): str
   return baseOrigin + basePath + raw;
 }
 
-function isBlockedProxyHostname(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (!h) return true;
-  if (h === 'localhost' || h.endsWith('.local') || h === '0.0.0.0' || h === '::1') return true;
-  if (h.startsWith('127.') || h.startsWith('169.254.') || h === 'metadata.google.internal') {
-    return true;
+function findPlaylistChannelHints(targetUrl: string): {
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
+} {
+  const clean = targetUrl.trim();
+  if (!clean) return {};
+  for (const pl of storage.getPlaylists()) {
+    const items = parseM3uFile(storage.getPlaylistPath(pl));
+    for (const ch of items) {
+      if ((ch.url || '').trim() === clean) {
+        return {
+          userAgent: ch.userAgent,
+          referer: ch.referer,
+          origin: ch.origin,
+        };
+      }
+    }
   }
-  return false;
+  return {};
+}
+
+function buildProxyLink(
+  absUrl: string,
+  hints: { ua?: string; ref?: string; orig?: string }
+): string {
+  const params = new URLSearchParams();
+  params.set('url', absUrl);
+  if (hints.ua) params.set('ua', hints.ua);
+  if (hints.ref) params.set('ref', hints.ref);
+  if (hints.orig) params.set('orig', hints.orig);
+  return `/api/stream/proxy?${params.toString()}`;
+}
+
+interface OpenedProxyUpstream {
+  status: number;
+  headers: Record<string, string>;
+  incoming: IncomingMessage;
+  finalUrl: string;
+  destroyUpstream: () => void;
+}
+
+async function openProxyUpstream(
+  initialUrl: string,
+  opts: {
+    headers: Record<string, string>;
+    connectTimeoutMs: number;
+    ignoreTlsErrors: boolean;
+    maxRedirects?: number;
+    onAbortRegister?: (abortFn: () => void) => void;
+  }
+): Promise<OpenedProxyUpstream> {
+  const maxRedirects = opts.maxRedirects ?? 5;
+  let currentUrl = initialUrl;
+
+  for (let hop = 0; hop <= maxRedirects; hop++) {
+    const parsed = new URL(currentUrl);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw Object.assign(new Error('Unsupported scheme'), { code: 'ERR_UNSUPPORTED_PROTOCOL' });
+    }
+    if (isBlockedHostname(parsed.hostname)) {
+      throw Object.assign(new Error('Blocked host'), { code: 'ERR_BLOCKED_HOST' });
+    }
+
+    const step = await new Promise<
+      | { kind: 'redirect'; location: string }
+      | { kind: 'open'; opened: OpenedProxyUpstream }
+    >((resolve, reject) => {
+      const mod = parsed.protocol === 'https:' ? https : http;
+      const agent =
+        parsed.protocol === 'https:' && opts.ignoreTlsErrors
+          ? new https.Agent({ rejectUnauthorized: false })
+          : undefined;
+
+      let settled = false;
+      let currentIncoming: IncomingMessage | null = null;
+      const req = mod.request(
+        parsed,
+        {
+          method: 'GET',
+          headers: opts.headers,
+          agent,
+        },
+        (incoming: IncomingMessage) => {
+          currentIncoming = incoming;
+          clearTimeout(connectTimer);
+          const status = incoming.statusCode || 200;
+          const loc = incoming.headers.location;
+          if ([301, 302, 303, 307, 308].includes(status) && loc && hop < maxRedirects) {
+            incoming.resume();
+            if (!settled) {
+              settled = true;
+              resolve({ kind: 'redirect', location: new URL(loc, parsed).toString() });
+            }
+            return;
+          }
+
+          const flatHeaders: Record<string, string> = {};
+          for (const [hk, hv] of Object.entries(incoming.headers)) {
+            if (typeof hv === 'string') flatHeaders[hk.toLowerCase()] = hv;
+            else if (Array.isArray(hv)) flatHeaders[hk.toLowerCase()] = hv.join(', ');
+          }
+
+          if (!settled) {
+            settled = true;
+            resolve({
+              kind: 'open',
+              opened: {
+                status,
+                headers: flatHeaders,
+                incoming,
+                finalUrl: currentUrl,
+                destroyUpstream: () => {
+                  try {
+                    incoming.destroy();
+                  } catch {
+                    // ignore
+                  }
+                  try {
+                    req.destroy();
+                  } catch {
+                    // ignore
+                  }
+                },
+              },
+            });
+          }
+        }
+      );
+
+      const abortUpstream = () => {
+        clearTimeout(connectTimer);
+        if (currentIncoming) {
+          try {
+            currentIncoming.destroy();
+          } catch {
+            // ignore
+          }
+        }
+        try {
+          req.destroy();
+        } catch {
+          // ignore
+        }
+      };
+
+      if (opts.onAbortRegister) {
+        opts.onAbortRegister(abortUpstream);
+      }
+
+      // Connect/header-only timeout! Cleared as soon as response headers arrive so live streams never die mid-playback.
+      const connectTimer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          abortUpstream();
+          reject(Object.assign(new Error('Upstream connect timeout'), { code: 'ETIMEDOUT', name: 'TimeoutError' }));
+        }
+      }, opts.connectTimeoutMs);
+
+      req.on('error', (err) => {
+        clearTimeout(connectTimer);
+        if (!settled) {
+          settled = true;
+          reject(err);
+        }
+      });
+      req.end();
+    });
+
+    if (step.kind === 'redirect') {
+      currentUrl = step.location;
+      continue;
+    }
+    return step.opened;
+  }
+
+  throw Object.assign(new Error('Too many redirects'), { code: 'ERR_TOO_MANY_REDIRECTS' });
 }
 
 app.options('/api/stream/proxy', (_req, res) => {
@@ -1536,52 +1771,85 @@ app.get('/api/stream/proxy', async (req, res) => {
     res.status(400).send('Bad scheme');
     return;
   }
-  if (isBlockedProxyHostname(parsed.hostname)) {
+  if (isBlockedHostname(parsed.hostname)) {
     res.status(403).send('Blocked host');
     return;
   }
 
   const streamCfg = getStreamingSettings();
-  const baseTimeoutMs = Math.max(5000, Math.min(60000, (streamCfg.proxyTimeoutSec || 15) * 1000));
-  const isPlaylistHint = /\.m3u8?(\?|$)/i.test(rawUrl);
-  const abortController = new AbortController();
-  req.on('close', () => abortController.abort());
+  const srcOpts = StreamParser.getSourceRequestOptions(rawUrl);
+  const chHints = findPlaylistChannelHints(rawUrl);
+  const qUa = typeof req.query.ua === 'string' ? req.query.ua.trim() : '';
+  const qRef = typeof req.query.ref === 'string' ? req.query.ref.trim() : '';
+  const qOrig = typeof req.query.orig === 'string' ? req.query.orig.trim() : '';
 
-  const upstreamHeaders: Record<string, string> = {
-    'User-Agent': String(req.headers['user-agent'] || 'Mozilla/5.0'),
-    Accept: '*/*',
-  };
-  if (typeof req.headers.range === 'string') {
-    upstreamHeaders.Range = req.headers.range;
-  }
+  const effectiveUa = qUa || chHints.userAgent || srcOpts.userAgent || '';
+  const effectiveRef = qRef || chHints.referer || srcOpts.referer || '';
+  const effectiveOrig = qOrig || chHints.origin || srcOpts.origin || '';
+  const propagatedHints = { ua: effectiveUa, ref: effectiveRef, orig: effectiveOrig };
+
+  const connectTimeoutMs = Math.max(
+    5000,
+    Math.min(60000, srcOpts.timeoutMs || (streamCfg.proxyTimeoutSec || 15) * 1000)
+  );
+  const upstreamHeaders = buildOutboundHeaders({
+    headers: srcOpts.headers,
+    userAgent: effectiveUa || String(req.headers['user-agent'] || 'Mozilla/5.0'),
+    referer: effectiveRef || undefined,
+    origin: effectiveOrig || undefined,
+    range: typeof req.headers.range === 'string' ? req.headers.range : undefined,
+  });
+
+  let clientClosed = false;
+  let activeAbortFn: (() => void) | null = null;
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      clientClosed = true;
+      if (activeAbortFn) activeAbortFn();
+    }
+  });
 
   try {
-    const upstream = await fetch(rawUrl, {
+    const opened = await openProxyUpstream(rawUrl, {
       headers: upstreamHeaders,
-      redirect: 'follow',
-      signal: AbortSignal.any([
-        abortController.signal,
-        AbortSignal.timeout(isPlaylistHint ? baseTimeoutMs : Math.max(baseTimeoutMs, 30000)),
-      ]),
+      connectTimeoutMs,
+      ignoreTlsErrors: srcOpts.ignoreTlsErrors,
+      onAbortRegister: (fn) => {
+        activeAbortFn = fn;
+        if (clientClosed) fn();
+      },
     });
 
-    const ctype = upstream.headers.get('content-type') || '';
-    const effUrl = upstream.url || rawUrl;
+    if (clientClosed) {
+      opened.destroyUpstream();
+      return;
+    }
 
-    if (
-      isPlaylistHint ||
-      ctype.toLowerCase().includes('mpegurl') ||
-      ctype.toLowerCase().includes('m3u')
-    ) {
-      const body = await upstream.text();
-      const looksLikePlaylist =
-        isPlaylistHint ||
-        ctype.toLowerCase().includes('mpegurl') ||
-        ctype.toLowerCase().includes('m3u') ||
-        body.startsWith('#EXTM3U');
+    const ctype = opened.headers['content-type'] || '';
+    const isOk = opened.status >= 200 && opened.status < 400;
+    const isPlaylistHint = /\.m3u8?(\?|$)/i.test(rawUrl) || /\.m3u8?(\?|$)/i.test(opened.finalUrl);
+    const isPlaylistContentType =
+      ctype.toLowerCase().includes('mpegurl') || ctype.toLowerCase().includes('m3u');
 
-      if (looksLikePlaylist) {
-        const effParsed = new URL(effUrl);
+    if (isOk && (isPlaylistHint || isPlaylistContentType)) {
+      const chunks: Buffer[] = [];
+      let totalBytes = 0;
+      const MAX_PLAYLIST_BYTES = 4 * 1024 * 1024;
+      await new Promise<void>((resolve, reject) => {
+        opened.incoming.on('data', (chunk: Buffer) => {
+          totalBytes += chunk.length;
+          if (totalBytes <= MAX_PLAYLIST_BYTES) chunks.push(chunk);
+        });
+        opened.incoming.on('end', () => resolve());
+        opened.incoming.on('error', reject);
+        opened.incoming.on('close', () => resolve());
+      });
+
+      if (clientClosed) return;
+      const body = Buffer.concat(chunks).toString('utf-8');
+      const trimmedBody = body.trimStart();
+      if (trimmedBody.startsWith('#EXTM3U')) {
+        const effParsed = new URL(opened.finalUrl);
         const baseOrigin = effParsed.origin;
         const basePath = effParsed.pathname.replace(/\/[^/]*$/, '/');
 
@@ -1593,14 +1861,15 @@ app.get('/api/stream/proxy', async (req, res) => {
             if (t.startsWith('#')) {
               return line.replace(/URI="([^"]+)"/gi, (_m, u: string) => {
                 const abs = resolveProxyUrl(u, baseOrigin, basePath);
-                return `URI="/api/stream/proxy?url=${encodeURIComponent(abs)}"`;
+                return `URI="${buildProxyLink(abs, propagatedHints)}"`;
               });
             }
             const abs = resolveProxyUrl(t, baseOrigin, basePath);
-            return `/api/stream/proxy?url=${encodeURIComponent(abs)}`;
+            return buildProxyLink(abs, propagatedHints);
           })
           .join('\n');
 
+        res.status(opened.status);
         res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
         res.setHeader('Access-Control-Allow-Origin', '*');
         res.setHeader('Cache-Control', 'no-cache');
@@ -1608,35 +1877,32 @@ app.get('/api/stream/proxy', async (req, res) => {
         return;
       }
 
-      res.status(upstream.status);
+      res.status(opened.status);
       if (ctype) res.setHeader('Content-Type', ctype);
       res.setHeader('Access-Control-Allow-Origin', '*');
       res.send(body);
       return;
     }
 
-    res.status(upstream.status);
+    res.status(opened.status);
     if (ctype) res.setHeader('Content-Type', ctype);
-    const clen = upstream.headers.get('content-length');
-    if (clen) res.setHeader('Content-Length', clen);
-    const crange = upstream.headers.get('content-range');
-    if (crange) res.setHeader('Content-Range', crange);
+    if (opened.headers['content-length']) res.setHeader('Content-Length', opened.headers['content-length']);
+    if (opened.headers['content-range']) res.setHeader('Content-Range', opened.headers['content-range']);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Cache-Control', 'public, max-age=30');
+    res.setHeader('Cache-Control', isOk ? 'public, max-age=30' : 'no-store');
 
-    if (!upstream.body) {
-      res.end();
-      return;
-    }
-    const readable = Readable.fromWeb(upstream.body as never);
-    readable.on('error', () => {
+    opened.incoming.on('error', () => {
+      opened.destroyUpstream();
       if (!res.headersSent) res.status(502);
       res.end();
     });
-    readable.pipe(res);
-  } catch {
+    opened.incoming.pipe(res);
+  } catch (err) {
+    if (clientClosed) return;
+    const net = classifyNetworkError(err);
+    const httpStatus = net.diagCode === 'timeout' ? 504 : net.diagCode === 'tls' ? 525 : 502;
     if (!res.headersSent) {
-      res.status(502).send('Upstream error');
+      res.status(httpStatus).send(net.reason);
     } else {
       res.end();
     }
@@ -1699,6 +1965,7 @@ app.get('/api/cloud/export', (_req, res) => {
     })),
     invites: userAuth.allInvites(),
     alerts: userAuth.allAlerts(),
+    channelHealth: channelHealth.exportState(),
     adminSettings: {
       githubRepo: ghCfg.repoFullName || '',
       githubBranch: ghCfg.branch || 'main',
@@ -1723,6 +1990,7 @@ app.post('/api/cloud/hydrate', (req, res) => {
       sources?: unknown[];
     };
     streamingSettings?: unknown;
+    channelHealth?: ChannelHealthState;
     users?: Array<{
       id?: string;
       login?: string;
@@ -1778,6 +2046,9 @@ app.post('/api/cloud/hydrate', (req, res) => {
   }
   if (body.streamingSettings && typeof body.streamingSettings === 'object') {
     saveStreamingSettings(body.streamingSettings);
+  }
+  if (body.channelHealth && typeof body.channelHealth === 'object') {
+    channelHealth.hydrateState(body.channelHealth);
   }
   if (Array.isArray(body.users)) {
     for (const u of body.users) {
@@ -2063,8 +2334,117 @@ app.post('/api/channels/save', (req, res) => {
 // Stream check & parse
 app.post('/api/stream/check', async (req, res) => {
   const url = String(req.body?.url || '').trim();
-  const result = await catalogStore.checkStream(url, Boolean(req.body?.force));
-  noCacheJson(res, { online: result.online, status: result.status, code: result.code, ms: result.ms, reason: result.reason, checkedAt: result.checkedAt });
+  const hints = findPlaylistChannelHints(url);
+  const userAgent = typeof req.body?.userAgent === 'string' ? req.body.userAgent : hints.userAgent;
+  const referer = typeof req.body?.referer === 'string' ? req.body.referer : hints.referer;
+  const origin = typeof req.body?.origin === 'string' ? req.body.origin : hints.origin;
+  const ignoreTlsErrors = req.body?.ignoreTlsErrors !== undefined ? Boolean(req.body.ignoreTlsErrors) : undefined;
+  const result = await catalogStore.checkStream(url, Boolean(req.body?.force), true, {
+    userAgent,
+    referer,
+    origin,
+    ignoreTlsErrors,
+  });
+  channelHealth.recordCheckResult(url, result);
+  noCacheJson(res, result);
+});
+
+// Unified Channel Health, Viewer Exclusion & Global Remediation API
+app.get('/api/health/overview', (_req, res) => {
+  noCacheJson(res, channelHealth.getHealthOverview());
+});
+
+app.post('/api/health/check', async (req, res) => {
+  const channelName = String(req.body?.channelName || '').trim();
+  const url = String(req.body?.url || '').trim();
+  const force = req.body?.force !== false;
+  if (channelName) {
+    const out = await channelHealth.checkChannel(channelName, force);
+    noCacheJson(res, out, out.ok ? 200 : 404);
+    return;
+  }
+  if (url) {
+    const hints = findPlaylistChannelHints(url);
+    const srcOpts = StreamParser.getSourceRequestOptions(url);
+    const r = await checkStreamDeep(url, {
+      ...srcOpts,
+      userAgent: hints.userAgent || srcOpts.userAgent,
+      referer: hints.referer || srcOpts.referer,
+      origin: hints.origin || srcOpts.origin,
+      force,
+    });
+    channelHealth.recordCheckResult(url, r);
+    noCacheJson(res, { ok: true, result: r });
+    return;
+  }
+  noCacheJson(res, { error: 'Укажите channelName или url' }, 400);
+});
+
+app.post('/api/health/check-all', async (req, res) => {
+  const playlist = typeof req.body?.playlist === 'string' ? req.body.playlist : undefined;
+  const force = req.body?.force !== false;
+  const limit = Number(req.body?.limit) || 800;
+  const out = await channelHealth.checkAllPlaylistChannels({ playlist, force, limit });
+  noCacheJson(res, out);
+});
+
+app.get('/api/health/candidates', async (req, res) => {
+  const name = String(req.query.name || '').trim();
+  if (!name) {
+    noCacheJson(res, { error: 'Укажите название канала' }, 400);
+    return;
+  }
+  const out = await channelHealth.findAndProbeCandidates(name);
+  noCacheJson(res, out);
+});
+
+app.post('/api/health/replace-url', async (req, res) => {
+  const channelName = String(req.body?.channelName || '').trim();
+  const newUrl = String(req.body?.newUrl || '').trim();
+  const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : undefined;
+  const userAgent = typeof req.body?.userAgent === 'string' ? req.body.userAgent : undefined;
+  const referer = typeof req.body?.referer === 'string' ? req.body.referer : undefined;
+  const origin = typeof req.body?.origin === 'string' ? req.body.origin : undefined;
+  const unpause = req.body?.unpause !== undefined ? Boolean(req.body.unpause) : true;
+  const out = await channelHealth.replaceChannelUrl({
+    channelName,
+    newUrl,
+    playlists,
+    userAgent,
+    referer,
+    origin,
+    unpause,
+  });
+  noCacheJson(res, out, out.ok ? 200 : 400);
+});
+
+app.post('/api/health/auto-repair', async (req, res) => {
+  const channelNames = Array.isArray(req.body?.channelNames) ? req.body.channelNames : undefined;
+  const onlyDead = req.body?.onlyDead !== undefined ? Boolean(req.body.onlyDead) : true;
+  const out = await channelHealth.autoRepairChannels({ channelNames, onlyDead });
+  noCacheJson(res, out);
+});
+
+app.post('/api/health/pause', (req, res) => {
+  const channelName = String(req.body?.channelName || '').trim();
+  const paused = Boolean(req.body?.paused);
+  const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : undefined;
+  const out = channelHealth.setChannelPaused({ channelName, paused, playlists });
+  noCacheJson(res, out, out.ok ? 200 : 400);
+});
+
+app.post('/api/health/delete-channel', (req, res) => {
+  const channelName = String(req.body?.channelName || '').trim();
+  const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : undefined;
+  const out = channelHealth.deleteChannelFromPlaylists({ channelName, playlists });
+  noCacheJson(res, out, out.ok ? 200 : 400);
+});
+
+app.post('/api/health/resolve', async (req, res) => {
+  const channelName = typeof req.body?.channelName === 'string' ? req.body.channelName : undefined;
+  const alertId = typeof req.body?.alertId === 'string' ? req.body.alertId : undefined;
+  const out = await channelHealth.resolveWithVerification({ channelName, alertId });
+  noCacheJson(res, out, out.ok ? 200 : 400);
 });
 
 app.post('/api/stream/parse', (req, res) => {
@@ -2328,14 +2708,27 @@ app.get('/api/alerts', (_req, res) => {
   });
 });
 
-app.post('/api/alerts/resolve', (req, res) => {
+app.post('/api/alerts/resolve', async (req, res) => {
   const id = String(req.body?.id || '').trim();
   const resolved = req.body?.resolved !== undefined ? Boolean(req.body.resolved) : true;
-  if (!id || !userAuth.resolveAlert(id, resolved)) {
+  if (!id) {
     noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
     return;
   }
-  noCacheJson(res, { ok: true });
+  if (!resolved) {
+    if (!userAuth.resolveAlert(id, false)) {
+      noCacheJson(res, { error: 'Предупреждение не найдено' }, 404);
+      return;
+    }
+    noCacheJson(res, { ok: true, resolved: false, stillBroken: false });
+    return;
+  }
+  const verifyRes = await channelHealth.resolveWithVerification({ alertId: id });
+  if (!verifyRes.ok) {
+    noCacheJson(res, { error: verifyRes.error || 'Предупреждение не найдено' }, 404);
+    return;
+  }
+  noCacheJson(res, verifyRes);
 });
 
 app.post('/api/alerts/delete', (req, res) => {

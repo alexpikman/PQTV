@@ -5,6 +5,15 @@ import { parseM3uFile } from './m3uParser.js';
 import { storage } from './storage.js';
 import { normalizeChannelName, StreamParser } from './streamParser.js';
 
+import {
+  checkStreamDeep,
+  DeepCheckOptions,
+  DeepCheckResult,
+  StreamCheckStatus,
+} from './streamChecker.js';
+
+export type { StreamCheckStatus };
+
 export interface CatalogStream {
   id: number;
   channel_id: number;
@@ -17,6 +26,9 @@ export interface CatalogStream {
   response_ms: number;
   checked_at: number;
   added_at: number;
+  diag_code?: string;
+  diag_reason?: string;
+  codec_warning?: string;
 }
 
 export interface CatalogChannel {
@@ -44,8 +56,6 @@ export interface CatalogSource {
   total_found?: number;
 }
 
-export type StreamCheckStatus = 'online' | 'offline' | 'unknown';
-
 const STREAM_STATUS_TTL_SECONDS: Record<StreamCheckStatus, number> = {
   online: 5 * 60,
   offline: 60,
@@ -61,172 +71,23 @@ function isStreamStatusFresh(
   return stream.checked_at > 0 && now - stream.checked_at <= STREAM_STATUS_TTL_SECONDS[status];
 }
 
-async function performStreamUrlCheck(
-  url: string,
-  timeoutMs = 8000
-): Promise<{ online: boolean | null; status: StreamCheckStatus; code: number; ms: number; reason: string }> {
-  const t0 = Date.now();
-  let parsedUrl: URL;
-  try {
-    parsedUrl = new URL(url);
-  } catch {
-    return { online: null, status: 'unknown', code: 0, ms: 0, reason: 'Некорректный URL' };
-  }
-  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
-    return { online: null, status: 'unknown', code: 0, ms: 0, reason: 'Неподдерживаемый протокол' };
-  }
-
-  try {
-    const res = await fetch(parsedUrl, {
-      method: 'GET',
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PQTV-Stream-Checker',
-        Accept: '*/*',
-        Range: 'bytes=0-4095',
-        'Cache-Control': 'no-cache',
-      },
-      redirect: 'follow',
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const ms = Date.now() - t0;
-
-    if (res.status === 404 || res.status === 410) {
-      await res.body?.cancel().catch(() => {});
-      return { online: false, status: 'offline', code: res.status, ms, reason: 'Поток не найден' };
-    }
-
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {});
-      return {
-        online: null,
-        status: 'unknown',
-        code: res.status,
-        ms,
-        reason: res.status === 401 || res.status === 403
-          ? 'Требуется авторизация или доступ ограничен'
-          : res.status === 429
-            ? 'Слишком много запросов'
-            : 'Сервер не подтвердил доступность потока',
-      };
-    }
-
-    const reader = res.body?.getReader();
-    let bytes = new Uint8Array();
-    if (reader) {
-      try {
-        const chunk = await reader.read();
-        bytes = chunk.value || bytes;
-      } finally {
-        await reader.cancel().catch(() => {});
-      }
-    }
-    if (bytes.byteLength === 0) {
-      return { online: null, status: 'unknown', code: res.status, ms, reason: 'Сервер вернул пустой ответ' };
-    }
-
-    const contentType = (res.headers.get('content-type') || '').toLowerCase();
-    const isHls = /\.m3u8?$/i.test(parsedUrl.pathname) ||
-      contentType.includes('mpegurl') ||
-      contentType.includes('vnd.apple');
-
-    if (isHls) {
-      const bodyStart = new TextDecoder().decode(bytes);
-      if (!bodyStart.includes('#EXTM3U')) {
-        return { online: null, status: 'unknown', code: res.status, ms, reason: 'Ответ не похож на HLS-плейлист' };
-      }
-    } else if (contentType.includes('text/html')) {
-      return { online: null, status: 'unknown', code: res.status, ms, reason: 'Сервер вернул HTML вместо медиапотока' };
-    }
-
-    return { online: true, status: 'online', code: res.status, ms, reason: 'Получены данные потока' };
-  } catch (err) {
-    const ms = Date.now() - t0;
-    const reason = err instanceof Error && err.name === 'TimeoutError'
-      ? 'Таймаут проверки'
-      : 'Сетевая ошибка проверки';
-    return { online: null, status: 'unknown', code: 0, ms, reason };
-  }
-}
-
-type StreamCheckResult = {
-  online: boolean | null;
-  status: StreamCheckStatus;
-  code: number;
-  ms: number;
-  reason: string;
-  checkedAt: number;
-};
-
-const STREAM_CHECK_CACHE_TTL_MS: Record<StreamCheckStatus, number> = {
-  online: 5 * 60 * 1000,
-  offline: 60 * 1000,
-  unknown: 20 * 1000,
-};
-const STREAM_CHECK_CACHE_MAX = 10000;
-const streamCheckCache = new Map<string, { result: StreamCheckResult; expiresAt: number }>();
-const streamCheckInFlight = new Map<string, Promise<StreamCheckResult>>();
-const STREAM_CHECK_MAX_CONCURRENCY = 6;
-let activeStreamChecks = 0;
-const streamCheckQueue: Array<() => void> = [];
-
-async function withStreamCheckSlot<T>(task: () => Promise<T>): Promise<T> {
-  if (activeStreamChecks >= STREAM_CHECK_MAX_CONCURRENCY) {
-    await new Promise<void>((resolve) => streamCheckQueue.push(resolve));
-  } else {
-    activeStreamChecks++;
-  }
-
-  try {
-    return await task();
-  } finally {
-    const next = streamCheckQueue.shift();
-    if (next) next();
-    else activeStreamChecks--;
-  }
-}
-
 export async function checkStreamUrl(
   url: string,
-  timeoutMs = 8000,
-  force = false
-): Promise<StreamCheckResult> {
-  const key = String(url || '').trim();
-  const now = Date.now();
-  const cached = streamCheckCache.get(key);
-
-  if (!force && cached && cached.expiresAt > now) {
-    streamCheckCache.delete(key);
-    streamCheckCache.set(key, cached);
-    return cached.result;
-  }
-
-  const active = streamCheckInFlight.get(key);
-  if (active) return active;
-
-  const pending = (async (): Promise<StreamCheckResult> => {
-    const result = await withStreamCheckSlot(() => performStreamUrlCheck(key, timeoutMs));
-    const checkedAt = Math.floor(Date.now() / 1000);
-    const sharedResult: StreamCheckResult = { ...result, checkedAt };
-
-    if (streamCheckCache.size >= STREAM_CHECK_CACHE_MAX) {
-      const oldestKey = streamCheckCache.keys().next().value;
-      if (oldestKey !== undefined) streamCheckCache.delete(oldestKey);
-    }
-    streamCheckCache.set(key, {
-      result: sharedResult,
-      expiresAt: Date.now() + STREAM_CHECK_CACHE_TTL_MS[sharedResult.status],
-    });
-    return sharedResult;
-  })();
-
-  streamCheckInFlight.set(key, pending);
-  try {
-    return await pending;
-  } finally {
-    if (streamCheckInFlight.get(key) === pending) {
-      streamCheckInFlight.delete(key);
-    }
-  }
+  timeoutMs = 9000,
+  force = false,
+  extraOpts: Partial<DeepCheckOptions> = {}
+): Promise<DeepCheckResult> {
+  const srcOpts = StreamParser.getSourceRequestOptions(url);
+  return checkStreamDeep(url, {
+    timeoutMs: extraOpts.timeoutMs ?? srcOpts.timeoutMs ?? timeoutMs,
+    headers: { ...srcOpts.headers, ...(extraOpts.headers || {}) },
+    userAgent: extraOpts.userAgent || srcOpts.userAgent,
+    referer: extraOpts.referer || srcOpts.referer,
+    origin: extraOpts.origin || srcOpts.origin,
+    ignoreTlsErrors: extraOpts.ignoreTlsErrors ?? srcOpts.ignoreTlsErrors,
+    checkSegments: extraOpts.checkSegments !== false,
+    force,
+  });
 }
 
 /**
@@ -699,15 +560,24 @@ class CatalogStore {
     this.saveToDisk();
   }
 
-  async checkStream(url: string, force = false, persist = true): Promise<StreamCheckResult> {
+  async checkStream(
+    url: string,
+    force = false,
+    persist = true,
+    extraOpts: Partial<DeepCheckOptions> = {}
+  ): Promise<DeepCheckResult> {
     this.ensureInit();
-    const result = await checkStreamUrl(url, 8000, force);
+    const result = await checkStreamUrl(url, 9000, force, extraOpts);
     const matching = this.streams.filter((stream) => stream.url === url);
     for (const stream of matching) {
       stream.online = result.status === 'online' ? 1 : result.status === 'offline' ? -1 : 0;
       stream.http_code = result.code;
       stream.response_ms = result.ms;
       stream.checked_at = result.checkedAt;
+      stream.diag_code = result.diagCode;
+      stream.diag_reason = result.reason;
+      if (result.codecWarning) stream.codec_warning = result.codecWarning;
+      else delete stream.codec_warning;
     }
     if (persist && matching.length > 0) this.scheduleSaveToDisk();
     return result;
@@ -738,22 +608,125 @@ class CatalogStore {
     return { checked: target.length, online: onlineCount, offline: offlineCount, unknown: unknownCount };
   }
 
+  findAlternativeStreams(
+    channelName: string,
+    tvgId = '',
+    excludeUrls: string[] = []
+  ): Array<{
+    url: string;
+    name: string;
+    source: string;
+    online: number;
+    diagCode?: string;
+    userAgent?: string;
+    referer?: string;
+    origin?: string;
+  }> {
+    this.ensureInit();
+    const excluded = new Set(excludeUrls.map((u) => u.trim()).filter(Boolean));
+    const qLower = channelName.trim().toLowerCase();
+    const qNorm = normalizeChannelName(channelName);
+    const cleanTvg = tvgId.trim().toLowerCase();
+    const byUrl = new Map<
+      string,
+      {
+        url: string;
+        name: string;
+        source: string;
+        online: number;
+        diagCode?: string;
+        userAgent?: string;
+        referer?: string;
+        origin?: string;
+      }
+    >();
+
+    // 1. Catalog channels + streams
+    for (const ch of this.channels) {
+      const nameMatch =
+        ch.name.trim().toLowerCase() === qLower ||
+        (qNorm && normalizeChannelName(ch.name) === qNorm) ||
+        (cleanTvg && ch.tvg_id.trim().toLowerCase() === cleanTvg) ||
+        ch.alt_names.some((a) => a.trim().toLowerCase() === qLower || (qNorm && normalizeChannelName(a) === qNorm));
+      if (!nameMatch) continue;
+      for (const s of this.streams) {
+        if (s.channel_id !== ch.id) continue;
+        const u = (s.url || '').trim();
+        if (!u || excluded.has(u) || byUrl.has(u)) continue;
+        byUrl.set(u, {
+          url: u,
+          name: ch.name,
+          source: s.source_name || 'Каталог',
+          online: s.online,
+          diagCode: s.diag_code,
+        });
+      }
+    }
+
+    // 2. Indexed streams from StreamParser
+    for (const item of StreamParser.getAllIndexedStreams()) {
+      const u = (item.url || '').trim();
+      if (!u || excluded.has(u) || byUrl.has(u)) continue;
+      const itemNorm = normalizeChannelName(item.name || '');
+      const itemTvg = (item.tvg_id || '').trim().toLowerCase();
+      const match =
+        (item.name || '').trim().toLowerCase() === qLower ||
+        (qNorm && itemNorm === qNorm) ||
+        (cleanTvg && itemTvg === cleanTvg);
+      if (!match) continue;
+      byUrl.set(u, {
+        url: u,
+        name: item.name,
+        source: item.source || 'Источник',
+        online: 0,
+        userAgent: item.userAgent,
+        referer: item.referer,
+        origin: item.origin,
+      });
+    }
+
+    // 3. Fallback fuzzy substring match in index if nothing exact found
+    if (byUrl.size === 0 && qNorm && qNorm.length >= 3) {
+      for (const item of StreamParser.getAllIndexedStreams()) {
+        const u = (item.url || '').trim();
+        if (!u || excluded.has(u) || byUrl.has(u)) continue;
+        const itemNorm = normalizeChannelName(item.name || '');
+        if (itemNorm.includes(qNorm) || qNorm.includes(itemNorm)) {
+          byUrl.set(u, {
+            url: u,
+            name: item.name,
+            source: item.source || 'Источник',
+            online: 0,
+            userAgent: item.userAgent,
+            referer: item.referer,
+            origin: item.origin,
+          });
+          if (byUrl.size >= 15) break;
+        }
+      }
+    }
+
+    return Array.from(byUrl.values()).sort((a, b) => b.online - a.online);
+  }
+
   async aggregateFromSources(): Promise<{ addedChannels: number; addedStreams: number }> {
     this.ensureInit();
     await StreamParser.refreshAll();
     let addedChannels = 0;
     let addedStreams = 0;
     const now = Math.floor(Date.now() / 1000);
+    const parserSources = StreamParser.getSources();
 
     for (const src of this.sources) {
       if (!src.enabled) continue;
       try {
-        const res = await fetch(src.url, {
-          headers: { 'User-Agent': 'IPTV-Manager-Catalog/1.0' },
-          signal: AbortSignal.timeout(20000),
-        });
-        if (!res.ok) continue;
-        const body = await res.text();
+        const matchingParserSrc = parserSources.find((ps) => ps.url === src.url || ps.name === src.name);
+        const body = await StreamParser.fetchTextWithSource(src.url, matchingParserSrc, 20000);
+        if (!body) {
+          src.last_run = now;
+          src.last_status = 'error';
+          continue;
+        }
         const items = StreamParser.parseSource(body, {
           id: String(src.id),
           name: src.name,

@@ -201,12 +201,16 @@ service cloud.firestore {
         && (items.size() == 0 || (
           items[0] is map
           && items[0].keys().hasAll(['name', 'group', 'logo', 'url', 'tvg_id'])
-          && items[0].keys().hasOnly(['name', 'group', 'logo', 'url', 'tvg_id'])
+          && items[0].keys().hasOnly(['name', 'group', 'logo', 'url', 'tvg_id', 'paused', 'userAgent', 'referer', 'origin'])
           && items[0].name is string && items[0].name.size() <= 200
           && items[0].group is string && items[0].group.size() <= 120
           && items[0].logo is string && items[0].logo.size() <= 1000
           && items[0].url is string && items[0].url.size() <= 1500
           && items[0].tvg_id is string && items[0].tvg_id.size() <= 160
+          && (!('paused' in items[0]) || items[0].paused is bool)
+          && (!('userAgent' in items[0]) || (items[0].userAgent is string && items[0].userAgent.size() <= 400))
+          && (!('referer' in items[0]) || (items[0].referer is string && items[0].referer.size() <= 500))
+          && (!('origin' in items[0]) || (items[0].origin is string && items[0].origin.size() <= 300))
         ));
     }
 
@@ -222,12 +226,17 @@ service cloud.firestore {
 
     function isValidStreamSource(data) {
       return data.keys().hasAll(['id', 'name', 'type', 'url', 'enabled', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'name', 'type', 'url', 'enabled', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'type', 'url', 'enabled', 'userAgent', 'referer', 'origin', 'timeoutSec', 'ignoreTlsErrors', 'createdAt', 'updatedAt'])
         && isValidId(data.id)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
         && data.type is string && data.type.size() >= 1 && data.type.size() <= 32
         && data.url is string && data.url.size() >= 1 && data.url.size() <= 1000
         && data.enabled is bool
+        && (!('userAgent' in data) || (data.userAgent is string && data.userAgent.size() <= 400))
+        && (!('referer' in data) || (data.referer is string && data.referer.size() <= 500))
+        && (!('origin' in data) || (data.origin is string && data.origin.size() <= 300))
+        && (!('timeoutSec' in data) || (data.timeoutSec is int && data.timeoutSec >= 3 && data.timeoutSec <= 60))
+        && (!('ignoreTlsErrors' in data) || data.ignoreTlsErrors is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -259,12 +268,15 @@ service cloud.firestore {
         && (items.size() == 0 || (
           items[0] is map
           && items[0].keys().hasAll(['name', 'url', 'logo', 'group', 'tvg_id'])
-          && items[0].keys().hasOnly(['name', 'url', 'logo', 'group', 'tvg_id'])
+          && items[0].keys().hasOnly(['name', 'url', 'logo', 'group', 'tvg_id', 'userAgent', 'referer', 'origin'])
           && items[0].name is string && items[0].name.size() <= 200
           && items[0].url is string && items[0].url.size() <= 1500
           && items[0].logo is string && items[0].logo.size() <= 1000
           && items[0].group is string && items[0].group.size() <= 120
           && items[0].tvg_id is string && items[0].tvg_id.size() <= 160
+          && (!('userAgent' in items[0]) || (items[0].userAgent is string && items[0].userAgent.size() <= 400))
+          && (!('referer' in items[0]) || (items[0].referer is string && items[0].referer.size() <= 500))
+          && (!('origin' in items[0]) || (items[0].origin is string && items[0].origin.size() <= 300))
         ));
     }
 
@@ -341,10 +353,13 @@ service cloud.firestore {
         && (items.size() == 0 || (
           items[0] is map
           && items[0].keys().hasAll(['id', 'channel_id', 'url', 'source_id', 'source_name', 'source_type', 'online', 'http_code', 'response_ms', 'checked_at', 'added_at'])
-          && items[0].keys().hasOnly(['id', 'channel_id', 'url', 'source_id', 'source_name', 'source_type', 'online', 'http_code', 'response_ms', 'checked_at', 'added_at'])
+          && items[0].keys().hasOnly(['id', 'channel_id', 'url', 'source_id', 'source_name', 'source_type', 'online', 'http_code', 'response_ms', 'checked_at', 'added_at', 'diag_code', 'diag_reason', 'codec_warning'])
           && items[0].id is int
           && items[0].channel_id is int
           && items[0].url is string && items[0].url.size() <= 1500
+          && (!('diag_code' in items[0]) || (items[0].diag_code is string && items[0].diag_code.size() <= 32))
+          && (!('diag_reason' in items[0]) || (items[0].diag_reason is string && items[0].diag_reason.size() <= 220))
+          && (!('codec_warning' in items[0]) || (items[0].codec_warning is string && items[0].codec_warning.size() <= 220))
         ));
     }
 
@@ -375,6 +390,46 @@ service cloud.firestore {
         && (!('githubRepo' in data) || (data.githubRepo is string && data.githubRepo.size() <= 200))
         && (!('githubBranch' in data) || (data.githubBranch is string && data.githubBranch.size() <= 80))
         && (!('adminPasswordHash' in data) || (data.adminPasswordHash is string && data.adminPasswordHash.size() <= 200))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidChannelHealthDiagnostics(items) {
+      return items is list
+        && items.size() <= 400
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['url', 'status', 'code', 'ms', 'diagCode', 'reason', 'checkedAt'])
+          && items[0].keys().hasOnly(['url', 'online', 'status', 'code', 'ms', 'diagCode', 'reason', 'contentType', 'hlsOk', 'segmentOk', 'codecWarning', 'checkedAt'])
+          && items[0].url is string && items[0].url.size() <= 1500
+          && items[0].status is string && items[0].status in ['online', 'offline', 'unknown']
+          && items[0].diagCode is string && items[0].diagCode.size() <= 32
+          && items[0].reason is string && items[0].reason.size() <= 220
+        ));
+    }
+
+    function isValidChannelHealthIssues(items) {
+      return items is list
+        && items.size() <= 250
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['channelKey', 'channelName', 'resolved', 'resolveCheckStatus', 'updatedAt', 'viewerErrors'])
+          && items[0].keys().hasOnly(['channelKey', 'channelName', 'resolved', 'resolveCheckStatus', 'resolveCheckMessage', 'resolveAttemptedAt', 'updatedAt', 'viewerErrors'])
+          && items[0].channelKey is string && items[0].channelKey.size() <= 200
+          && items[0].channelName is string && items[0].channelName.size() <= 200
+          && items[0].resolved is bool
+          && items[0].resolveCheckStatus is string && items[0].resolveCheckStatus in ['none', 'verified_ok', 'still_broken_after_resolve']
+          && items[0].viewerErrors is list && items[0].viewerErrors.size() <= 10
+        ));
+    }
+
+    function isValidChannelHealthDoc(data) {
+      return data.keys().hasAll(['docId', 'diagnostics', 'issues', 'updatedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['docId', 'diagnostics', 'issues', 'updatedByUid', 'createdAt', 'updatedAt'])
+        && data.docId is string && data.docId == 'main'
+        && isValidChannelHealthDiagnostics(data.diagnostics)
+        && isValidChannelHealthIssues(data.issues)
+        && data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -659,7 +714,7 @@ service cloud.firestore {
         && incoming().id == existing().id
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'type', 'url', 'enabled', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'type', 'url', 'enabled', 'userAgent', 'referer', 'origin', 'timeoutSec', 'ignoreTlsErrors', 'updatedAt']);
       allow delete: if isAdmin() && isValidId(sourceId);
     }
 
@@ -819,6 +874,30 @@ service cloud.firestore {
         && incoming().updatedAt == request.time
         && incoming().diff(existing()).affectedKeys().hasOnly(['githubRepo', 'githubBranch', 'adminPasswordHash', 'updatedAt']);
       allow delete: if isAdmin() && isValidId(settingId);
+    }
+
+    // ===== CHANNEL HEALTH & VERIFIED RESOLVE STATE (Admin-only) =====
+    match /channel_health/{docId} {
+      allow get: if isValidId(docId) && docId == 'main' && isAdmin();
+      allow list: if false;
+      allow create: if isAdmin()
+        && isValidId(docId)
+        && docId == 'main'
+        && isValidChannelHealthDoc(incoming())
+        && incoming().docId == docId
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(docId)
+        && docId == 'main'
+        && isValidChannelHealthDoc(incoming())
+        && incoming().docId == existing().docId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().diff(existing()).affectedKeys().hasOnly(['diagnostics', 'issues', 'updatedByUid', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(docId);
     }
   }
 }

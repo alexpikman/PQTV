@@ -3,12 +3,30 @@ import path from 'node:path';
 import { config } from './config.js';
 import { parseM3uContent } from './m3uParser.js';
 
+import { fetchBytesWithNode, buildOutboundHeaders } from './streamChecker.js';
+
 export interface SourceItem {
   id: string;
   name: string;
   type: string;
   url: string;
   enabled: boolean;
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
+  customHeaders?: Record<string, string>;
+  timeoutSec?: number;
+  ignoreTlsErrors?: boolean;
+}
+
+export interface SourceRequestOptions {
+  headers: Record<string, string>;
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
+  timeoutMs: number;
+  ignoreTlsErrors: boolean;
+  sourceName?: string;
 }
 
 export interface IndexedChannel {
@@ -17,6 +35,9 @@ export interface IndexedChannel {
   logo: string;
   group: string;
   tvg_id: string;
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
 }
 
 export interface SearchResult extends IndexedChannel {
@@ -37,6 +58,43 @@ export function normalizeChannelName(s: string): string {
     .toLowerCase()
     .replace(/\b(hd|fullhd|fhd|uhd|4k|sd|1080p?|720p?|hevc|\+\d+)\b/gi, ' ')
     .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+let cachedUrlToSource: Map<string, SourceItem> | null = null;
+let cachedOriginToSource: Map<string, SourceItem> | null = null;
+
+function invalidateSourceLookup(): void {
+  cachedUrlToSource = null;
+  cachedOriginToSource = null;
+}
+
+function buildSourceRequestOptions(src?: SourceItem | null): SourceRequestOptions {
+  if (!src) {
+    return {
+      headers: {},
+      timeoutMs: 12000,
+      ignoreTlsErrors: false,
+    };
+  }
+  const timeoutSec = Number(src.timeoutSec) || 0;
+  const timeoutMs = timeoutSec > 0 ? Math.max(3000, Math.min(60000, timeoutSec * 1000)) : 12000;
+  const headers: Record<string, string> = {};
+  if (src.customHeaders && typeof src.customHeaders === 'object') {
+    for (const [k, v] of Object.entries(src.customHeaders)) {
+      if (k && typeof v === 'string' && v.trim()) {
+        headers[k.trim()] = v.trim();
+      }
+    }
+  }
+  return {
+    headers,
+    userAgent: src.userAgent?.trim() || undefined,
+    referer: src.referer?.trim() || undefined,
+    origin: src.origin?.trim() || undefined,
+    timeoutMs,
+    ignoreTlsErrors: Boolean(src.ignoreTlsErrors),
+    sourceName: src.name || undefined,
+  };
 }
 
 export class StreamParser {
@@ -68,10 +126,96 @@ export class StreamParser {
       const file = this.getSourcesFile();
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, JSON.stringify(sources, null, 4), 'utf-8');
+      invalidateSourceLookup();
       return true;
     } catch {
       return false;
     }
+  }
+
+  static getSourceRequestOptions(streamUrl: string): SourceRequestOptions {
+    const clean = String(streamUrl || '').trim();
+    if (!clean) return buildSourceRequestOptions(null);
+
+    if (!cachedUrlToSource || !cachedOriginToSource) {
+      cachedUrlToSource = new Map<string, SourceItem>();
+      cachedOriginToSource = new Map<string, SourceItem>();
+      const dir = this.getIndexDir();
+      for (const src of this.getSources()) {
+        if (!src.enabled) continue;
+        if (src.url) {
+          cachedUrlToSource.set(src.url.trim(), src);
+          try {
+            cachedOriginToSource.set(new URL(src.url).origin, src);
+          } catch {
+            // ignore invalid source url
+          }
+        }
+        const id = safeId(src.id || '');
+        if (!id) continue;
+        const idxFile = path.join(dir, `${id}.json`);
+        if (!fs.existsSync(idxFile)) continue;
+        try {
+          const arr = JSON.parse(fs.readFileSync(idxFile, 'utf-8'));
+          if (Array.isArray(arr)) {
+            for (const ch of arr) {
+              const u = typeof ch?.url === 'string' ? ch.url.trim() : '';
+              if (!u) continue;
+              if (!cachedUrlToSource.has(u)) {
+                cachedUrlToSource.set(u, src);
+              }
+              try {
+                const orig = new URL(u).origin;
+                if (!cachedOriginToSource.has(orig)) {
+                  cachedOriginToSource.set(orig, src);
+                }
+              } catch {
+                // ignore
+              }
+            }
+          }
+        } catch {
+          // ignore
+        }
+      }
+    }
+
+    const direct = cachedUrlToSource.get(clean);
+    if (direct) return buildSourceRequestOptions(direct);
+    try {
+      const originMatch = cachedOriginToSource.get(new URL(clean).origin);
+      if (originMatch) return buildSourceRequestOptions(originMatch);
+    } catch {
+      // ignore
+    }
+    return buildSourceRequestOptions(null);
+  }
+
+  static getAllIndexedStreams(): SearchResult[] {
+    const dir = this.getIndexDir();
+    const out: SearchResult[] = [];
+    for (const src of this.getSources()) {
+      if (!src.enabled) continue;
+      const id = safeId(src.id || '');
+      if (!id) continue;
+      const idxFile = path.join(dir, `${id}.json`);
+      if (!fs.existsSync(idxFile)) continue;
+      try {
+        const items = JSON.parse(fs.readFileSync(idxFile, 'utf-8'));
+        if (!Array.isArray(items)) continue;
+        for (const it of items as IndexedChannel[]) {
+          if (!it?.name || !it?.url) continue;
+          out.push({
+            ...it,
+            title: it.name,
+            source: src.name || 'Источник',
+          });
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return out;
   }
 
   static getIndexStatus() {
@@ -110,25 +254,42 @@ export class StreamParser {
       .filter(Boolean);
   }
 
-  private static async fetchText(url: string, timeoutMs = 20000): Promise<string | null> {
+  static async fetchTextWithSource(
+    url: string,
+    src?: Partial<SourceItem>,
+    timeoutMs = 20000
+  ): Promise<string | null> {
     if (!url) return null;
     try {
-      const headers: Record<string, string> = {
-        'User-Agent': 'IPTV-Manager-Parser/2.0',
-      };
-      if (url.includes('api.github.com')) {
-        headers.Accept = 'application/vnd.github+json';
+      const effectiveTimeout = src?.timeoutSec
+        ? Math.max(3000, Math.min(60000, Number(src.timeoutSec) * 1000))
+        : timeoutMs;
+      const custom: Record<string, string> = { ...(src?.customHeaders || {}) };
+      if (url.includes('api.github.com') && !custom.Accept) {
+        custom.Accept = 'application/vnd.github+json';
       }
-      const res = await fetch(url, {
-        headers,
-        redirect: 'follow',
-        signal: AbortSignal.timeout(timeoutMs),
+      const headers = buildOutboundHeaders({
+        headers: custom,
+        userAgent: src?.userAgent,
+        referer: src?.referer,
+        origin: src?.origin,
+        defaultUa: 'IPTV-Manager-Parser/2.0',
       });
-      if (!res.ok) return null;
-      return await res.text();
+      const res = await fetchBytesWithNode(url, {
+        timeoutMs: effectiveTimeout,
+        maxBytes: 12 * 1024 * 1024,
+        headers,
+        ignoreTlsErrors: Boolean(src?.ignoreTlsErrors),
+      });
+      if (res.status < 200 || res.status >= 400) return null;
+      return res.body.toString('utf-8');
     } catch {
       return null;
     }
+  }
+
+  private static async fetchText(url: string, timeoutMs = 20000, src?: SourceItem): Promise<string | null> {
+    return this.fetchTextWithSource(url, src, timeoutMs);
   }
 
   static parseSource(body: string, src: SourceItem): IndexedChannel[] {
@@ -218,7 +379,15 @@ export class StreamParser {
   private static parseM3u(body: string): IndexedChannel[] {
     const lines = body.split(/\r\n|\r|\n/);
     const items: IndexedChannel[] = [];
-    let pending: { name: string; logo: string; group: string; tvg_id: string } | null = null;
+    let pending: {
+      name: string;
+      logo: string;
+      group: string;
+      tvg_id: string;
+      userAgent?: string;
+      referer?: string;
+      origin?: string;
+    } | null = null;
 
     for (const rawLine of lines) {
       const line = rawLine.trim();
@@ -248,15 +417,32 @@ export class StreamParser {
         continue;
       }
 
+      if (pending && line.startsWith('#EXTVLCOPT:')) {
+        const opt = line.slice('#EXTVLCOPT:'.length).trim();
+        const eqIdx = opt.indexOf('=');
+        if (eqIdx > 0) {
+          const key = opt.slice(0, eqIdx).trim().toLowerCase();
+          const val = opt.slice(eqIdx + 1).trim();
+          if (key === 'http-user-agent' && val) pending.userAgent = val;
+          else if ((key === 'http-referrer' || key === 'http-referer') && val) pending.referer = val;
+          else if (key === 'http-origin' && val) pending.origin = val;
+        }
+        continue;
+      }
+
       if (pending && (line.startsWith('http://') || line.startsWith('https://'))) {
         if (pending.name !== '') {
-          items.push({
+          const item: IndexedChannel = {
             name: pending.name,
             url: line,
             logo: pending.logo,
             group: pending.group,
             tvg_id: pending.tvg_id,
-          });
+          };
+          if (pending.userAgent) item.userAgent = pending.userAgent;
+          if (pending.referer) item.referer = pending.referer;
+          if (pending.origin) item.origin = pending.origin;
+          items.push(item);
         }
         pending = null;
       }
@@ -306,6 +492,7 @@ export class StreamParser {
     fs.writeFileSync(tmp, JSON.stringify(items), 'utf-8');
     fs.renameSync(tmp, file);
     fs.writeFileSync(meta, String(Math.floor(Date.now() / 1000)), 'utf-8');
+    invalidateSourceLookup();
   }
 
   static async refreshAll(): Promise<{
@@ -326,7 +513,7 @@ export class StreamParser {
       sources.map(async (src) => {
         const id = safeId(src.id || '');
         if (!id) return;
-        const body = await this.fetchText(src.url, 30000);
+        const body = await this.fetchText(src.url, 30000, src);
         if (!body) {
           results[id] = { ok: false, count: 0, error: 'не удалось загрузить' };
           return;
@@ -373,7 +560,7 @@ export class StreamParser {
     await Promise.all(
       staleSources.map(async (src) => {
         const id = safeId(src.id || '');
-        const body = await this.fetchText(src.url, 30000);
+        const body = await this.fetchText(src.url, 30000, src);
         if (!body) {
           results[id] = { ok: false, count: 0 };
           return;
@@ -434,6 +621,9 @@ export class StreamParser {
             logo: it.logo || '',
             group: it.group || '',
             tvg_id: it.tvg_id || '',
+            userAgent: it.userAgent || src.userAgent,
+            referer: it.referer || src.referer,
+            origin: it.origin || src.origin,
             source: src.name || '?',
           });
           if (results.length >= 500) break;
@@ -480,6 +670,7 @@ export class StreamParser {
 
   static clearIndex(sourceId?: string | null): void {
     const dir = this.getIndexDir();
+    invalidateSourceLookup();
     if (!sourceId) {
       if (fs.existsSync(dir)) {
         for (const f of fs.readdirSync(dir)) {
@@ -551,6 +742,7 @@ export class StreamParser {
         // ignore
       }
     }
+    if (count > 0) invalidateSourceLookup();
     return count;
   }
 }

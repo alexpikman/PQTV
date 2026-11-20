@@ -385,7 +385,7 @@
     },
     "StreamSource": {
       "title": "StreamSource",
-      "description": "External playlist/parser source definition.",
+      "description": "External playlist/parser source definition with optional custom request headers, timeout, and TLS override.",
       "type": "object",
       "properties": {
         "id": {
@@ -410,6 +410,24 @@
           "maxLength": 1000
         },
         "enabled": {
+          "type": "boolean"
+        },
+        "userAgent": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "referer": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "origin": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "timeoutSec": {
+          "type": "integer"
+        },
+        "ignoreTlsErrors": {
           "type": "boolean"
         },
         "createdAt": {
@@ -663,6 +681,39 @@
         }
       },
       "required": ["settingId", "createdAt", "updatedAt"]
+    },
+    "ChannelHealthDoc": {
+      "title": "ChannelHealthDoc",
+      "description": "Admin-only unified channel health diagnostics, viewer exclusion state, and verified resolve status.",
+      "type": "object",
+      "properties": {
+        "docId": {
+          "type": "string",
+          "enum": ["main"]
+        },
+        "diagnostics": {
+          "type": "array",
+          "description": "Latest stream diagnostics list (max 400)."
+        },
+        "issues": {
+          "type": "array",
+          "description": "Per-channel viewer error & resolve verification state list (max 250)."
+        },
+        "updatedByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["docId", "diagnostics", "issues", "updatedByUid", "createdAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -741,6 +792,10 @@
     "/admin_settings/{settingId}": {
       "schema": { "$ref": "#/entities/AdminSetting" },
       "description": "Admin-only application settings (GitHub repo/branch, admin password hash)."
+    },
+    "/channel_health/{docId}": {
+      "schema": { "$ref": "#/entities/ChannelHealthDoc" },
+      "description": "Admin-only unified channel health diagnostics & resolve verification state."
     }
   }
 }

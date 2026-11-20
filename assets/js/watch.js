@@ -237,7 +237,17 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    function buildStreamCandidates(rawUrl, settings) {
+    function buildProxyCandidateUrl(targetUrl, ch) {
+        let out = '/api/stream/proxy?url=' + encodeURIComponent(targetUrl);
+        if (ch && typeof ch === 'object') {
+            if (ch.userAgent) out += '&ua=' + encodeURIComponent(String(ch.userAgent));
+            if (ch.referer) out += '&ref=' + encodeURIComponent(String(ch.referer));
+            if (ch.origin) out += '&orig=' + encodeURIComponent(String(ch.origin));
+        }
+        return out;
+    }
+
+    function buildStreamCandidates(rawUrl, settings, ch) {
         const s = settings || getEffectiveStreamingSettings();
         const mode = STREAM_MODES.includes(s.mode) ? s.mode : 'auto_proxy_first';
         const tryHttps = s.tryHttpsUpgrade !== false;
@@ -248,12 +258,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const proxyCandidates = [];
         if (httpsUrl !== rawUrl) {
             proxyCandidates.push({
-                src: '/api/stream/proxy?url=' + encodeURIComponent(httpsUrl),
+                src: buildProxyCandidateUrl(httpsUrl, ch),
                 label: 'proxy HTTPS'
             });
         }
         proxyCandidates.push({
-            src: '/api/stream/proxy?url=' + encodeURIComponent(rawUrl),
+            src: buildProxyCandidateUrl(rawUrl, ch),
             label: isHttp ? 'proxy HTTP' : 'proxy'
         });
 
@@ -1038,7 +1048,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const low = url.split('?')[0].toLowerCase();
         const isM3u8 = low.includes('.m3u8');
         const isTs = low.endsWith('.ts');
-        const candidates = buildStreamCandidates(url, getEffectiveStreamingSettings());
+        const candidates = buildStreamCandidates(url, getEffectiveStreamingSettings(), ch);
         let candidateIdx = 0;
 
         const onReady = () => {
@@ -1280,13 +1290,38 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let playerAttemptTimer = null;
+    let playerCodecTimer = null;
 
     function stopStream() {
         clearTimeout(playerAttemptTimer);
+        clearTimeout(playerCodecTimer);
         const v = playerVideoHost.querySelector('video');
         if (hls) { try { hls.destroy(); } catch(e){} hls = null; }
         if (mpegtsP) { try { mpegtsP.destroy(); } catch(e){} mpegtsP = null; }
         if (v) { try { v.pause(); v.removeAttribute('src'); v.load(); } catch(e){} }
+    }
+
+    function describeHlsError(data) {
+        const code = Number(data && data.response && data.response.code) || 0;
+        const details = String((data && data.details) || 'unknown');
+        if (code === 401) return 'HTTP 401 (требуется авторизация): ' + details;
+        if (code === 403) return 'HTTP 403 (доступ запрещён): ' + details;
+        if (code === 404 || code === 410) return 'HTTP ' + code + ' (поток не найден): ' + details;
+        if (code === 429) return 'HTTP 429 (лимит запросов): ' + details;
+        if (code >= 500) return 'HTTP ' + code + ' (ошибка сервера): ' + details;
+        if (/timeout/i.test(details)) return 'Таймаут HLS (' + details + ')';
+        if (window.Hls && data && data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+            return 'Ошибка кодека/медиа HLS: ' + details;
+        }
+        return 'Ошибка HLS: ' + details;
+    }
+
+    function describeMediaError(v) {
+        const code = Number(v && v.error && v.error.code) || 0;
+        if (code === 3) return 'Ошибка декодирования видео (несовместимый кодек)';
+        if (code === 4) return 'Формат или кодек потока не поддерживается';
+        if (code === 2) return 'Сетевая ошибка при загрузке потока';
+        return 'Поток недоступен или формат не поддерживается';
     }
 
     function playStream(url) {
@@ -1375,7 +1410,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             v.onloadeddata = () => { if (currentAttempt === attemptId) ready(); };
             v.oncanplay = () => { if (currentAttempt === attemptId) ready(); };
-            v.onerror = () => advance('Поток недоступен или формат не поддерживается');
+            v.onerror = () => advance(describeMediaError(v));
 
             if (isM3u8 && window.Hls && window.Hls.isSupported()) {
                 hls = new Hls({
@@ -1394,7 +1429,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
                 hls.on(Hls.Events.ERROR, (event, data) => {
                     if (!data || !data.fatal || currentAttempt !== attemptId) return;
-                    advance('Ошибка HLS: ' + (data.details || 'unknown'));
+                    advance(describeHlsError(data));
                 });
             } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
                 mpegtsP = mpegts.createPlayer(
@@ -1414,21 +1449,24 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         void loadStreamingSettings().then((eff) => {
-            attempts = buildStreamCandidates(url, eff);
+            attempts = buildStreamCandidates(url, eff, ch);
             attemptIndex = 0;
             attempt(attempts[attemptIndex++]);
         }).catch(() => {
-            attempts = buildStreamCandidates(url, getEffectiveStreamingSettings());
+            attempts = buildStreamCandidates(url, getEffectiveStreamingSettings(), ch);
             attemptIndex = 0;
             attempt(attempts[attemptIndex++]);
         });
 
-        setTimeout(() => {
+        playerCodecTimer = setTimeout(() => {
             try {
-                if (v && v.videoWidth === 0 && v.currentTime > 1 && !v.paused && toast) {
-                    toast.textContent = 'Видео не отображается. Возможно формат H.265/HEVC или MPEG-2 не поддерживается.';
-                    toast.style.display = 'block';
-                    setTimeout(() => { toast.style.display = 'none'; }, 10000);
+                if (v && v.isConnected && v.videoWidth === 0 && v.currentTime > 1 && !v.paused) {
+                    if (toast) {
+                        toast.textContent = 'Видео не отображается. Возможно формат H.265/HEVC или MPEG-2 не поддерживается.';
+                        toast.style.display = 'block';
+                        setTimeout(() => { if (toast) toast.style.display = 'none'; }, 10000);
+                    }
+                    recordRuntimeUnavailable(ch, 'Кодек HEVC/MPEG-2 не поддерживается браузером (нет видеопотока)');
                 }
             } catch (e) {}
         }, 8000);
@@ -1985,13 +2023,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 const a = tvAlerts[+btn.dataset.tvAlertResolve];
                 if (!a) return;
                 const nextResolved = !a.resolved;
+                btn.disabled = true;
+                btn.textContent = 'Проверка...';
+                let resData = null;
                 try {
-                    await apiAdmin('/watch/api/admin/alerts/resolve', 'POST', { id: a.id, resolved: nextResolved });
+                    resData = await apiAdmin('/watch/api/admin/alerts/resolve', 'POST', { id: a.id, resolved: nextResolved });
                 } catch {}
+                const actuallyResolved = resData ? Boolean(resData.resolved) : nextResolved;
                 if (window.PQTVFirebase && typeof window.PQTVFirebase.resolveAlertAdmin === 'function') {
-                    await window.PQTVFirebase.resolveAlertAdmin(a.id, nextResolved).catch(() => {});
+                    await window.PQTVFirebase.resolveAlertAdmin(a.id, actuallyResolved).catch(() => {});
                 }
                 await loadTvAlerts();
+                if (resData && resData.stillBroken && tvAlertsListEl) {
+                    const warnBanner = document.createElement('div');
+                    warnBanner.className = 'tv-form-error';
+                    warnBanner.style.marginBottom = '10px';
+                    warnBanner.textContent = resData.message || 'Канал всё ещё не работает — отчёт оставлен открытым и помечен для админа.';
+                    tvAlertsListEl.prepend(warnBanner);
+                }
             };
         });
 

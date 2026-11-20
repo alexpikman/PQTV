@@ -102,6 +102,13 @@
                         </svg>
                         Каталог каналов
                     </button>
+                    <button id="nav-btn-health" class="nav-item" data-screen="health">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                        </svg>
+                        <span>Контроль каналов</span>
+                        <span id="nav-health-badge" class="alerts-badge hidden">0</span>
+                    </button>
                     <button id="nav-btn-users" class="nav-item" data-screen="users">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
@@ -384,6 +391,71 @@
                     <div style="text-align:center; padding:14px;"><button id="catalog-show-more" class="btn btn-secondary hidden">Показать ещё</button></div>
                 </div>
 
+                <div id="screen-health" class="hidden">
+                    <div class="col-header">
+                        <div>
+                            <h2>Контроль каналов и исправление проблем</h2>
+                            <div style="font-size:12px; color:var(--muted); margin-top:2px;">
+                                Проверка доступности, диагностика ошибок (401/403/404/429/Timeout/TLS/Codec), исключение у зрителей и глобальное исправление в плейлистах
+                            </div>
+                        </div>
+                        <div class="header-actions">
+                            <button type="button" id="btn-health-check-all" class="btn btn-primary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                                </svg>
+                                <span id="btn-health-check-all-text">Проверить все каналы</span>
+                            </button>
+                            <button type="button" id="btn-health-auto-repair" class="btn btn-secondary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
+                                </svg>
+                                <span id="btn-health-auto-repair-text">Обновить неработающие URL</span>
+                            </button>
+                            <button type="button" id="btn-health-refresh" class="btn btn-secondary" title="Обновить список">Обновить</button>
+                        </div>
+                    </div>
+
+                    <div id="health-stats" class="catalog-stats"></div>
+                    <div id="health-diag-breakdown" class="health-diag-strip"></div>
+
+                    <div class="catalog-toolbar" style="flex-wrap:wrap;">
+                        <select id="health-filter-playlist" style="padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none; min-width:170px;">
+                            <option value="">Все плейлисты</option>
+                        </select>
+                        <select id="health-filter-status" style="padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none; min-width:210px;">
+                            <option value="problems">Проблемные и скрытые</option>
+                            <option value="">Все каналы</option>
+                            <option value="still_broken">Не работает после «Решено»</option>
+                            <option value="offline">Недоступные (Offline)</option>
+                            <option value="viewer_reported">Жалобы зрителей</option>
+                            <option value="hidden">Скрытые у зрителей</option>
+                            <option value="paused">Приостановленные</option>
+                            <option value="codec_warn">Предупреждения кодека</option>
+                            <option value="online">Работающие (Online)</option>
+                            <option value="unknown">Не проверялись</option>
+                        </select>
+                        <select id="health-filter-diag" style="padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none; min-width:160px;">
+                            <option value="">Любая ошибка</option>
+                            <option value="401">HTTP 401</option>
+                            <option value="403">HTTP 403</option>
+                            <option value="404">HTTP 404/410</option>
+                            <option value="429">HTTP 429</option>
+                            <option value="5xx">HTTP 5xx</option>
+                            <option value="timeout">Timeout</option>
+                            <option value="tls">TLS / SSL</option>
+                            <option value="codec">Codec / MPEG-TS</option>
+                            <option value="hls_segment">HLS сегмент</option>
+                            <option value="hls_empty">HLS пуст</option>
+                            <option value="html_error">HTML вместо видео</option>
+                            <option value="network">Сеть</option>
+                        </select>
+                        <input type="text" id="health-search" placeholder="Поиск канала или URL..." style="flex:1; min-width:200px; padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none;">
+                    </div>
+
+                    <div id="health-list-container"></div>
+                </div>
+
                 <div id="screen-apk" class="hidden">
                     <div class="col-header">
                         <h2>Android TV APK и OTA-обновления</h2>
@@ -580,6 +652,25 @@
                             <label>URL потока (.m3u8 / .ts)</label>
                             <input type="url" id="ch-url" required placeholder="http://...">
                         </div>
+                        <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+                            <input type="checkbox" id="ch-paused">
+                            <label for="ch-paused" style="margin:0; cursor:pointer; color:#fcd34d;">Приостановить канал (скрыть у зрителей)</label>
+                        </div>
+                        <details style="margin-top:10px; padding:10px; background:var(--bg-1); border:1px solid var(--border); border-radius:8px;">
+                            <summary style="cursor:pointer; font-size:12px; font-weight:600; color:var(--muted);">Заголовки потока (User-Agent, Referer, Origin)</summary>
+                            <div class="form-group" style="margin-top:10px;">
+                                <label>User-Agent</label>
+                                <input type="text" id="ch-ua" placeholder="Опционально">
+                            </div>
+                            <div class="form-group">
+                                <label>Referer</label>
+                                <input type="text" id="ch-ref" placeholder="https://...">
+                            </div>
+                            <div class="form-group" style="margin-bottom:0;">
+                                <label>Origin</label>
+                                <input type="text" id="ch-orig" placeholder="https://...">
+                            </div>
+                        </details>
                         <div class="form-actions">
                             <button type="submit" class="btn btn-primary" style="flex: 1;">Сохранить</button>
                             <button type="button" class="btn-cancel-form btn btn-secondary">Отмена</button>
@@ -634,6 +725,29 @@
                             <input type="checkbox" id="src-enabled" checked>
                             <label for="src-enabled" style="margin:0; cursor:pointer;">Включен</label>
                         </div>
+                        <details style="margin-top:10px; padding:10px; background:var(--bg-1); border:1px solid var(--border); border-radius:8px;">
+                            <summary style="cursor:pointer; font-size:12px; font-weight:600; color:var(--muted);">Настройки заголовков, таймаута и TLS</summary>
+                            <div class="form-group" style="margin-top:10px;">
+                                <label>User-Agent</label>
+                                <input type="text" id="src-ua" placeholder="Mozilla/5.0 ...">
+                            </div>
+                            <div class="form-group">
+                                <label>Referer</label>
+                                <input type="text" id="src-ref" placeholder="https://...">
+                            </div>
+                            <div class="form-group">
+                                <label>Origin</label>
+                                <input type="text" id="src-origin" placeholder="https://...">
+                            </div>
+                            <div class="form-group">
+                                <label>Таймаут (сек)</label>
+                                <input type="number" id="src-timeout" min="3" max="60" placeholder="12">
+                            </div>
+                            <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-bottom:0;">
+                                <input type="checkbox" id="src-ignore-tls">
+                                <label for="src-ignore-tls" style="margin:0; cursor:pointer;">Игнорировать ошибки TLS/SSL</label>
+                            </div>
+                        </details>
                         <div class="form-actions">
                             <button type="submit" class="btn btn-primary" style="flex: 1;">Сохранить</button>
                             <button type="button" class="btn-cancel-form btn btn-secondary">Отмена</button>
@@ -908,6 +1022,65 @@
                     <button type="button" id="admin-pwd-cancel" class="btn btn-secondary">Отмена</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- HEALTH REPLACE STREAM MODAL -->
+    <div id="health-replace-modal" class="player-modal hidden" style="z-index:12600;">
+        <div class="player-backdrop" id="health-replace-backdrop"></div>
+        <div class="player-window" style="max-width:740px; width:100%; max-height:88vh; display:flex; flex-direction:column;">
+            <div class="player-head">
+                <div class="player-meta">
+                    <div class="player-title" id="health-replace-title">Замена потока</div>
+                    <div class="player-url" id="health-replace-subtitle">Изменение применится сразу ко всем плейлистам с этим каналом</div>
+                </div>
+                <div class="player-actions">
+                    <button type="button" id="health-replace-close" class="btn-icon" title="Закрыть">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div style="padding:18px 20px; overflow-y:auto; flex:1;">
+                <form id="health-replace-form">
+                    <input type="hidden" id="health-replace-channel" value="">
+                    <div class="form-group">
+                        <label>Новый URL потока (.m3u8 / .ts)</label>
+                        <input type="url" id="health-replace-url" required placeholder="https://...">
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:10px;">
+                        <div class="form-group">
+                            <label>User-Agent (опц.)</label>
+                            <input type="text" id="health-replace-ua" placeholder="По умолчанию">
+                        </div>
+                        <div class="form-group">
+                            <label>Referer (опц.)</label>
+                            <input type="text" id="health-replace-ref" placeholder="https://...">
+                        </div>
+                        <div class="form-group">
+                            <label>Origin (опц.)</label>
+                            <input type="text" id="health-replace-orig" placeholder="https://...">
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Плейлисты для обновления (если не выбрано — обновятся все)</label>
+                        <div id="health-replace-playlists" style="display:flex; flex-wrap:wrap; gap:10px; padding:8px 10px; background:var(--bg-1); border:1px solid var(--border); border-radius:8px;"></div>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" id="health-replace-submit" class="btn btn-primary" style="flex:1;">Сохранить и проверить</button>
+                        <button type="button" id="health-probe-candidates" class="btn btn-secondary">Найти рабочие в источниках</button>
+                    </div>
+                </form>
+
+                <div style="margin-top:18px; border-top:1px solid var(--border); padding-top:14px;">
+                    <h4 style="font-size:13px; color:#fff; margin-bottom:10px;">Альтернативные потоки из каталога и источников</h4>
+                    <div id="health-candidates-list" style="display:flex; flex-direction:column; gap:8px;">
+                        <p class="placeholder-text" style="margin:14px 0;">Нажмите «Найти рабочие в источниках» для автопоиска и проверки</p>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 

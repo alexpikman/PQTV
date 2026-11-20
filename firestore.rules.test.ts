@@ -1,7 +1,7 @@
 /**
  * Dirty Dozen Security Rules Verification Specification for PQTV Firestore.
  * Covers /users, /invites, /channel_alerts, /admins, /playlists, /sources,
- * /source_index, /epg_sources, /catalog_summary, /catalog_chunks, /app_settings, /admin_settings.
+ * /source_index, /epg_sources, /catalog_summary, /catalog_chunks, /channel_health, /app_settings, /admin_settings.
  */
 export const dirtyDozenCases = [
   {
@@ -49,11 +49,11 @@ export const dirtyDozenCases = [
     expect: 'PERMISSION_DENIED',
   },
   {
-    name: '7. Non-admin attempt to modify /app_settings/streaming or /sources',
+    name: '7. Non-admin attempt to modify /app_settings/streaming, /sources, or /channel_health/main',
     auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
     op: 'update',
-    path: 'app_settings/streaming',
-    payload: { mode: 'direct_only' },
+    path: 'channel_health/main',
+    payload: { diagnostics: [], issues: [] },
     expect: 'PERMISSION_DENIED',
   },
   {
