@@ -4,16 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <script>
-    (function forceTVViewport() {
+    (function detectTVPlatform() {
         var ua = navigator.userAgent || '';
         var isTV = /Android TV|GoogleTV|BRAVIA|AFT[BM]|SmartTV|Smart-TV|Tizen|Web0S|WebOS|HbbTV|NetCast|Roku|AppleTV|CrKey|PQTV-APK/i.test(ua);
-        var needsFix = isTV || (screen.width >= 1280 && window.innerWidth < 1000);
-        if (needsFix) {
-            var m = document.querySelector('meta[name="viewport"]');
-            if (!m) { m = document.createElement('meta'); m.name = 'viewport'; document.head.appendChild(m); }
-            m.content = 'width=1280, initial-scale=1.0, user-scalable=no, viewport-fit=cover';
-            document.documentElement.classList.add('is-tv');
-        }
+        if (isTV) document.documentElement.classList.add('is-tv');
     })();
     </script>
     <title>PQTV</title>
