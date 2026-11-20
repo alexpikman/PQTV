@@ -479,7 +479,7 @@ document.addEventListener('DOMContentLoaded', () => {
         streamStatusCache[ch.url] = 'checking';
         renderChannels();
         try {
-            const res = await apiRequest('/api/stream/check', 'POST', { url: ch.url });
+            const res = await apiRequest('/api/stream/check', 'POST', { url: ch.url, force: true });
             streamStatusCache[ch.url] = res.status || (res.online === true ? 'online' : res.online === false ? 'offline' : 'unknown');
         } catch (e) { streamStatusCache[ch.url] = 'unknown'; }
         renderChannels();
@@ -543,16 +543,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (parseProgressStatus) parseProgressStatus.textContent = `Найдено ссылок: ${items.length}. Проверка доступности...`;
 
-            const checks = new Array(items.length).fill('unknown');
+            const checks = new Map();
+            const uniqueUrls = [...new Set(items.map(item => item.url).filter(Boolean))];
             let checkIndex = 0;
-            await Promise.all(Array.from({ length: Math.min(6, items.length) }, async () => {
-                while (checkIndex < items.length) {
+            await Promise.all(Array.from({ length: Math.min(6, uniqueUrls.length) }, async () => {
+                while (checkIndex < uniqueUrls.length) {
                     const index = checkIndex++;
+                    const url = uniqueUrls[index];
                     try {
-                        const result = await apiRequest('/api/stream/check', 'POST', { url: items[index].url });
-                        checks[index] = result.status || (result.online === true ? 'online' : result.online === false ? 'offline' : 'unknown');
+                        const result = await apiRequest('/api/stream/check', 'POST', { url });
+                        checks.set(url, result.status || (result.online === true ? 'online' : result.online === false ? 'offline' : 'unknown'));
                     } catch {
-                        checks[index] = 'unknown';
+                        checks.set(url, 'unknown');
                     }
                 }
             }));
@@ -565,7 +567,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </tr></thead><tbody>`;
 
             items.forEach((item, i) => {
-                const status = checks[i];
+                const status = checks.get(item.url) || 'unknown';
                 const badge = status === 'online'
                     ? `<span class="badge-status badge-online">online</span>`
                     : status === 'offline'
