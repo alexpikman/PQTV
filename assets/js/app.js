@@ -491,9 +491,13 @@ document.addEventListener('DOMContentLoaded', () => {
             btnCheckAll.disabled = true;
             const origText = btnCheckAll.innerHTML;
             btnCheckAll.textContent = 'Проверка...';
-            channelsData.forEach(c => streamStatusCache[c.url] = 'checking');
+            const uniqueChannels = new Map();
+            channelsData.forEach((channel, index) => {
+                if (channel.url && !uniqueChannels.has(channel.url)) uniqueChannels.set(channel.url, index);
+                if (channel.url) streamStatusCache[channel.url] = 'checking';
+            });
             renderChannels();
-            for (let i = 0; i < channelsData.length; i++) await checkStream(i);
+            for (const index of uniqueChannels.values()) await checkStream(index);
             btnCheckAll.disabled = false;
             btnCheckAll.innerHTML = origText;
         };
