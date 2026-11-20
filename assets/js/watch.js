@@ -1198,13 +1198,17 @@ document.addEventListener('DOMContentLoaded', () => {
             const mode = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'].includes(settings.mode)
                 ? settings.mode
                 : 'auto_proxy_first';
-            const directUrls = settings.tryHttpsUpgrade !== false && /^http:\/\//i.test(url)
-                ? [url.replace(/^http:/i, 'https:'), url]
-                : [url];
+            const httpsUrl = settings.tryHttpsUpgrade !== false && /^http:\/\//i.test(url)
+                ? url.replace(/^http:/i, 'https:')
+                : url;
+            const directUrls = httpsUrl === url ? [url] : [httpsUrl, url];
+            const proxyUrls = httpsUrl === url
+                ? [proxied]
+                : ['/api/stream/proxy?url=' + encodeURIComponent(httpsUrl), proxied];
             const modes = {
-                auto_proxy_first: [proxied, ...directUrls],
-                auto_direct_first: [...directUrls, proxied],
-                proxy_only: [proxied],
+                auto_proxy_first: [...proxyUrls, ...directUrls],
+                auto_direct_first: [...directUrls, ...proxyUrls],
+                proxy_only: proxyUrls,
                 direct_only: directUrls
             };
             attempts = modes[mode].slice();
