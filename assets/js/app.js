@@ -123,6 +123,69 @@ document.addEventListener('DOMContentLoaded', () => {
         try { return sessionStorage.getItem('pqtv_admin_token') || ''; } catch { return ''; }
     }
 
+    let cloudSyncTimer = null;
+    let cloudSyncRunning = false;
+    let cloudSyncQueued = false;
+
+    async function syncCloudDatabase() {
+        if (!fbAdminConnected || !window.PQTVFirebase) return;
+        if (cloudSyncRunning) {
+            cloudSyncQueued = true;
+            return;
+        }
+        cloudSyncRunning = true;
+        try {
+            const localSnapshot = await apiRequest('/api/cloud/export');
+            if (!localSnapshot || !localSnapshot.ok) {
+                throw new Error(localSnapshot && localSnapshot.error ? localSnapshot.error : 'Не удалось экспортировать локальную базу');
+            }
+            await window.PQTVFirebase.pushFullLocalToCloud(localSnapshot);
+            const statusEl = document.getElementById('fb-status-text');
+            if (statusEl) statusEl.textContent = 'Firestore: база синхронизирована';
+        } catch (err) {
+            console.error('Firestore database sync failed:', err);
+            showUsersError((err && err.message) ? err.message : 'Ошибка синхронизации базы с Firestore');
+        } finally {
+            cloudSyncRunning = false;
+            if (cloudSyncQueued) {
+                cloudSyncQueued = false;
+                scheduleCloudSync();
+            }
+        }
+    }
+
+    function scheduleCloudSync() {
+        if (!fbAdminConnected) return;
+        if (cloudSyncTimer) clearTimeout(cloudSyncTimer);
+        cloudSyncTimer = setTimeout(() => {
+            cloudSyncTimer = null;
+            void syncCloudDatabase();
+        }, 1200);
+    }
+
+    async function bootstrapCloudDatabase() {
+        if (!fbAdminConnected || !window.PQTVFirebase) return;
+        const statusEl = document.getElementById('fb-status-text');
+        try {
+            if (statusEl) statusEl.textContent = 'Firestore: проверка облачной базы...';
+            const cloud = await window.PQTVFirebase.loadFullCloudSnapshot();
+            if (cloud.hasCloud && cloud.snapshot) {
+                const restored = await apiRequest('/api/cloud/hydrate', 'POST', cloud.snapshot);
+                if (!restored || !restored.ok) {
+                    throw new Error(restored && restored.error ? restored.error : 'Не удалось восстановить базу из Firestore');
+                }
+                if (statusEl) statusEl.textContent = 'Firestore: данные восстановлены из облачной базы';
+                scheduleCloudSync();
+                return;
+            }
+            await syncCloudDatabase();
+        } catch (err) {
+            console.error('Firestore bootstrap failed:', err);
+            if (statusEl) statusEl.textContent = 'Firestore: ошибка синхронизации';
+            showUsersError((err && err.message) ? err.message : 'Не удалось подключить облачную базу');
+        }
+    }
+
     async function apiRequest(url, method = 'GET', body = null) {
         const opts = { method, credentials: 'same-origin', headers: {} };
         const adminToken = getAdminToken();
@@ -139,11 +202,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.location.href = '/login?clear_token=1';
                 return {};
             }
+            const data = await res.json().catch(() => ({}));
             if (!res.ok) {
                 console.error(`API ${res.status} ${url}`);
-                try { return await res.json(); } catch { return {}; }
+                return data;
             }
-            return await res.json();
+            if (['POST', 'PUT', 'DELETE'].includes(method) && fbAdminConnected) {
+                scheduleCloudSync();
+            }
+            return data;
         } catch (e) {
             console.error(`Fetch error ${url}:`, e);
             return {};
@@ -1223,6 +1290,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         let currentSignedIn = false;
+        let cloudBootstrapStarted = false;
         window.PQTVFirebase.onAuthChange((info) => {
             currentSignedIn = info.signedIn;
             showUsersError('');
@@ -1235,6 +1303,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (statusEl) statusEl.textContent = `Подключено: ${info.email} (облачная синхронизация активна)`;
                 if (btnConnect) btnConnect.textContent = 'Выйти из Google';
                 if (btnSync) btnSync.classList.remove('hidden');
+                if (!cloudBootstrapStarted) {
+                    cloudBootstrapStarted = true;
+                    void bootstrapCloudDatabase();
+                }
 
                 fbUnsubscribe = window.PQTVFirebase.subscribeAdminUsers(
                     async (fbUsers) => {
@@ -1285,6 +1357,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 );
             } else {
                 fbAdminConnected = false;
+                cloudBootstrapStarted = false;
+                if (cloudSyncTimer) {
+                    clearTimeout(cloudSyncTimer);
+                    cloudSyncTimer = null;
+                }
                 firestoreUsersCache = [];
                 firestoreInvitesCache = [];
                 firestoreAlertsCache = [];
