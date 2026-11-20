@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "PQTV-AndroidTV"
+rootProject.name = "PQTV"
 include(":app")
