@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const plTitleEl = document.getElementById('current-playlist-title');
     const btnAddCh = document.getElementById('btn-add-channel');
     const btnCheckAll = document.getElementById('btn-check-all');
+    const btnDeletePl = document.getElementById('btn-delete-playlist');
     const directBox = document.getElementById('direct-link-box');
     const directUrl = document.getElementById('direct-link-url');
     const colRight = document.getElementById('col-right');
@@ -239,7 +240,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (name === currentPlaylist) li.classList.add('active');
                 li.innerHTML = `
                     <span class="pl-name">${I.file}<span>${escapeHtml(name)}.m3u</span></span>
-                    <span class="del-pl" title="Удалить">${I.trash}</span>
+                    <button type="button" class="del-pl" title="Удалить плейлист">${I.trash}</button>
                 `;
                 li.querySelector('.pl-name').onclick = () => selectPlaylist(name);
                 li.querySelector('.del-pl').onclick = (e) => { e.stopPropagation(); deletePlaylist(name); };
@@ -275,6 +276,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (plTitleEl) plTitleEl.textContent = name + '.m3u';
         if (btnAddCh) btnAddCh.classList.remove('hidden');
         if (btnCheckAll) btnCheckAll.classList.remove('hidden');
+        if (btnDeletePl) btnDeletePl.classList.remove('hidden');
         if (directBox) directBox.classList.remove('hidden');
         const url = `${window.location.origin}/playlist/${encodeURIComponent(name)}.m3u`;
         if (directUrl) { directUrl.href = url; directUrl.textContent = url; }
@@ -2222,19 +2224,31 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    if (btnDeletePl) {
+        btnDeletePl.onclick = () => {
+            if (currentPlaylist) deletePlaylist(currentPlaylist);
+        };
+    }
+
     async function deletePlaylist(name) {
         if (!(await uiConfirm(`Удалить плейлист ${name}.m3u?`))) return;
         const res = await apiRequest('/api/playlists/delete', 'POST', { name });
         if (res.ok) {
             if (currentPlaylist === name) {
                 currentPlaylist = null;
+                channelsData = [];
                 if (plTitleEl) plTitleEl.textContent = 'Выберите плейлист';
                 if (btnAddCh) btnAddCh.classList.add('hidden');
                 if (btnCheckAll) btnCheckAll.classList.add('hidden');
+                if (btnDeletePl) btnDeletePl.classList.add('hidden');
                 if (directBox) directBox.classList.add('hidden');
                 closeForm();
+                renderChannels();
             }
+            showToast(`Плейлист ${name}.m3u удалён`, 'ok');
             loadPlaylists();
+        } else {
+            showToast(res.error || 'Ошибка удаления плейлиста', 'err');
         }
     }
 

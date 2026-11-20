@@ -286,6 +286,18 @@ function clearAuthTokenCookies(req: Request, res: Response, which: 'watch' | 'ad
 }
 
 function getAdminAuthFromRequest(req: Request): AdminTokenPayload | null {
+  const cookies = parseCookies(req);
+  const explicitCandidates = [
+    req.headers['x-admin-token'],
+    req.query.admin_token,
+    req.body?.admin_token,
+  ];
+  for (const cand of explicitCandidates) {
+    const parsed = verifyAdminToken(cand);
+    if (parsed && isAllowedAdminEmail(parsed.email)) {
+      return parsed;
+    }
+  }
   if (req.session.authenticated) {
     return {
       email: config.adminEmail,
@@ -293,18 +305,9 @@ function getAdminAuthFromRequest(req: Request): AdminTokenPayload | null {
       exp: Math.floor(Date.now() / 1000) + 3600,
     };
   }
-  const cookies = parseCookies(req);
-  const candidates = [
-    req.headers['x-admin-token'],
-    req.query.admin_token,
-    req.body?.admin_token,
-    cookies.pqtv_admin_token,
-  ];
-  for (const cand of candidates) {
-    const parsed = verifyAdminToken(cand);
-    if (parsed && isAllowedAdminEmail(parsed.email)) {
-      return parsed;
-    }
+  const cookieToken = verifyAdminToken(cookies.pqtv_admin_token);
+  if (cookieToken && isAllowedAdminEmail(cookieToken.email)) {
+    return cookieToken;
   }
   return null;
 }
@@ -1431,7 +1434,8 @@ app.get('/editor', (req, res) => {
     return;
   }
   req.session.authenticated = true;
-  const csrf = admin.csrf || ensureAdminCsrf(req);
+  if (admin.csrf) req.session.csrfToken = admin.csrf;
+  const csrf = req.session.csrfToken || ensureAdminCsrf(req);
   const adminToken = createAdminToken(admin.email, csrf);
   res.render('editor', {
     csrfToken: csrf,
@@ -1602,10 +1606,11 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     return;
   }
   if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
-    const csrfExpected = req.session.authenticated
-      ? req.session.csrfToken || admin.csrf || ''
-      : admin.csrf || '';
-    if (!verifyAdminCsrf(req, csrfExpected)) {
+    const csrfOk =
+      (Boolean(admin.csrf) && verifyAdminCsrf(req, admin.csrf)) ||
+      (Boolean(req.session.authenticated && req.session.csrfToken) &&
+        verifyAdminCsrf(req, req.session.csrfToken));
+    if (!csrfOk) {
       noCacheJson(res, { error: 'CSRF validation failed' }, 403);
       return;
     }

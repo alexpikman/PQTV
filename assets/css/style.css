@@ -201,10 +201,11 @@ a:hover { text-decoration: underline; }
 .nav-list li .pl-name svg { width: 14px; height: 14px; color: var(--muted); flex-shrink: 0; }
 .nav-list li.active .pl-name svg { color: var(--primary-hi); }
 .nav-list li .del-pl {
-  opacity: 0; padding: 4px; border-radius: 4px;
-  color: var(--muted); transition: var(--t); display: flex;
+  opacity: 0.65; padding: 4px; border-radius: 4px;
+  background: transparent; border: none; cursor: pointer;
+  color: var(--muted); transition: var(--t); display: flex; flex-shrink: 0;
 }
-.nav-list li:hover .del-pl { opacity: 1; }
+.nav-list li:hover .del-pl, .nav-list li.active .del-pl { opacity: 1; }
 .nav-list li .del-pl:hover { color: var(--danger); background: var(--danger-bg); }
 .nav-list li .del-pl svg { width: 14px; height: 14px; }
 

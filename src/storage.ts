@@ -15,7 +15,7 @@ export class Storage {
   }
 
   isValidFilename(name: string): boolean {
-    return /^[a-zA-Z0-9_-]{1,64}$/.test(name);
+    return /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(name) && !name.includes('..');
   }
 
   getPlaylistPath(name: string): string {
