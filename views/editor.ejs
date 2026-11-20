@@ -398,7 +398,7 @@
                             </div>
 
                             <div class="apk-panel">
-                                <h3>Опубликовать новый .apk на сервер</h3>
+                                <h3>Опубликовать .apk с компьютера</h3>
                                 <form id="apk-upload-form">
                                     <div class="form-group">
                                         <label>Подписанный APK файл (.apk)</label>
@@ -427,6 +427,76 @@
                             </div>
                         </div>
 
+                        <div class="apk-grid">
+                            <div class="apk-panel">
+                                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px;">
+                                    <h3 style="margin:0;">Подключение GitHub</h3>
+                                    <span id="gh-conn-badge" class="badge-status">Проверка...</span>
+                                </div>
+                                <div id="gh-conn-summary" style="font-size:12px; color:var(--muted); margin-bottom:10px; line-height:1.5;">
+                                    Загрузка настроек GitHub...
+                                </div>
+                                <form id="gh-config-form">
+                                    <div class="form-group">
+                                        <label>Репозиторий (owner/repo или URL)</label>
+                                        <input type="text" id="gh-repo" required placeholder="username/pqtv">
+                                    </div>
+                                    <div style="display:grid; grid-template-columns:1fr 2fr; gap:10px;">
+                                        <div class="form-group">
+                                            <label>Ветка</label>
+                                            <input type="text" id="gh-branch" placeholder="main">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>GitHub Token (PAT)</label>
+                                            <input type="password" id="gh-token" autocomplete="off" placeholder="ghp_... (оставьте пустым, чтобы не менять)">
+                                        </div>
+                                    </div>
+                                    <div style="font-size:11.5px; color:var(--muted); margin-bottom:12px; line-height:1.45;">
+                                        Нужен Classic PAT с правами <code>repo</code> + <code>workflow</code> (или Fine-grained PAT: Contents, Actions, Workflows — Read &amp; Write). Токен сохраняется только на сервере.
+                                    </div>
+                                    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+                                        <button type="submit" id="btn-gh-save" class="btn btn-primary" style="flex:1;">Сохранить и проверить</button>
+                                        <button type="button" id="btn-gh-sync" class="btn btn-secondary" title="Отправить android-tv/ и workflow в репозиторий">Синхронизировать код</button>
+                                        <button type="button" id="btn-gh-disconnect" class="btn btn-danger hidden">Отключить</button>
+                                    </div>
+                                </form>
+                            </div>
+
+                            <div class="apk-panel">
+                                <h3>Собрать APK на GitHub в 1 клик</h3>
+                                <form id="gh-build-form">
+                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                                        <div class="form-group">
+                                            <label>Version Name</label>
+                                            <input type="text" id="gh-ver-name" required placeholder="1.0.1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Version Code</label>
+                                            <input type="number" id="gh-ver-code" min="1" required placeholder="2">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Адрес сервера PQTV для ТВ</label>
+                                        <input type="url" id="gh-server-url" required placeholder="https://tv.pqnet.ru">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Что нового (changelog)</label>
+                                        <input type="text" id="gh-changelog" placeholder="Обновление PQTV для Android TV">
+                                    </div>
+                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="gh-sync-before" checked>
+                                        <label for="gh-sync-before" style="margin:0; cursor:pointer;">Синхронизировать <code>android-tv/</code> перед сборкой</label>
+                                    </div>
+                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="gh-mandatory">
+                                        <label for="gh-mandatory" style="margin:0; cursor:pointer;">Обязательное обновление на ТВ</label>
+                                    </div>
+                                    <button type="submit" id="btn-gh-build" class="btn btn-primary" style="width:100%;">Запустить сборку APK на GitHub</button>
+                                </form>
+                                <div id="gh-build-status-box" class="hidden" style="margin-top:12px; padding:12px; background:var(--bg-0); border:1px solid var(--border); border-radius:var(--radius-sm); font-size:12.5px; line-height:1.5;"></div>
+                            </div>
+                        </div>
+
                         <div class="apk-panel" style="margin-bottom:16px;">
                             <h3>Опубликованные версии APK</h3>
                             <div id="apk-releases-container">
@@ -434,10 +504,20 @@
                             </div>
                         </div>
 
+                        <div class="apk-panel" style="margin-bottom:16px;">
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px;">
+                                <h3 style="margin:0;">История сборок в GitHub Actions</h3>
+                                <button type="button" id="btn-gh-refresh-runs" class="btn btn-secondary" style="padding:6px 12px; font-size:12px;">Обновить список</button>
+                            </div>
+                            <div id="gh-runs-container">
+                                <p class="placeholder-text" style="margin:14px 0;">Подключите GitHub выше, чтобы видеть сборки</p>
+                            </div>
+                        </div>
+
                         <div class="apk-panel">
-                            <h3>Сборка APK и автоматическая выгрузка на ТВ (GitHub Actions / CLI)</h3>
+                            <h3>Справка: ручная сборка через CLI / GitHub Secrets</h3>
                             <p style="font-size:12.5px; color:var(--muted); line-height:1.5;">
-                                Проект <code>android-tv/</code> включает WebView-оболочку для Android TV (Leanback Launcher), поддержку пульта D-pad, вход через Google и встроенный загрузчик обновлений (<code>FileProvider</code> + <code>REQUEST_INSTALL_PACKAGES</code>). Скачайте готовый ZIP с вшитым адресом этого сервера или соберите через GitHub Actions:
+                                При запуске из админки выше PQTV сам синхронизирует <code>android-tv/</code>, запускает <code>build-apk.yml</code> и автоматически забирает готовый APK из артефакта GitHub в OTA-релизы. Если вы запускаете workflow вручную на GitHub, можно также задать секрет <code>PQTV_UPLOAD_TOKEN</code>:
                             </p>
                             <pre class="apk-code" id="apk-ci-snippet">Загрузка параметров...</pre>
                         </div>

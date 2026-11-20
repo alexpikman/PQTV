@@ -11,8 +11,15 @@ android {
         applicationId = "tv.pqtv.player"
         minSdk = 23
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        val injectedCode = (project.findProperty("PQTV_VERSION_CODE") as String?)?.toIntOrNull()
+            ?: (project.findProperty("android.injected.version.code") as String?)?.toIntOrNull()
+            ?: 1
+        val injectedName = (project.findProperty("PQTV_VERSION_NAME") as String?)?.takeIf { it.isNotBlank() }
+            ?: (project.findProperty("android.injected.version.name") as String?)?.takeIf { it.isNotBlank() }
+            ?: "1.0.0"
+
+        versionCode = injectedCode
+        versionName = injectedName
 
         val serverUrl = (project.findProperty("PQTV_SERVER_URL") as String?) ?: "__PQTV_SERVER_URL__"
         buildConfigField("String", "PQTV_SERVER_URL", "\"$serverUrl\"")

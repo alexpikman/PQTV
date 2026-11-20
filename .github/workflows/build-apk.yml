@@ -37,6 +37,8 @@ jobs:
         run: |
           gradle assembleRelease \
             -PPQTV_SERVER_URL="${{ inputs.server_url }}" \
+            -PPQTV_VERSION_CODE=${{ inputs.version_code }} \
+            -PPQTV_VERSION_NAME="${{ inputs.version_name }}" \
             -Pandroid.injected.version.code=${{ inputs.version_code }} \
             -Pandroid.injected.version.name="${{ inputs.version_name }}"
       - name: Upload APK Artifact
@@ -46,6 +48,7 @@ jobs:
           path: android-tv/app/build/outputs/apk/release/*.apk
       - name: Publish OTA directly to PQTV Server
         if: ${{ secrets.PQTV_UPLOAD_TOKEN != '' }}
+        continue-on-error: true
         run: |
           APK_FILE=$(ls android-tv/app/build/outputs/apk/release/*.apk | head -n 1)
           curl -f -X POST "${{ inputs.server_url }}/api/admin/apk-upload" \

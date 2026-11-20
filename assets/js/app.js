@@ -223,6 +223,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (name === 'catalog' && screenCatalog) screenCatalog.classList.remove('hidden');
         if (name === 'apk' && screenApk) screenApk.classList.remove('hidden');
         if (name !== 'editor') closeForm();
+        if (name !== 'apk' && typeof stopGithubPoll === 'function') stopGithubPoll();
     }
 
     // ===== PLAYLISTS =====
@@ -2326,6 +2327,15 @@ document.addEventListener('DOMContentLoaded', () => {
         return btoa(binary);
     }
 
+    let ghPollTimer = null;
+
+    function stopGithubPoll() {
+        if (ghPollTimer) {
+            clearInterval(ghPollTimer);
+            ghPollTimer = null;
+        }
+    }
+
     async function loadApkReleases() {
         const statusBox = document.getElementById('apk-status-box');
         const listBox = document.getElementById('apk-releases-container');
@@ -2333,6 +2343,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const snippetEl = document.getElementById('apk-ci-snippet');
         const verNameInput = document.getElementById('apk-ver-name');
         const verCodeInput = document.getElementById('apk-ver-code');
+        const ghVerNameInput = document.getElementById('gh-ver-name');
+        const ghVerCodeInput = document.getElementById('gh-ver-code');
+        const ghServerUrlInput = document.getElementById('gh-server-url');
 
         const res = await apiRequest('/api/admin/apk/releases');
         if (!res || !res.ok) {
@@ -2342,20 +2355,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (verNameInput && !verNameInput.value) verNameInput.value = res.suggestedVersionName || '1.0.1';
         if (verCodeInput && !verCodeInput.value) verCodeInput.value = String(res.suggestedVersionCode || 1);
+        if (ghVerNameInput && !ghVerNameInput.value) ghVerNameInput.value = res.suggestedVersionName || '1.0.1';
+        if (ghVerCodeInput && !ghVerCodeInput.value) ghVerCodeInput.value = String(res.suggestedVersionCode || 1);
+        if (ghServerUrlInput && !ghServerUrlInput.value) ghServerUrlInput.value = res.serverOrigin || window.location.origin;
 
         const latest = res.latest;
         if (statusBox) {
             if (latest) {
+                const sz = latest.sizeBytes ?? latest.size ?? 0;
                 statusBox.innerHTML = `
                     <div>Активная версия: <b style="color:#fff;">v${escapeHtml(latest.versionName)}</b> (code <code>${latest.versionCode}</code>)</div>
-                    <div>Размер: <b>${fmtBytes(latest.sizeBytes)}</b> · ${latest.mandatory ? '<span style="color:#fcd34d;">Обязательное обновление</span>' : 'Обычное обновление'}</div>
+                    <div>Размер: <b>${fmtBytes(sz)}</b> · ${latest.mandatory ? '<span style="color:#fcd34d;">Обязательное обновление</span>' : 'Обычное обновление'}</div>
                     <div style="font-size:11.5px; color:var(--muted); word-break:break-all;">SHA-256: ${escapeHtml(latest.sha256 || '')}</div>
                     ${latest.changelog ? `<div style="margin-top:6px;">Изменения: ${escapeHtml(latest.changelog)}</div>` : ''}
                 `;
             } else {
                 statusBox.innerHTML = `
                     <div>На сервере ещё нет загруженного <code>.apk</code>.</div>
-                    <div style="color:var(--muted); font-size:12px; margin-top:4px;">Скачайте готовый Android TV проект справа, соберите релиз через Android Studio или GitHub Actions и загрузите <code>.apk</code> сюда — телевизоры получат обновление автоматически.</div>
+                    <div style="color:var(--muted); font-size:12px; margin-top:4px;">Подключите GitHub ниже для сборки в 1 клик или загрузите готовый <code>.apk</code> вручную — телевизоры получат обновление автоматически.</div>
                 `;
             }
         }
@@ -2391,13 +2408,14 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     <th style="width:120px; text-align:right;">Действия</th>
                 </tr></thead><tbody>`;
                 releases.forEach((rel, i) => {
+                    const sz = rel.sizeBytes ?? rel.size ?? 0;
                     html += `<tr>
                         <td>
                             <b style="color:#fff;">v${escapeHtml(rel.versionName)}</b>
                             ${i === 0 ? '<span class="badge-status badge-online" style="margin-left:6px;">latest</span>' : ''}
                         </td>
                         <td><code>${rel.versionCode}</code></td>
-                        <td>${fmtBytes(rel.sizeBytes)}</td>
+                        <td>${fmtBytes(sz)}</td>
                         <td style="font-size:12px; color:var(--text-dim);">${escapeHtml(rel.changelog || '—')}</td>
                         <td style="text-align:right;">
                             <div class="actions-cell">
@@ -2423,6 +2441,309 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 });
             }
         }
+
+        await loadGithubPanel();
+    }
+
+    function renderGithubBuildStatus(build) {
+        const box = document.getElementById('gh-build-status-box');
+        if (!box) return;
+        if (!build || !build.buildId) {
+            box.classList.add('hidden');
+            return;
+        }
+        box.classList.remove('hidden');
+
+        const statusLabels = {
+            syncing: 'Синхронизация кода с GitHub...',
+            queued: 'В очереди GitHub Actions...',
+            in_progress: 'Идёт сборка APK на GitHub...',
+            importing: 'Сборка завершена — импорт APK в OTA...',
+            completed: 'APK успешно собран и опубликован для ТВ!',
+            failed: 'Ошибка сборки на GitHub'
+        };
+
+        const isDone = build.status === 'completed';
+        const isFail = build.status === 'failed';
+        const color = isDone ? '#a7f3d0' : isFail ? '#fca5a5' : '#93c5fd';
+
+        const stepsHtml = Array.isArray(build.steps) && build.steps.length
+            ? `<div style="margin-top:8px; display:flex; flex-direction:column; gap:4px;">` +
+              build.steps.map(st => {
+                  const icon = st.conclusion === 'success' ? '✓' : st.conclusion === 'failure' ? '✕' : st.status === 'in_progress' ? '●' : '○';
+                  const sColor = st.conclusion === 'success' ? '#34d399' : st.conclusion === 'failure' ? '#f87171' : st.status === 'in_progress' ? '#60a5fa' : 'var(--muted)';
+                  return `<div style="font-size:11.5px; color:${sColor};">${icon} ${escapeHtml(st.name)}</div>`;
+              }).join('') +
+              `</div>`
+            : '';
+
+        box.innerHTML = `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+                <b style="color:${color};">${escapeHtml(statusLabels[build.status] || build.status)}</b>
+                ${build.runUrl ? `<a href="${escapeHtml(build.runUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--primary-hi); font-size:12px;">Логи на GitHub →</a>` : ''}
+            </div>
+            <div style="color:var(--muted); font-size:11.5px; margin-top:4px;">
+                Версия: <b>v${escapeHtml(build.versionName)}</b> (code <code>${build.versionCode}</code>)
+                ${build.syncedFiles ? ` · Синхронизировано файлов: ${build.syncedFiles}` : ''}
+                ${build.runNumber ? ` · Запуск #${build.runNumber}` : ''}
+            </div>
+            ${build.error ? `<div style="color:#fca5a5; margin-top:6px;">${escapeHtml(build.error)}</div>` : ''}
+            ${stepsHtml}
+        `;
+    }
+
+    async function pollGithubBuildOnce() {
+        const res = await apiRequest('/api/admin/github/status');
+        if (!res || !res.ok || !res.build) return null;
+        renderGithubBuildStatus(res.build);
+        if (res.build.status === 'completed' || res.build.status === 'failed') {
+            stopGithubPoll();
+            if (res.build.status === 'completed' && res.build.imported) {
+                showToast(`APK v${res.build.versionName} собран на GitHub и опубликован!`, 'ok');
+                const verNameInput = document.getElementById('gh-ver-name');
+                const verCodeInput = document.getElementById('gh-ver-code');
+                if (verNameInput) verNameInput.value = '';
+                if (verCodeInput) verCodeInput.value = '';
+                await loadApkReleases();
+            } else if (res.build.status === 'failed' && res.build.error) {
+                showToast(res.build.error, 'err');
+            }
+        }
+        return res.build;
+    }
+
+    async function loadGithubRuns() {
+        const box = document.getElementById('gh-runs-container');
+        if (!box) return;
+        const res = await apiRequest('/api/admin/github/runs');
+        if (!res || !res.ok) {
+            box.innerHTML = '<p class="placeholder-text" style="margin:14px 0;">Не удалось получить список сборок</p>';
+            return;
+        }
+        const runs = Array.isArray(res.runs) ? res.runs : [];
+        if (runs.length === 0) {
+            box.innerHTML = '<p class="placeholder-text" style="margin:14px 0;">Запусков сборки в репозитории пока нет</p>';
+            return;
+        }
+        let html = `<table class="ch-table"><thead><tr>
+            <th style="width:80px;">#</th>
+            <th>Статус</th>
+            <th>Ветка</th>
+            <th>Дата</th>
+            <th style="width:190px; text-align:right;">Действия</th>
+        </tr></thead><tbody>`;
+        runs.forEach(r => {
+            const st = r.status === 'completed' ? (r.conclusion || 'completed') : r.status;
+            const badgeCls = st === 'success' ? 'badge-online' : (st === 'failure' || st === 'cancelled') ? 'badge-offline' : '';
+            const dt = r.createdAt ? new Date(r.createdAt).toLocaleString('ru-RU') : '—';
+            html += `<tr>
+                <td><code>#${r.runNumber || r.id}</code></td>
+                <td><span class="badge-status ${badgeCls}">${escapeHtml(st)}</span></td>
+                <td><code>${escapeHtml(r.headBranch || 'main')}</code></td>
+                <td style="font-size:12px; color:var(--text-dim);">${escapeHtml(dt)}</td>
+                <td style="text-align:right;">
+                    <div style="display:inline-flex; gap:6px; align-items:center;">
+                        ${r.htmlUrl ? `<a class="btn btn-secondary" style="padding:5px 9px; font-size:11.5px;" href="${escapeHtml(r.htmlUrl)}" target="_blank" rel="noopener noreferrer">Логи</a>` : ''}
+                        ${st === 'success' ? `<button type="button" class="btn btn-primary" style="padding:5px 10px; font-size:11.5px;" data-gh-import="${r.id}">Импорт в OTA</button>` : ''}
+                    </div>
+                </td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        box.innerHTML = html;
+
+        box.querySelectorAll('[data-gh-import]').forEach(btn => {
+            btn.onclick = async () => {
+                const runId = Number(btn.dataset.ghImport);
+                const verName = (document.getElementById('gh-ver-name')?.value || '').trim() || '1.0.1';
+                const verCode = parseInt(document.getElementById('gh-ver-code')?.value || '1', 10) || 1;
+                const changelog = (document.getElementById('gh-changelog')?.value || '').trim();
+                const mandatory = Boolean(document.getElementById('gh-mandatory')?.checked);
+                btn.disabled = true;
+                btn.textContent = 'Импорт...';
+                try {
+                    const impRes = await apiRequest('/api/admin/github/import', 'POST', {
+                        runId,
+                        versionName: verName,
+                        versionCode: verCode,
+                        changelog,
+                        mandatory
+                    });
+                    if (impRes && impRes.ok) {
+                        showToast(`APK v${impRes.release.versionName} импортирован в OTA`, 'ok');
+                        await loadApkReleases();
+                    } else {
+                        showToast((impRes && impRes.error) || 'Ошибка импорта артефакта', 'err');
+                    }
+                } finally {
+                    btn.disabled = false;
+                    btn.textContent = 'Импорт в OTA';
+                }
+            };
+        });
+    }
+
+    async function loadGithubPanel() {
+        const badge = document.getElementById('gh-conn-badge');
+        const summary = document.getElementById('gh-conn-summary');
+        const repoInput = document.getElementById('gh-repo');
+        const branchInput = document.getElementById('gh-branch');
+        const tokenInput = document.getElementById('gh-token');
+        const disconnectBtn = document.getElementById('btn-gh-disconnect');
+        const syncBtn = document.getElementById('btn-gh-sync');
+        const buildBtn = document.getElementById('btn-gh-build');
+
+        const res = await apiRequest('/api/admin/github/config');
+        const cfg = res && res.config ? res.config : { configured: false };
+
+        if (badge) {
+            badge.textContent = cfg.configured ? 'Подключён' : 'Не настроен';
+            badge.className = 'badge-status ' + (cfg.configured ? 'badge-online' : 'badge-offline');
+        }
+        if (summary) {
+            if (cfg.configured) {
+                summary.innerHTML = `
+                    Репозиторий: <a href="${escapeHtml(cfg.htmlUrl)}" target="_blank" rel="noopener noreferrer" style="color:var(--primary-hi); font-weight:600;">${escapeHtml(cfg.repoFullName)}</a>
+                    · ветка <code>${escapeHtml(cfg.branch)}</code>
+                    ${cfg.login ? ` · токен от <b>@${escapeHtml(cfg.login)}</b>` : ''}
+                    (${escapeHtml(cfg.tokenPreview || 'saved')})
+                `;
+            } else {
+                summary.textContent = 'Укажите GitHub репозиторий и токен (PAT), чтобы PQTV сам синхронизировал android-tv/ и запускал облачную сборку APK.';
+            }
+        }
+        if (repoInput && cfg.repoFullName && !repoInput.value) repoInput.value = cfg.repoFullName;
+        if (branchInput && cfg.branch) branchInput.value = cfg.branch;
+        if (tokenInput) {
+            tokenInput.placeholder = cfg.configured
+                ? `Сохранён (${cfg.tokenPreview}) — оставьте пустым, чтобы не менять`
+                : 'ghp_... или github_pat_...';
+        }
+        if (disconnectBtn) disconnectBtn.classList.toggle('hidden', !(cfg.configured && cfg.source === 'saved'));
+        if (syncBtn) syncBtn.disabled = !cfg.configured;
+        if (buildBtn) buildBtn.disabled = !cfg.configured;
+
+        if (cfg.configured) {
+            const cur = await pollGithubBuildOnce();
+            if (cur && ['syncing', 'queued', 'in_progress', 'importing'].includes(cur.status)) {
+                stopGithubPoll();
+                ghPollTimer = setInterval(() => { void pollGithubBuildOnce(); }, 3500);
+            }
+            await loadGithubRuns();
+        } else {
+            stopGithubPoll();
+            const runsBox = document.getElementById('gh-runs-container');
+            if (runsBox) {
+                runsBox.innerHTML = '<p class="placeholder-text" style="margin:14px 0;">Подключите GitHub выше, чтобы видеть сборки</p>';
+            }
+        }
+    }
+
+    const ghConfigForm = document.getElementById('gh-config-form');
+    if (ghConfigForm) {
+        ghConfigForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('btn-gh-save');
+            const orig = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = 'Проверка...'; }
+            try {
+                const payload = {
+                    repo: (document.getElementById('gh-repo')?.value || '').trim(),
+                    branch: (document.getElementById('gh-branch')?.value || '').trim(),
+                    token: (document.getElementById('gh-token')?.value || '').trim()
+                };
+                const res = await apiRequest('/api/admin/github/config', 'POST', payload);
+                if (res && res.ok) {
+                    const tokenEl = document.getElementById('gh-token');
+                    if (tokenEl) tokenEl.value = '';
+                    showToast(`GitHub подключён: ${res.config.repoFullName}`, 'ok');
+                    await loadGithubPanel();
+                } else {
+                    showToast((res && res.error) || 'Ошибка подключения GitHub', 'err');
+                }
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+            }
+        };
+    }
+
+    const btnGhDisconnect = document.getElementById('btn-gh-disconnect');
+    if (btnGhDisconnect) {
+        btnGhDisconnect.onclick = async () => {
+            if (!(await uiConfirm('Отключить сохранённый GitHub токен и репозиторий?'))) return;
+            const res = await apiRequest('/api/admin/github/config', 'DELETE');
+            if (res && res.ok) {
+                const repoEl = document.getElementById('gh-repo');
+                const tokEl = document.getElementById('gh-token');
+                if (repoEl) repoEl.value = '';
+                if (tokEl) tokEl.value = '';
+                showToast('GitHub отключён', 'ok');
+                await loadGithubPanel();
+            }
+        };
+    }
+
+    const btnGhSync = document.getElementById('btn-gh-sync');
+    if (btnGhSync) {
+        btnGhSync.onclick = async () => {
+            const orig = btnGhSync.textContent;
+            btnGhSync.disabled = true;
+            btnGhSync.textContent = 'Отправка...';
+            try {
+                const res = await apiRequest('/api/admin/github/sync', 'POST', {});
+                if (res && res.ok) {
+                    const msg = res.skipped
+                        ? 'Все файлы android-tv/ на GitHub уже актуальны'
+                        : `Синхронизировано файлов с GitHub: ${res.syncedFiles}`;
+                    showToast(msg, 'ok');
+                } else {
+                    showToast((res && res.error) || 'Ошибка синхронизации с GitHub', 'err');
+                }
+            } finally {
+                btnGhSync.disabled = false;
+                btnGhSync.textContent = orig;
+            }
+        };
+    }
+
+    const ghBuildForm = document.getElementById('gh-build-form');
+    if (ghBuildForm) {
+        ghBuildForm.onsubmit = async (e) => {
+            e.preventDefault();
+            const btn = document.getElementById('btn-gh-build');
+            const orig = btn ? btn.textContent : '';
+            if (btn) { btn.disabled = true; btn.textContent = 'Синхронизация и запуск...'; }
+            try {
+                const payload = {
+                    versionName: (document.getElementById('gh-ver-name')?.value || '').trim(),
+                    versionCode: parseInt(document.getElementById('gh-ver-code')?.value || '1', 10) || 1,
+                    serverUrl: (document.getElementById('gh-server-url')?.value || '').trim(),
+                    changelog: (document.getElementById('gh-changelog')?.value || '').trim(),
+                    mandatory: Boolean(document.getElementById('gh-mandatory')?.checked),
+                    syncProject: Boolean(document.getElementById('gh-sync-before')?.checked)
+                };
+                const res = await apiRequest('/api/admin/github/build', 'POST', payload);
+                if (res && res.ok && res.build) {
+                    showToast('Сборка APK на GitHub запущена!', 'ok');
+                    renderGithubBuildStatus(res.build);
+                    stopGithubPoll();
+                    ghPollTimer = setInterval(() => { void pollGithubBuildOnce(); }, 3500);
+                    await loadGithubRuns();
+                } else {
+                    showToast((res && res.error) || 'Не удалось запустить сборку на GitHub', 'err');
+                }
+            } finally {
+                if (btn) { btn.disabled = false; btn.textContent = orig; }
+            }
+        };
+    }
+
+    const btnGhRefreshRuns = document.getElementById('btn-gh-refresh-runs');
+    if (btnGhRefreshRuns) {
+        btnGhRefreshRuns.onclick = () => {
+            void pollGithubBuildOnce();
+            void loadGithubRuns();
+        };
     }
 
     const apkUploadForm = document.getElementById('apk-upload-form');

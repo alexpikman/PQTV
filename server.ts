@@ -13,6 +13,16 @@ import { EpgParser, EpgSource } from './src/epgParser.js';
 import { catalogStore, checkStreamUrl } from './src/catalogStore.js';
 import { verifyFirebaseIdToken } from './src/firebaseJwt.js';
 import { apkManager, buildAndroidTvProjectZip, isValidApkBuffer } from './src/apkManager.js';
+import {
+  getPublicGithubConfig,
+  saveAndVerifyGithubConfig,
+  clearGithubConfig,
+  syncAndroidProjectToGithub,
+  triggerGithubApkBuild,
+  refreshGithubBuildStatus,
+  listGithubWorkflowRuns,
+  importApkFromGithubRun,
+} from './src/githubApkBuilder.js';
 
 const BOOTSTRAPPED_ADMIN_EMAILS = ['alexpqtr@gmail.com', 'alex.pikman@gmail.com'];
 
@@ -1665,6 +1675,113 @@ app.get('/api/admin/apk/project.zip', (req, res) => {
   );
   res.setHeader('Content-Length', String(zipBuf.length));
   res.send(zipBuf);
+});
+
+// ============ ADMIN GITHUB ACTIONS APK ROUTES ============
+app.get('/api/admin/github/config', (req, res) => {
+  const cfg = getPublicGithubConfig();
+  noCacheJson(res, {
+    ok: true,
+    config: cfg,
+    serverOrigin: getRequestOrigin(req),
+  });
+});
+
+app.post('/api/admin/github/config', async (req, res) => {
+  try {
+    const repo = String(req.body?.repo || '').trim();
+    const branch = String(req.body?.branch || '').trim();
+    const token = String(req.body?.token || '').trim();
+    const saved = await saveAndVerifyGithubConfig({ repo, branch, token });
+    noCacheJson(res, { ok: true, config: saved });
+  } catch (err) {
+    noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+});
+
+app.delete('/api/admin/github/config', (_req, res) => {
+  clearGithubConfig();
+  noCacheJson(res, { ok: true, config: getPublicGithubConfig() });
+});
+
+app.post('/api/admin/github/sync', async (_req, res) => {
+  try {
+    const result = await syncAndroidProjectToGithub();
+    noCacheJson(res, { ok: true, ...result });
+  } catch (err) {
+    noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+});
+
+app.post('/api/admin/github/build', async (req, res) => {
+  try {
+    const latest = apkManager.getLatest();
+    const defaultCode = latest ? latest.versionCode + 1 : 1;
+    const defaultName = latest ? `1.0.${defaultCode}` : '1.0.0';
+    const versionCode = Number(req.body?.versionCode) || defaultCode;
+    const versionName = String(req.body?.versionName || '').trim() || defaultName;
+    const serverUrl = String(req.body?.serverUrl || '').trim() || getRequestOrigin(req);
+    const changelog = String(req.body?.changelog || '').trim();
+    const mandatory = Boolean(req.body?.mandatory);
+    const syncProject = req.body?.syncProject !== false;
+
+    const build = await triggerGithubApkBuild({
+      versionName,
+      versionCode,
+      serverUrl,
+      changelog,
+      mandatory,
+      syncProject,
+    });
+    noCacheJson(res, { ok: true, build });
+  } catch (err) {
+    noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+});
+
+app.get('/api/admin/github/status', async (_req, res) => {
+  try {
+    const build = await refreshGithubBuildStatus();
+    noCacheJson(res, { ok: true, build });
+  } catch (err) {
+    noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+});
+
+app.get('/api/admin/github/runs', async (_req, res) => {
+  try {
+    const runs = await listGithubWorkflowRuns();
+    noCacheJson(res, { ok: true, runs });
+  } catch (err) {
+    noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+  }
+});
+
+app.post('/api/admin/github/import', async (req, res) => {
+  try {
+    const runId = Number(req.body?.runId);
+    if (!Number.isFinite(runId) || runId <= 0) {
+      noCacheJson(res, { error: 'Укажите корректный ID запуска GitHub Actions' }, 400);
+      return;
+    }
+    const latest = apkManager.getLatest();
+    const versionCode = Number(req.body?.versionCode) || (latest ? latest.versionCode + 1 : 1);
+    const versionName =
+      String(req.body?.versionName || '').trim() || `1.0.${versionCode}`;
+    const changelog = String(req.body?.changelog || '').trim() || 'Импортировано из GitHub Actions';
+    const mandatory = Boolean(req.body?.mandatory);
+
+    const release = await importApkFromGithubRun({
+      runId,
+      versionName,
+      versionCode,
+      changelog,
+      mandatory,
+    });
+    noCacheJson(res, { ok: true, release });
+  } catch (err) {
+    noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
+  }
 });
 
 app.post('/api/auth/set-password', (req, res) => {

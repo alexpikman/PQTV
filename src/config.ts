@@ -12,6 +12,9 @@ export interface AppConfig {
   maxBackups: number;
   sessionSecret: string;
   apkUploadToken: string;
+  githubToken: string;
+  githubRepo: string;
+  githubBranch: string;
 }
 
 const rootDir = process.cwd();
@@ -29,6 +32,9 @@ export const config: AppConfig = {
   maxBackups: 20,
   sessionSecret: process.env.SESSION_SECRET || 'pqtv_session_secret_2026',
   apkUploadToken: process.env.APK_UPLOAD_TOKEN || 'pqtv_upload_2026_secret_change_me',
+  githubToken: process.env.GITHUB_TOKEN || '',
+  githubRepo: process.env.GITHUB_REPO || '',
+  githubBranch: process.env.GITHUB_BRANCH || 'main',
 };
 
 export function verifyPassword(password: string, hash: string): boolean {
