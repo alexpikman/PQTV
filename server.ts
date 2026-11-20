@@ -1107,34 +1107,6 @@ app.use('/watch/api', (req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
-function diagnoseChannelUrl(
-  rawUrl: string,
-  statusMap: Map<string, { online: number; http_code: number; checked_at: number }>
-): string | null {
-  const url = (rawUrl || '').trim();
-  if (!url) return 'Отсутствует ссылка на поток';
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return 'Некорректная ссылка потока';
-  }
-  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    return `Неподдерживаемый протокол (${parsed.protocol.replace(':', '')})`;
-  }
-  if (isBlockedProxyHostname(parsed.hostname)) {
-    return 'Заблокированный локальный/приватный адрес потока';
-  }
-  const st = statusMap.get(url);
-  if (st && st.checked_at > 0 && st.online === 0) {
-    if (st.http_code >= 400) {
-      return `Источник вернул ошибку HTTP ${st.http_code}`;
-    }
-    return 'Источник не отвечает (таймаут проверки в каталоге)';
-  }
-  return null;
-}
-
 app.get('/watch/api/channels', (req, res) => {
   const viewer = (
     req as Request & { currentViewer: NonNullable<ReturnType<typeof getViewerFromRequest>> }
@@ -1147,7 +1119,6 @@ app.get('/watch/api/channels', (req, res) => {
   const all: Channel[] = [];
   const unavailable: Array<{ name: string; group: string; reason: string; playlist?: string }> = [];
   const seen = new Set<string>();
-  const statusMap = catalogStore.getStreamStatusMap();
 
   for (const pl of playlists) {
     if (!storage.isValidFilename(pl)) {
@@ -1186,17 +1157,6 @@ app.get('/watch/api/channels', (req, res) => {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const urlReason = diagnoseChannelUrl(ch.url || '', statusMap);
-      if (urlReason) {
-        unavailable.push({
-          name,
-          group: ch.group || 'Без категории',
-          reason: urlReason,
-          playlist: pl,
-        });
-        continue;
-      }
-
       all.push({
         name,
         group: ch.group || '',
@@ -1207,7 +1167,7 @@ app.get('/watch/api/channels', (req, res) => {
     }
   }
 
-  const totalCount = all.length + unavailable.length;
+  const totalCount = all.length;
 
   noCacheJson(res, {
     channels: all,
@@ -1215,7 +1175,7 @@ app.get('/watch/api/channels', (req, res) => {
     stats: {
       total: totalCount,
       available: all.length,
-      unavailable: unavailable.length,
+      unavailable: 0,
     },
     playlists,
     streaming: getStreamingSettings(),
