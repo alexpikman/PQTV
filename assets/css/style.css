@@ -137,6 +137,13 @@ a:hover { text-decoration: underline; }
   border: 1px solid var(--border-hi);
   border-radius: var(--radius-sm);
 }
+
+.catalog-playlist-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 360px;
+}
 .brand { display: flex; align-items: center; gap: 12px; }
 .brand-mark {
   width: 56px; height: 32px;
