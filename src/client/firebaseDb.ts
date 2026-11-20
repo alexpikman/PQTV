@@ -778,8 +778,8 @@ export async function loadFullCloudSnapshot(): Promise<{
           }
         }
         playlists[plId] = items;
-      } catch {
-        // ignore missing
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -800,8 +800,8 @@ export async function loadFullCloudSnapshot(): Promise<{
             enabled: Boolean(d.enabled),
           });
         }
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -823,8 +823,8 @@ export async function loadFullCloudSnapshot(): Promise<{
           }
         }
         sourceIndex[sid] = { items, updatedAt: indexedAt };
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -844,8 +844,8 @@ export async function loadFullCloudSnapshot(): Promise<{
             enabled: Boolean(d.enabled),
           });
         }
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
@@ -881,9 +881,9 @@ export async function loadFullCloudSnapshot(): Promise<{
         streams,
       };
     }
-  } catch {
-    // ignore
-  }
+  } catch (err) {
+        throw err;
+      }
 
   // Streaming settings
   const streamingSettings = await fetchStreamingSettingsFromCloud();
@@ -895,9 +895,9 @@ export async function loadFullCloudSnapshot(): Promise<{
     if (authSnap.exists() && typeof authSnap.data().adminPasswordHash === 'string') {
       adminSettings.adminPasswordHash = authSnap.data().adminPasswordHash;
     }
-  } catch {
-    // ignore
-  }
+  } catch (err) {
+        throw err;
+      }
 
   // Local users + password hashes
   const users: Array<Record<string, unknown>> = [];
@@ -921,8 +921,8 @@ export async function loadFullCloudSnapshot(): Promise<{
           enabled: Boolean(ud.enabled),
           password_hash,
         });
-      } catch {
-        // ignore
+      } catch (err) {
+        throw err;
       }
     })
   );
