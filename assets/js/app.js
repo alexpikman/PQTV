@@ -3137,17 +3137,20 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             }
         };
 
-        const modes = {
-            auto_proxy_first: [proxied, url],
-            auto_direct_first: [url, proxied],
-            proxy_only: [proxied],
-            direct_only: [url]
-        };
-
         void apiRequest('/api/settings/streaming').then((result) => {
-            const mode = result && result.settings && modes[result.settings.mode]
-                ? result.settings.mode
+            const settings = result && result.settings ? result.settings : {};
+            const mode = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'].includes(settings.mode)
+                ? settings.mode
                 : 'auto_proxy_first';
+            const directUrls = settings.tryHttpsUpgrade !== false && /^http:\/\//i.test(url)
+                ? [url.replace(/^http:/i, 'https:'), url]
+                : [url];
+            const modes = {
+                auto_proxy_first: [proxied, ...directUrls],
+                auto_direct_first: [...directUrls, proxied],
+                proxy_only: [proxied],
+                direct_only: directUrls
+            };
             attempts = modes[mode].slice();
             const first = attempts.shift();
             attemptIndex = 0;
