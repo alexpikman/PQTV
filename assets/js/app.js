@@ -221,6 +221,33 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    (function initStreamingModeControl() {
+        const select = document.getElementById('streaming-mode-select');
+        if (!select) return;
+
+        apiRequest('/api/settings/streaming').then((res) => {
+            const mode = res && res.settings && res.settings.mode;
+            if (mode && Array.from(select.options).some(option => option.value === mode)) {
+                select.value = mode;
+            }
+        });
+
+        select.addEventListener('change', async () => {
+            select.disabled = true;
+            try {
+                const current = await apiRequest('/api/settings/streaming');
+                const settings = Object.assign({}, current.settings || {}, { mode: select.value });
+                const saved = await apiRequest('/api/settings/streaming', 'POST', settings);
+                if (!saved || !saved.ok) throw new Error(saved && saved.error ? saved.error : 'Не удалось сохранить режим');
+                showToast('Режим передачи потока сохранён', 'ok');
+            } catch (err) {
+                showToast((err && err.message) ? err.message : 'Ошибка сохранения режима', 'err');
+            } finally {
+                select.disabled = false;
+            }
+        });
+    })();
+
     (function initAdminAuthControls() {
         const logoutBtn = document.getElementById('btn-admin-logout');
         if (logoutBtn) {
