@@ -107,10 +107,10 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 
 async function upsertDoc(
   ref: DocumentReference,
-  path: string,
   payload: Record<string, unknown>,
   mutableKeys: string[]
 ): Promise<void> {
+  const path = ref.path;
   let snap;
   try {
     snap = await getDoc(ref);
