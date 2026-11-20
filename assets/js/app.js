@@ -3034,6 +3034,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const isTs = low.endsWith('.ts');
         let attemptIndex = 0;
         let attemptId = 0;
+        let attempts = [];
 
         const onReady = () => overlay.classList.add('hidden');
         const onErr = (msg) => {
@@ -3120,20 +3121,15 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             const mode = result && result.settings && modes[result.settings.mode]
                 ? result.settings.mode
                 : 'auto_proxy_first';
-            const attempts = modes[mode].slice();
+            attempts = modes[mode].slice();
             const first = attempts.shift();
-            window.__pqtvPlaybackAttempts = attempts;
             attemptIndex = 0;
-            const originalAttempts = attempts;
-            // The retry queue is scoped to this playback session.
-            attemptsRef = originalAttempts;
             attempt(first);
         }).catch(() => {
-            attemptsRef = [url];
+            attempts = [url];
+            attemptIndex = 0;
             attempt(proxied);
         });
-
-        let attemptsRef = [url];
     }
 
     // ===== EPG IN PLAYER =====
