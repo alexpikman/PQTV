@@ -1983,7 +1983,7 @@ document.addEventListener('DOMContentLoaded', () => {
         </tr></thead><tbody>`;
         catalogData.forEach((ch, i) => {
             const usedIn = Array.isArray(ch.used_in_list)
-                ? ch.used_in_list.map(name => String(name).replace(/\\.m3u$/i, '').trim()).filter(Boolean)
+                ? ch.used_in_list.map(name => String(name).replace(/\.m3u$/i, '').trim()).filter(Boolean)
                 : [];
             const inMy = usedIn.length
                 ? `<div class="catalog-playlist-list">${usedIn.map(name => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join(' ')}</div>`
