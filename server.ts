@@ -1770,7 +1770,7 @@ app.post('/api/cloud/hydrate', (req, res) => {
         playlistsRestored++;
       }
     }
-    if (body.replacePlaylists && cloudNames.size > 0) {
+    if (body.replacePlaylists) {
       for (const existingName of storage.getPlaylists()) {
         if (!cloudNames.has(existingName)) {
           storage.deletePlaylist(existingName);
