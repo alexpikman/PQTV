@@ -44,34 +44,94 @@ export interface CatalogSource {
   total_found?: number;
 }
 
+const STREAM_STATUS_TTL_SECONDS = 15 * 60;
+
+export type StreamCheckStatus = 'online' | 'offline' | 'unknown';
+
 export async function checkStreamUrl(
   url: string,
-  timeoutMs = 3000
-): Promise<{ online: boolean; code: number; ms: number }> {
+  timeoutMs = 8000
+): Promise<{ online: boolean | null; status: StreamCheckStatus; code: number; ms: number; reason: string }> {
   const t0 = Date.now();
-  if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
-    return { online: false, code: 0, ms: 0 };
-  }
+  let parsedUrl: URL;
   try {
-    let res = await fetch(url, {
-      method: 'HEAD',
-      headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) IPTV-Checker' },
+    parsedUrl = new URL(url);
+  } catch {
+    return { online: null, status: 'unknown', code: 0, ms: 0, reason: 'Некорректный URL' };
+  }
+  if (parsedUrl.protocol !== 'http:' && parsedUrl.protocol !== 'https:') {
+    return { online: null, status: 'unknown', code: 0, ms: 0, reason: 'Неподдерживаемый протокол' };
+  }
+
+  try {
+    const res = await fetch(parsedUrl, {
+      method: 'GET',
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) PQTV-Stream-Checker',
+        Accept: '*/*',
+        Range: 'bytes=0-4095',
+        'Cache-Control': 'no-cache',
+      },
       redirect: 'follow',
       signal: AbortSignal.timeout(timeoutMs),
     });
-    if (res.status === 405 || res.status === 501) {
-      res = await fetch(url, {
-        method: 'GET',
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) IPTV-Checker' },
-        redirect: 'follow',
-        signal: AbortSignal.timeout(timeoutMs),
-      });
-      await res.body?.cancel();
-    }
     const ms = Date.now() - t0;
-    return { online: res.status >= 200 && res.status < 400, code: res.status, ms };
-  } catch {
-    return { online: false, code: 0, ms: Date.now() - t0 };
+
+    if (res.status === 404 || res.status === 410) {
+      await res.body?.cancel().catch(() => {});
+      return { online: false, status: 'offline', code: res.status, ms, reason: 'Поток не найден' };
+    }
+
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return {
+        online: null,
+        status: 'unknown',
+        code: res.status,
+        ms,
+        reason: res.status === 401 || res.status === 403
+          ? 'Требуется авторизация или доступ ограничен'
+          : res.status === 429
+            ? 'Слишком много запросов'
+            : 'Сервер не подтвердил доступность потока',
+      };
+    }
+
+    const reader = res.body?.getReader();
+    let bytes = new Uint8Array();
+    if (reader) {
+      try {
+        const chunk = await reader.read();
+        bytes = chunk.value || bytes;
+      } finally {
+        await reader.cancel().catch(() => {});
+      }
+    }
+    if (bytes.byteLength === 0) {
+      return { online: null, status: 'unknown', code: res.status, ms, reason: 'Сервер вернул пустой ответ' };
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    const isHls = /\\.m3u8?$/i.test(parsedUrl.pathname) ||
+      contentType.includes('mpegurl') ||
+      contentType.includes('vnd.apple');
+
+    if (isHls) {
+      const bodyStart = new TextDecoder().decode(bytes);
+      if (!bodyStart.includes('#EXTM3U')) {
+        return { online: null, status: 'unknown', code: res.status, ms, reason: 'Ответ не похож на HLS-плейлист' };
+      }
+    } else if (contentType.includes('text/html')) {
+      return { online: null, status: 'unknown', code: res.status, ms, reason: 'Сервер вернул HTML вместо медиапотока' };
+    }
+
+    return { online: true, status: 'online', code: res.status, ms, reason: 'Получены данные потока' };
+  } catch (err) {
+    const ms = Date.now() - t0;
+    const reason = err instanceof Error && err.name === 'TimeoutError'
+      ? 'Таймаут проверки'
+      : 'Сетевая ошибка проверки';
+    return { online: null, status: 'unknown', code: 0, ms, reason };
   }
 }
 
@@ -354,6 +414,7 @@ class CatalogStore {
     const ownership = this.buildLivePlaylistOwnershipMap();
     const streamsByChannel = this.buildStreamsByChannelMap();
     let inMyPlCount = 0;
+    const now = Math.floor(Date.now() / 1000);
     for (const c of this.channels) {
       if (this.resolveLiveUsedIn(c, streamsByChannel, ownership).length > 0) {
         inMyPlCount++;
@@ -363,7 +424,7 @@ class CatalogStore {
       channels: this.channels.length,
       in_my_pl: inMyPlCount,
       streams: this.streams.length,
-      streams_online: this.streams.filter((s) => s.online === 1).length,
+      streams_online: this.streams.filter((s) => s.online === 1 && s.checked_at > 0 && now - s.checked_at <= STREAM_STATUS_TTL_SECONDS).length,
       sources: this.sources.length,
       sources_enabled: this.sources.filter((s) => s.enabled === 1).length,
     };
@@ -405,11 +466,16 @@ class CatalogStore {
 
     const ownership = this.buildLivePlaylistOwnershipMap();
     const streamsByChannel = this.buildStreamsByChannelMap();
-    const streamCounts = new Map<number, { total: number; online: number }>();
+    const now = Math.floor(Date.now() / 1000);
+    const streamCounts = new Map<number, { total: number; online: number; offline: number; unknown: number }>();
     for (const s of this.streams) {
-      const entry = streamCounts.get(s.channel_id) || { total: 0, online: 0 };
+      const entry = streamCounts.get(s.channel_id) || { total: 0, online: 0, offline: 0, unknown: 0 };
       entry.total++;
-      if (s.online === 1) entry.online++;
+      const fresh = s.checked_at > 0 && now - s.checked_at <= STREAM_STATUS_TTL_SECONDS;
+      if (!fresh || s.online === 0) entry.unknown++;
+      else if (s.online === 1) entry.online++;
+      else if (s.online === -1) entry.offline++;
+      else entry.unknown++;
       streamCounts.set(s.channel_id, entry);
     }
 
@@ -430,7 +496,7 @@ class CatalogStore {
           if (!hay.includes(sLower)) return false;
         }
         if (filter === 'online' && counts.online === 0) return false;
-        if (filter === 'offline' && (counts.total === 0 || counts.online > 0)) return false;
+        if (filter === 'offline' && (counts.total === 0 || counts.offline !== counts.total)) return false;
         if (filter === 'no_streams' && counts.total > 0) return false;
 
         if (cleanFilterPlaylists.length > 0) {
@@ -452,6 +518,8 @@ class CatalogStore {
       alt_names: JSON.stringify(ch.alt_names),
       streams_count: counts.total,
       streams_online: counts.online,
+      streams_offline: counts.offline,
+      streams_unknown: counts.unknown,
     }));
   }
 
@@ -471,7 +539,19 @@ class CatalogStore {
       used_in: JSON.stringify(usedIn),
       used_in_list: usedIn,
       alt_names: JSON.stringify(ch.alt_names),
-      streams: chStreams,
+      streams: chStreams.map((stream) => {
+        const fresh = stream.checked_at > 0 && Math.floor(Date.now() / 1000) - stream.checked_at <= STREAM_STATUS_TTL_SECONDS;
+        return {
+          ...stream,
+          status: !fresh || stream.online === 0
+            ? 'unknown'
+            : stream.online === 1
+              ? 'online'
+              : stream.online === -1
+                ? 'offline'
+                : 'unknown',
+        };
+      }),
     };
   }
 
@@ -527,7 +607,7 @@ class CatalogStore {
       await Promise.all(
         batch.map(async (s) => {
           const res = await checkStreamUrl(s.url, 3000);
-          s.online = res.online ? 1 : 0;
+          s.online = res.status === 'online' ? 1 : res.status === 'offline' ? -1 : 0;
           s.http_code = res.code;
           s.response_ms = res.ms;
           s.checked_at = Math.floor(Date.now() / 1000);
