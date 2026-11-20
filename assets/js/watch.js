@@ -536,7 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
         serverUnavailable = Array.isArray(res.unavailable) ? res.unavailable : [];
         serverStats = (res.stats && typeof res.stats === 'object')
             ? res.stats
-            : { total: channels.length + serverUnavailable.length, available: channels.length, unavailable: serverUnavailable.length };
+            : { total: channels.length, available: channels.length, unavailable: 0 };
         const activeKeys = new Set(channels.map(c => keyOf(c)));
         for (const k of [...runtimeUnavailable.keys()]) {
             if (!activeKeys.has(k)) runtimeUnavailable.delete(k);
