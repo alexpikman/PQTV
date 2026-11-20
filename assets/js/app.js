@@ -1868,13 +1868,18 @@ document.addEventListener('DOMContentLoaded', () => {
         let html = `<table class="ch-table"><thead><tr>
             <th style="width:100px;">Код</th>
             <th>Название</th>
-            <th style="width:100px;">Мой пл.</th>
+            <th style="min-width:180px;">Собственные плейлисты</th>
             <th style="width:120px;">Потоков</th>
             <th style="width:100px;">Online</th>
             <th style="width:100px; text-align:right;">Действия</th>
         </tr></thead><tbody>`;
         catalogData.forEach((ch, i) => {
-            const inMy = ch.in_my_pl ? '<span class="cat-badge violet">да</span>' : '<span class="cat-badge grey">нет</span>';
+            const usedIn = Array.isArray(ch.used_in_list)
+                ? ch.used_in_list.map(name => String(name).replace(/\\.m3u$/i, '').trim()).filter(Boolean)
+                : [];
+            const inMy = usedIn.length
+                ? `<div class="catalog-playlist-list">${usedIn.map(name => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join(' ')}</div>`
+                : '<span class="cat-badge grey">нет</span>';
             const total = ch.streams_count || 0;
             const online = ch.streams_online || 0;
             html += `<tr data-idx="${i}">
