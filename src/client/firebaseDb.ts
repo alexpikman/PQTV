@@ -129,9 +129,17 @@ async function upsertDoc(
       handleFirestoreError(err, OperationType.CREATE, path);
     }
   } else {
+    const existingData = snap.data();
+    const changedKeys = mutableKeys.filter(
+      (key) =>
+        key in payload &&
+        JSON.stringify(existingData[key]) !== JSON.stringify(payload[key])
+    );
+    if (changedKeys.length === 0) return;
+
     const patch: Record<string, unknown> = { updatedAt: serverTimestamp() };
-    for (const k of mutableKeys) {
-      if (k in payload) patch[k] = payload[k];
+    for (const key of changedKeys) {
+      patch[key] = payload[key];
     }
     try {
       await updateDoc(ref, patch);
