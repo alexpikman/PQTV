@@ -55,6 +55,10 @@ class MainActivity : AppCompatActivity() {
         root.addView(fullscreenContainer)
         setContentView(root)
 
+        webView.isFocusable = true
+        webView.isFocusableInTouchMode = true
+        webView.requestFocus(View.FOCUS_DOWN)
+
         hideSystemUi()
         setupWebView()
         webView.loadUrl("$baseUrl/watch")
@@ -106,6 +110,9 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 CookieManager.getInstance().flush()
+                webView.isFocusable = true
+                webView.isFocusableInTouchMode = true
+                webView.requestFocus(View.FOCUS_DOWN)
             }
         }
 
@@ -131,6 +138,28 @@ class MainActivity : AppCompatActivity() {
                 hideSystemUi()
             }
         }
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (customView == null && isRemoteControlKey(event.keyCode)) {
+            if (!webView.hasFocus()) {
+                webView.requestFocus(View.FOCUS_DOWN)
+            }
+            if (webView.dispatchKeyEvent(event)) {
+                return true
+            }
+        }
+        return super.dispatchKeyEvent(event)
+    }
+
+    private fun isRemoteControlKey(keyCode: Int): Boolean {
+        return keyCode == KeyEvent.KEYCODE_DPAD_UP ||
+            keyCode == KeyEvent.KEYCODE_DPAD_DOWN ||
+            keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+            keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ||
+            keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+            keyCode == KeyEvent.KEYCODE_ENTER ||
+            keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
