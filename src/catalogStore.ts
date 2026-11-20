@@ -596,10 +596,12 @@ class CatalogStore {
     this.saveToDisk();
   }
 
-  async checkStreams(limit = 500): Promise<{ checked: number; online: number }> {
+  async checkStreams(limit = 500): Promise<{ checked: number; online: number; offline: number; unknown: number }> {
     this.ensureInit();
     const target = this.streams.slice(0, limit);
     let onlineCount = 0;
+    let offlineCount = 0;
+    let unknownCount = 0;
     const batchSize = 15;
 
     for (let i = 0; i < target.length; i += batchSize) {
@@ -611,12 +613,14 @@ class CatalogStore {
           s.http_code = res.code;
           s.response_ms = res.ms;
           s.checked_at = Math.floor(Date.now() / 1000);
-          if (res.online) onlineCount++;
+          if (res.status === 'online') onlineCount++;
+          else if (res.status === 'offline') offlineCount++;
+          else unknownCount++;
         })
       );
     }
     this.saveToDisk();
-    return { checked: target.length, online: onlineCount };
+    return { checked: target.length, online: onlineCount, offline: offlineCount, unknown: unknownCount };
   }
 
   async aggregateFromSources(): Promise<{ addedChannels: number; addedStreams: number }> {
