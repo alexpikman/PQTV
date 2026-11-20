@@ -394,11 +394,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateAvailabilitySummary() {
-        const total = Math.max(Number(serverStats.total) || 0, channels.length + serverUnavailable.length);
+        const total = Math.max(Number(serverStats.total) || 0, channels.length);
         let available = 0;
         for (const ch of channels) {
             const k = keyOf(ch);
-            if (!hidden.has(k) && !runtimeUnavailable.has(k)) available++;
+            if (!hidden.has(k)) available++;
         }
         if (summaryCountsEl) {
             summaryCountsEl.innerHTML = 'Доступно каналов: <strong>' + available + '</strong> из <strong>' + total + '</strong>';
@@ -471,11 +471,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const items = getCombinedUnavailable(true);
         if (unavailSubEl) {
             unavailSubEl.textContent = items.length > 0
-                ? ('Всего проблемных или скрытых каналов: ' + items.length)
+                ? ('Отчётов об ошибках воспроизведения и скрытых каналов: ' + items.length)
                 : 'Все каналы доступны';
         }
         if (items.length === 0) {
-            unavailListEl.innerHTML = '<div style="padding:18px; text-align:center; color:var(--muted);">Недоступных каналов не обнаружено</div>';
+            unavailListEl.innerHTML = '<div style="padding:18px; text-align:center; color:var(--muted);">Отчётов о проблемах воспроизведения нет</div>';
             return;
         }
         unavailListEl.innerHTML = items.map(it => {
@@ -536,7 +536,7 @@ document.addEventListener('DOMContentLoaded', () => {
         serverUnavailable = Array.isArray(res.unavailable) ? res.unavailable : [];
         serverStats = (res.stats && typeof res.stats === 'object')
             ? res.stats
-            : { total: channels.length + serverUnavailable.length, available: channels.length, unavailable: serverUnavailable.length };
+            : { total: channels.length, available: channels.length, unavailable: 0 };
         const activeKeys = new Set(channels.map(c => keyOf(c)));
         for (const k of [...runtimeUnavailable.keys()]) {
             if (!activeKeys.has(k)) runtimeUnavailable.delete(k);
@@ -885,13 +885,11 @@ document.addEventListener('DOMContentLoaded', () => {
             previewLoading.classList.add('hidden');
             previewVideoHost.classList.add('active');
             previewLogoWrap.classList.add('hidden');
-            clearRuntimeUnavailable(ch);
         };
         const onErr = (reason) => {
             previewLoading.classList.add('hidden');
             previewVideoHost.classList.remove('active');
             previewLogoWrap.classList.remove('hidden');
-            if (!ready && reason) recordRuntimeUnavailable(ch, reason);
         };
 
         const timeoutId = setTimeout(() => onErr('Таймаут загрузки потока (10 сек)'), 10000);
@@ -1226,7 +1224,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (v && v.videoWidth === 0 && v.currentTime > 1 && !v.paused && toast) {
                     toast.textContent = 'Видео не отображается. Возможно формат H.265/HEVC или MPEG-2 не поддерживается.';
                     toast.style.display = 'block';
-                    recordRuntimeUnavailable(ch, 'Видео не отображается (H.265/HEVC или MPEG-2 не поддерживается)');
                     setTimeout(() => { toast.style.display = 'none'; }, 10000);
                 }
             } catch (e) {}
@@ -1753,7 +1750,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderTvAlertsModal() {
         if (!tvAlertsListEl) return;
         if (tvAlerts.length === 0) {
-            tvAlertsListEl.innerHTML = '<div style="padding:18px; text-align:center; color:var(--muted);">Предупреждений о недоступных каналах нет</div>';
+            tvAlertsListEl.innerHTML = '<div style="padding:18px; text-align:center; color:var(--muted);">Отчётов об ошибках воспроизведения нет</div>';
             return;
         }
         tvAlertsListEl.innerHTML = tvAlerts.map((a, idx) => {

@@ -214,12 +214,12 @@
             <section class="watch-content" id="watch-content">
                 <div class="watch-summary-bar" id="watch-summary-bar">
                     <div class="watch-summary-counts" id="watch-summary-counts">Доступно каналов: —</div>
-                    <button type="button" class="watch-unavail-btn hidden" id="btn-unavailable-channels">
+                    <button type="button" class="watch-unavail-btn hidden" id="btn-unavailable-channels" title="Отчёты о проблемах воспроизведения">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
                             <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
                         </svg>
-                        <span>Недоступно: <strong id="watch-unavail-count">0</strong></span>
+                        <span>Проблемы: <strong id="watch-unavail-count">0</strong></span>
                     </button>
                 </div>
                 <div class="channel-grid grid-mode" id="watch-grid">
@@ -287,8 +287,8 @@
                     </svg>
                 </div>
                 <div class="ch-menu-info">
-                    <div class="ch-menu-title">Недоступные каналы</div>
-                    <div class="ch-menu-cat" id="unavail-modal-subtitle">Список каналов, недоступных для просмотра, и причины</div>
+                    <div class="ch-menu-title">Проблемы воспроизведения</div>
+                    <div class="ch-menu-cat" id="unavail-modal-subtitle">Локальные ошибки воспроизведения и скрытые каналы</div>
                 </div>
             </div>
             <div class="tv-scroll-body" id="unavailable-list"></div>
@@ -411,8 +411,8 @@
                     </svg>
                 </div>
                 <div class="ch-menu-info">
-                    <div class="ch-menu-title">Предупреждения о каналах</div>
-                    <div class="ch-menu-cat">Отчёты о недоступных каналах при открытии приложения</div>
+                    <div class="ch-menu-title">Отчёты о воспроизведении</div>
+                    <div class="ch-menu-cat">Ошибки на устройствах пользователей. Не подтверждают глобальную недоступность канала.</div>
                 </div>
             </div>
             <div class="ch-menu-actions" style="margin-bottom:12px;">
