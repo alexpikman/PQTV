@@ -2039,7 +2039,7 @@ app.post('/api/channels/save', (req, res) => {
 app.post('/api/stream/check', async (req, res) => {
   const url = String(req.body?.url || '').trim();
   const result = await checkStreamUrl(url, 3000);
-  noCacheJson(res, { online: result.online, code: result.code });
+  noCacheJson(res, { online: result.online, status: result.status, code: result.code, ms: result.ms, reason: result.reason });
 });
 
 app.post('/api/stream/parse', (req, res) => {
