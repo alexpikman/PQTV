@@ -424,6 +424,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (st === 'checking') badge = `<span class="badge-status badge-checking">…</span>`;
             else if (st === 'online') badge = `<span class="badge-status badge-online" data-action="check" data-idx="${idx}" title="Перепроверить">online</span>`;
             else if (st === 'offline') badge = `<span class="badge-status badge-offline" data-action="check" data-idx="${idx}" title="Перепроверить">offline</span>`;
+            else if (st === 'unknown') badge = `<span class="badge-status badge-unknown" data-action="check" data-idx="${idx}" title="Не удалось подтвердить статус">неизвестно</span>`;
 
             html += `
                 <tr data-idx="${idx}">
@@ -479,8 +480,8 @@ document.addEventListener('DOMContentLoaded', () => {
         renderChannels();
         try {
             const res = await apiRequest('/api/stream/check', 'POST', { url: ch.url });
-            streamStatusCache[ch.url] = res.online ? 'online' : 'offline';
-        } catch (e) { streamStatusCache[ch.url] = 'offline'; }
+            streamStatusCache[ch.url] = res.status || (res.online === true ? 'online' : res.online === false ? 'offline' : 'unknown');
+        } catch (e) { streamStatusCache[ch.url] = 'unknown'; }
         renderChannels();
     }
 
@@ -542,10 +543,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (parseProgressStatus) parseProgressStatus.textContent = `Найдено ссылок: ${items.length}. Проверка доступности...`;
 
-            const checks = await Promise.all(items.map(item =>
-                apiRequest('/api/stream/check', 'POST', { url: item.url })
-                    .then(r => !!r.online).catch(() => false)
-            ));
+            const checks = new Array(items.length).fill('unknown');
+            let checkIndex = 0;
+            await Promise.all(Array.from({ length: Math.min(6, items.length) }, async () => {
+                while (checkIndex < items.length) {
+                    const index = checkIndex++;
+                    try {
+                        const result = await apiRequest('/api/stream/check', 'POST', { url: items[index].url });
+                        checks[index] = result.status || (result.online === true ? 'online' : result.online === false ? 'offline' : 'unknown');
+                    } catch {
+                        checks[index] = 'unknown';
+                    }
+                }
+            }));
 
             let html = `<table class="ch-table"><thead><tr>
                 <th style="width:170px;">Источник</th>
@@ -555,10 +565,12 @@ document.addEventListener('DOMContentLoaded', () => {
             </tr></thead><tbody>`;
 
             items.forEach((item, i) => {
-                const online = checks[i];
-                const badge = online
+                const status = checks[i];
+                const badge = status === 'online'
                     ? `<span class="badge-status badge-online">online</span>`
-                    : `<span class="badge-status badge-offline">offline</span>`;
+                    : status === 'offline'
+                        ? `<span class="badge-status badge-offline">offline</span>`
+                        : `<span class="badge-status badge-unknown" title="Проверка не дала достоверного результата">неизвестно</span>`;
 
                 const enc = encodeURIComponent(item.url);
                 const encName = encodeURIComponent(query);
@@ -1953,17 +1965,20 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
-    function renderStatusBadge(online, total) {
+    function renderStatusBadge(online, total, offline, unknown) {
         if (total === 0) {
-            return '<span class="cat-status-badge offline">нет</span>';
-        }
-        if (online === 0) {
-            return '<span class="cat-status-badge offline">offline</span>';
+            return '<span class="cat-status-badge partial">нет потоков</span>';
         }
         if (online === total) {
             return '<span class="cat-status-badge online" title="' + online + ' из ' + total + ' online">online</span>';
         }
-        return '<span class="cat-status-badge partial" title="' + online + ' из ' + total + ' online">' + online + '/' + total + '</span>';
+        if (offline === total) {
+            return '<span class="cat-status-badge offline" title="Все потоки вернули 404 или 410">offline</span>';
+        }
+        if (online > 0) {
+            return '<span class="cat-status-badge partial" title="' + online + ' online, ' + offline + ' offline, ' + unknown + ' неизвестно">' + online + '/' + total + '</span>';
+        }
+        return '<span class="cat-status-badge partial" title="Проверка не подтвердила статус потоков">неизвестно</span>';
     }
 
     function renderCatalogChannels() {
@@ -1990,6 +2005,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 : '<span class="cat-badge grey">нет</span>';
             const total = ch.streams_count || 0;
             const online = ch.streams_online || 0;
+            const offline = ch.streams_offline || 0;
+            const unknown = ch.streams_unknown || 0;
             html += `<tr data-idx="${i}">
                 <td><span style="color:var(--muted); font-family:monospace; font-size:11px;">${escapeHtml(ch.code || '')}</span></td>
                 <td>
@@ -1998,7 +2015,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 </td>
                 <td>${inMy}</td>
                 <td><b style="color:#fff;">${total}</b></td>
-                <td>${renderStatusBadge(online, total)}</td>
+                <td>${renderStatusBadge(online, total, offline, unknown)}</td>
                 <td style="text-align:right;">
                     <button class="icon-btn accent" data-cat-view="${ch.id}" title="Потоки">${I.search}</button>
                 </td>
@@ -2030,7 +2047,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     .then(d => {
                         if (!d || d.error) { showToast('Ошибка загрузки канала', 'err'); return; }
                         let url = '';
-                        for (const s of (d.streams || [])) { if (s.online) { url = s.url; break; } }
+                        for (const s of (d.streams || [])) { if (s.status === 'online') { url = s.url; break; } }
                         if (!url && d.streams && d.streams.length) url = d.streams[0].url;
                         if (!url) { showToast('Нет потоков для этого канала', 'err'); return; }
                         openPlayerByUrl(url, d.name, d.logo || '');
@@ -2060,9 +2077,11 @@ document.addEventListener('DOMContentLoaded', () => {
             streams.forEach(s => {
                 streamsHtml += '<tr style="border-bottom:1px solid var(--border);">'
                     + '<td style="padding:10px 8px; font-family:monospace; font-size:11.5px; word-break:break-all; color:var(--text-dim);">' + escapeHtml(s.url) + '</td>'
-                    + '<td style="padding:10px 8px; text-align:center;">' + (s.online
+                    + '<td style="padding:10px 8px; text-align:center;">' + (s.status === 'online'
                         ? '<span class="cat-status-badge online">online</span>'
-                        : '<span class="cat-status-badge offline">offline</span>') + '</td>'
+                        : s.status === 'offline'
+                            ? '<span class="cat-status-badge offline">offline</span>'
+                            : '<span class="cat-status-badge partial">неизвестно</span>') + '</td>'
                     + '<td style="padding:10px 8px; text-align:right; white-space:nowrap;">'
                     +   '<button data-play-url="' + encodeURIComponent(s.url) + '" title="Смотреть" style="background:transparent; border:none; color:#64b5f6; cursor:pointer; padding:4px; font-size:14px;">▶</button>'
                     +   '<button data-del-stream="' + s.id + '" title="Удалить" style="background:transparent; border:none; color:#ef4444; cursor:pointer; padding:4px; font-size:13px;">✕</button>'

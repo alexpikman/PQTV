@@ -2038,8 +2038,8 @@ app.post('/api/channels/save', (req, res) => {
 // Stream check & parse
 app.post('/api/stream/check', async (req, res) => {
   const url = String(req.body?.url || '').trim();
-  const result = await checkStreamUrl(url, 3000);
-  noCacheJson(res, { online: result.online, code: result.code });
+  const result = await checkStreamUrl(url);
+  noCacheJson(res, { online: result.online, status: result.status, code: result.code, ms: result.ms, reason: result.reason });
 });
 
 app.post('/api/stream/parse', (req, res) => {
@@ -2399,7 +2399,7 @@ app.post('/api/catalog/check', async (req, res) => {
   const result = await catalogStore.checkStreams(limit);
   noCacheJson(res, {
     ok: true,
-    output: `Checked ${result.checked} streams, ${result.online} online`,
+    output: `Checked ${result.checked} streams: ${result.online} online, ${result.offline} offline, ${result.unknown} unknown`,
   });
 });
 
@@ -2421,7 +2421,7 @@ app.post('/api/catalog/to-playlist', (req, res) => {
   }
   let url = '';
   for (const s of ch.streams) {
-    if (s.online) {
+    if (s.status === 'online') {
       url = s.url;
       break;
     }
