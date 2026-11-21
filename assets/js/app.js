@@ -64,11 +64,38 @@ document.addEventListener('DOMContentLoaded', () => {
     function showToast(msg, kind = 'info') {
         const stack = document.getElementById('pqtv-toast-stack');
         if (!stack) return;
+        const text = String(msg || '').trim();
+        if (!text) return;
+
+        // Deduplicate identical active toast messages
+        const existing = Array.from(stack.children).find(
+            node => node.dataset && node.dataset.toastKey === `${kind}:${text}`
+        );
+        if (existing) {
+            if (existing._toastTimer) clearTimeout(existing._toastTimer);
+            existing._toastTimer = setTimeout(() => { existing.remove(); }, 4000);
+            return;
+        }
+
+        // Cap visible toasts so they never flood the right side of the screen
+        while (stack.children.length >= 4) {
+            const oldest = stack.firstElementChild;
+            if (!oldest) break;
+            if (oldest._toastTimer) clearTimeout(oldest._toastTimer);
+            oldest.remove();
+        }
+
         const el = document.createElement('div');
         el.className = 'pqtv-toast' + (kind === 'ok' ? ' ok' : kind === 'err' ? ' err' : '');
-        el.textContent = String(msg || '');
+        el.dataset.toastKey = `${kind}:${text}`;
+        el.textContent = text;
+        el.title = 'Нажмите, чтобы закрыть';
+        el.onclick = () => {
+            if (el._toastTimer) clearTimeout(el._toastTimer);
+            el.remove();
+        };
+        el._toastTimer = setTimeout(() => { el.remove(); }, 4000);
         stack.appendChild(el);
-        setTimeout(() => { el.remove(); }, 4000);
     }
 
     function openDialog({ title, message, promptDefault, isPrompt }) {
@@ -2876,15 +2903,29 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let ghPollTimer = null;
+    let ghPollInFlight = false;
+    let ghPollGeneration = 0;
+    let activeTrackingBuildId = null;
+    const notifiedGithubBuilds = new Set();
 
     function stopGithubPoll() {
+        ghPollGeneration += 1;
         if (ghPollTimer) {
             clearInterval(ghPollTimer);
             ghPollTimer = null;
         }
     }
 
-    async function loadApkReleases() {
+    function startGithubPoll(buildId) {
+        stopGithubPoll();
+        if (buildId) activeTrackingBuildId = buildId;
+        ghPollTimer = setInterval(() => {
+            void pollGithubBuildOnce({ fromActivePoll: true });
+        }, 3500);
+    }
+
+    async function loadApkReleases(opts = {}) {
+        const skipGithub = Boolean(opts && opts.skipGithub);
         const statusBox = document.getElementById('apk-status-box');
         const listBox = document.getElementById('apk-releases-container');
         const latestBtn = document.getElementById('apk-latest-download');
@@ -2981,7 +3022,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         const dRes = await apiRequest('/api/admin/apk/delete', 'POST', { id: btn.dataset.apkDel });
                         if (dRes.ok) {
                             showToast('Релиз удалён', 'ok');
-                            loadApkReleases();
+                            loadApkReleases({ skipGithub: true });
                         } else {
                             showToast(dRes.error || 'Ошибка удаления', 'err');
                         }
@@ -2990,7 +3031,9 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             }
         }
 
-        await loadGithubPanel();
+        if (!skipGithub) {
+            await loadGithubPanel();
+        }
     }
 
     function renderGithubBuildStatus(build) {
@@ -3040,24 +3083,47 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         `;
     }
 
-    async function pollGithubBuildOnce() {
-        const res = await apiRequest('/api/admin/github/status');
-        if (!res || !res.ok || !res.build) return null;
-        renderGithubBuildStatus(res.build);
-        if (res.build.status === 'completed' || res.build.status === 'failed') {
-            stopGithubPoll();
-            if (res.build.status === 'completed' && res.build.imported) {
-                showToast(`APK v${res.build.versionName} собран на GitHub и опубликован!`, 'ok');
-                const verNameInput = document.getElementById('gh-ver-name');
-                const verCodeInput = document.getElementById('gh-ver-code');
-                if (verNameInput) verNameInput.value = '';
-                if (verCodeInput) verCodeInput.value = '';
-                await loadApkReleases();
-            } else if (res.build.status === 'failed' && res.build.error) {
-                showToast(res.build.error, 'err');
+    async function pollGithubBuildOnce(opts = {}) {
+        const fromActivePoll = Boolean(opts && opts.fromActivePoll);
+        if (ghPollInFlight) return null;
+        const gen = ghPollGeneration;
+        ghPollInFlight = true;
+        try {
+            const res = await apiRequest('/api/admin/github/status');
+            if (!res || !res.ok || !res.build) return null;
+            if (fromActivePoll && gen !== ghPollGeneration) return res.build;
+
+            renderGithubBuildStatus(res.build);
+            if (res.build.status === 'completed' || res.build.status === 'failed') {
+                stopGithubPoll();
+                const terminalKey = `${res.build.buildId || ''}:${res.build.status}`;
+                const shouldNotify =
+                    fromActivePoll &&
+                    Boolean(res.build.buildId) &&
+                    activeTrackingBuildId === res.build.buildId &&
+                    !notifiedGithubBuilds.has(terminalKey);
+
+                if (shouldNotify) {
+                    notifiedGithubBuilds.add(terminalKey);
+                    activeTrackingBuildId = null;
+                    if (res.build.status === 'completed' && res.build.imported) {
+                        showToast(`APK v${res.build.versionName} собран на GitHub и опубликован!`, 'ok');
+                        const verNameInput = document.getElementById('gh-ver-name');
+                        const verCodeInput = document.getElementById('gh-ver-code');
+                        if (verNameInput) verNameInput.value = '';
+                        if (verCodeInput) verCodeInput.value = '';
+                        await loadApkReleases({ skipGithub: true });
+                        await loadGithubRuns();
+                    } else if (res.build.status === 'failed' && res.build.error) {
+                        showToast(res.build.error, 'err');
+                        await loadGithubRuns();
+                    }
+                }
             }
+            return res.build;
+        } finally {
+            ghPollInFlight = false;
         }
-        return res.build;
     }
 
     async function loadGithubRuns() {
@@ -3209,10 +3275,9 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         if (buildBtn) buildBtn.disabled = !cfg.configured;
 
         if (cfg.configured) {
-            const cur = await pollGithubBuildOnce();
+            const cur = await pollGithubBuildOnce({ fromActivePoll: false });
             if (cur && ['syncing', 'queued', 'in_progress', 'importing'].includes(cur.status)) {
-                stopGithubPoll();
-                ghPollTimer = setInterval(() => { void pollGithubBuildOnce(); }, 3500);
+                startGithubPoll(cur.buildId);
             }
             await loadGithubRuns();
         } else {
@@ -3331,8 +3396,16 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 if (res && res.ok && res.build) {
                     showToast('Сборка APK на GitHub запущена!', 'ok');
                     renderGithubBuildStatus(res.build);
-                    stopGithubPoll();
-                    ghPollTimer = setInterval(() => { void pollGithubBuildOnce(); }, 3500);
+                    if (['syncing', 'queued', 'in_progress', 'importing'].includes(res.build.status)) {
+                        startGithubPoll(res.build.buildId);
+                    } else if (res.build.status === 'completed' && res.build.imported) {
+                        const terminalKey = `${res.build.buildId}:completed`;
+                        if (!notifiedGithubBuilds.has(terminalKey)) {
+                            notifiedGithubBuilds.add(terminalKey);
+                            showToast(`APK v${res.build.versionName} собран на GitHub и опубликован!`, 'ok');
+                        }
+                        await loadApkReleases({ skipGithub: true });
+                    }
                     await loadGithubRuns();
                 } else {
                     if (res && res.needsManualWorkflow) {
@@ -3349,7 +3422,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
     const btnGhRefreshRuns = document.getElementById('btn-gh-refresh-runs');
     if (btnGhRefreshRuns) {
         btnGhRefreshRuns.onclick = () => {
-            void pollGithubBuildOnce();
+            void pollGithubBuildOnce({ fromActivePoll: false });
             void loadGithubRuns();
         };
     }
