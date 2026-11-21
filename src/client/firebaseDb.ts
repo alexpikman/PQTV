@@ -53,9 +53,48 @@ export interface CloudIndexedItem {
 }
 
 export interface CloudStreamingSettings {
+  preset?: 'vlc_smooth' | 'balanced' | 'low_latency' | 'custom';
   mode: 'auto_proxy_first' | 'auto_direct_first' | 'proxy_only' | 'direct_only';
+  preferDirectOnTv?: boolean;
   tryHttpsUpgrade: boolean;
+  protocolHint?: 'auto' | 'hls' | 'mpegts' | 'native';
+  proxyUserAgent?: string;
+  proxyFollowRedirects?: number;
   proxyTimeoutSec: number;
+  proxyKeepAlive?: boolean;
+  proxyMaxSockets?: number;
+  proxyBufferKb?: number;
+  proxyRetryCount?: number;
+  hlsUseWorkers?: boolean;
+  hlsLowLatency?: boolean;
+  hlsLiveSyncDurationCount?: number;
+  hlsMaxBufferLengthSec?: number;
+  hlsMaxMaxBufferLengthSec?: number;
+  hlsBackBufferLengthSec?: number;
+  hlsStartFragPrefetch?: boolean;
+  hlsManifestTimeoutSec?: number;
+  hlsManifestMaxRetry?: number;
+  hlsFragTimeoutSec?: number;
+  hlsFragMaxRetry?: number;
+  hlsMaxBufferHoleMs?: number;
+  mpegtsUseWorker?: boolean;
+  mpegtsStashBuffer?: boolean;
+  mpegtsStashSizeKb?: number;
+  mpegtsLiveLatencyChasing?: boolean;
+  mpegtsMaxLatencySec?: number;
+  mpegtsMinRemainSec?: number;
+  attemptTimeoutSec?: number;
+  previewEnabled?: boolean;
+  previewDebounceMs?: number;
+  previewResumeDelayMs?: number;
+  codecCheckDelaySec?: number;
+}
+
+export interface CloudUiSettings {
+  logoEnabled: boolean;
+  logoOpacity: number;
+  logoPulseEnabled: boolean;
+  logoPulseSpeedSec: number;
 }
 
 export interface CloudChannelHealthState {
@@ -78,6 +117,7 @@ export interface CloudExportPayload {
     sources: Array<Record<string, unknown>>;
   };
   streamingSettings: CloudStreamingSettings;
+  uiSettings?: CloudUiSettings;
   channelHealth?: CloudChannelHealthState;
   users: Array<{
     id: string;
@@ -691,21 +731,94 @@ export async function saveCatalogToCloud(
   return { channelChunks: chChunks.length, streamChunks: stChunks.length };
 }
 
+function clampCloudInt(v: unknown, def: number, min: number, max: number): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : def;
+}
+
+function clampCloudFloat(v: unknown, def: number, min: number, max: number): number {
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.round(Math.max(min, Math.min(max, n)) * 10) / 10 : def;
+}
+
+function normalizeCloudStreamingSettings(raw?: Partial<CloudStreamingSettings> | Record<string, unknown> | null): Required<CloudStreamingSettings> {
+  const obj = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const allowedModes = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'];
+  const allowedPresets = ['vlc_smooth', 'balanced', 'low_latency', 'custom'];
+  const allowedProtos = ['auto', 'hls', 'mpegts', 'native'];
+
+  const preset = allowedPresets.includes(String(obj.preset || ''))
+    ? (String(obj.preset) as Required<CloudStreamingSettings>['preset'])
+    : 'vlc_smooth';
+  const mode = allowedModes.includes(String(obj.mode || ''))
+    ? (String(obj.mode) as CloudStreamingSettings['mode'])
+    : 'auto_proxy_first';
+  const protocolHint = allowedProtos.includes(String(obj.protocolHint || ''))
+    ? (String(obj.protocolHint) as Required<CloudStreamingSettings>['protocolHint'])
+    : 'auto';
+
+  const hlsMaxBufferLengthSec = clampCloudInt(obj.hlsMaxBufferLengthSec, 45, 5, 180);
+  const hlsMaxMaxBufferLengthSec = Math.max(
+    hlsMaxBufferLengthSec,
+    clampCloudInt(obj.hlsMaxMaxBufferLengthSec, 90, 10, 360)
+  );
+  const mpegtsMinRemainSec = clampCloudFloat(obj.mpegtsMinRemainSec, 1.5, 0.5, 10);
+  const mpegtsMaxLatencySec = Math.max(
+    mpegtsMinRemainSec + 0.5,
+    clampCloudFloat(obj.mpegtsMaxLatencySec, 5, 1, 20)
+  );
+  const rawUa = typeof obj.proxyUserAgent === 'string' ? obj.proxyUserAgent.trim() : '';
+
+  return {
+    preset,
+    mode,
+    preferDirectOnTv: obj.preferDirectOnTv !== undefined ? Boolean(obj.preferDirectOnTv) : true,
+    tryHttpsUpgrade: obj.tryHttpsUpgrade !== undefined ? Boolean(obj.tryHttpsUpgrade) : true,
+    protocolHint,
+    proxyUserAgent: (rawUa || 'VLC/3.0.20 LibVLC/3.0.20').replace(/[\r\n]/g, '').slice(0, 240),
+    proxyFollowRedirects: clampCloudInt(obj.proxyFollowRedirects, 5, 0, 10),
+    proxyTimeoutSec: clampCloudInt(obj.proxyTimeoutSec, 15, 3, 60),
+    proxyKeepAlive: obj.proxyKeepAlive !== undefined ? Boolean(obj.proxyKeepAlive) : true,
+    proxyMaxSockets: clampCloudInt(obj.proxyMaxSockets, 64, 4, 200),
+    proxyBufferKb: clampCloudInt(obj.proxyBufferKb, 128, 16, 1024),
+    proxyRetryCount: clampCloudInt(obj.proxyRetryCount, 2, 0, 5),
+    hlsUseWorkers: obj.hlsUseWorkers !== undefined ? Boolean(obj.hlsUseWorkers) : true,
+    hlsLowLatency: obj.hlsLowLatency !== undefined ? Boolean(obj.hlsLowLatency) : false,
+    hlsLiveSyncDurationCount: clampCloudInt(obj.hlsLiveSyncDurationCount, 4, 1, 12),
+    hlsMaxBufferLengthSec,
+    hlsMaxMaxBufferLengthSec,
+    hlsBackBufferLengthSec: clampCloudInt(obj.hlsBackBufferLengthSec, 15, 0, 120),
+    hlsStartFragPrefetch: obj.hlsStartFragPrefetch !== undefined ? Boolean(obj.hlsStartFragPrefetch) : true,
+    hlsManifestTimeoutSec: clampCloudInt(obj.hlsManifestTimeoutSec, 12, 3, 60),
+    hlsManifestMaxRetry: clampCloudInt(obj.hlsManifestMaxRetry, 3, 0, 10),
+    hlsFragTimeoutSec: clampCloudInt(obj.hlsFragTimeoutSec, 25, 5, 60),
+    hlsFragMaxRetry: clampCloudInt(obj.hlsFragMaxRetry, 4, 0, 10),
+    hlsMaxBufferHoleMs: clampCloudInt(obj.hlsMaxBufferHoleMs, 500, 100, 5000),
+    mpegtsUseWorker: obj.mpegtsUseWorker !== undefined ? Boolean(obj.mpegtsUseWorker) : true,
+    mpegtsStashBuffer: obj.mpegtsStashBuffer !== undefined ? Boolean(obj.mpegtsStashBuffer) : true,
+    mpegtsStashSizeKb: clampCloudInt(obj.mpegtsStashSizeKb, 512, 64, 2048),
+    mpegtsLiveLatencyChasing: obj.mpegtsLiveLatencyChasing !== undefined ? Boolean(obj.mpegtsLiveLatencyChasing) : false,
+    mpegtsMaxLatencySec,
+    mpegtsMinRemainSec,
+    attemptTimeoutSec: clampCloudInt(obj.attemptTimeoutSec, 15, 4, 60),
+    previewEnabled: obj.previewEnabled !== undefined ? Boolean(obj.previewEnabled) : true,
+    previewDebounceMs: clampCloudInt(obj.previewDebounceMs, 450, 0, 3000),
+    previewResumeDelayMs: clampCloudInt(obj.previewResumeDelayMs, 350, 0, 3000),
+    codecCheckDelaySec: clampCloudInt(obj.codecCheckDelaySec, 8, 0, 30),
+  };
+}
+
 export async function saveStreamingSettingsToCloud(
   settings: CloudStreamingSettings
 ): Promise<void> {
-  const allowedModes = ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only'];
-  const mode = allowedModes.includes(settings.mode) ? settings.mode : 'auto_proxy_first';
-  const proxyTimeoutSec = Math.max(3, Math.min(60, Math.round(Number(settings.proxyTimeoutSec) || 15)));
+  const norm = normalizeCloudStreamingSettings(settings);
   await upsertDoc(
     doc(db, 'app_settings', 'streaming'),
     {
       settingId: 'streaming',
-      mode,
-      tryHttpsUpgrade: Boolean(settings.tryHttpsUpgrade),
-      proxyTimeoutSec,
+      ...norm,
     },
-    ['mode', 'tryHttpsUpgrade', 'proxyTimeoutSec']
+    Object.keys(norm)
   );
 }
 
@@ -713,11 +826,51 @@ export async function fetchStreamingSettingsFromCloud(): Promise<CloudStreamingS
   try {
     const snap = await getDoc(doc(db, 'app_settings', 'streaming'));
     if (!snap.exists()) return null;
+    return normalizeCloudStreamingSettings(snap.data());
+  } catch {
+    return null;
+  }
+}
+
+export async function saveUiSettingsToCloud(
+  settings?: Partial<CloudUiSettings>
+): Promise<void> {
+  if (!settings || typeof settings !== 'object') return;
+  const logoEnabled = settings.logoEnabled !== undefined ? Boolean(settings.logoEnabled) : true;
+  const opacityRaw = Number(settings.logoOpacity);
+  const logoOpacity = Number.isFinite(opacityRaw)
+    ? Math.max(0, Math.min(100, Math.round(opacityRaw)))
+    : 40;
+  const logoPulseEnabled = settings.logoPulseEnabled !== undefined ? Boolean(settings.logoPulseEnabled) : false;
+  const speedRaw = Number(settings.logoPulseSpeedSec);
+  const logoPulseSpeedSec = Number.isFinite(speedRaw)
+    ? Math.max(0, Math.min(10, Math.round(speedRaw * 10) / 10))
+    : 3;
+  await upsertDoc(
+    doc(db, 'app_settings', 'ui'),
+    {
+      settingId: 'ui',
+      logoEnabled,
+      logoOpacity,
+      logoPulseEnabled,
+      logoPulseSpeedSec,
+    },
+    ['logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec']
+  );
+}
+
+export async function fetchUiSettingsFromCloud(): Promise<CloudUiSettings | null> {
+  try {
+    const snap = await getDoc(doc(db, 'app_settings', 'ui'));
+    if (!snap.exists()) return null;
     const d = snap.data();
+    const opacityRaw = Number(d.logoOpacity);
+    const speedRaw = Number(d.logoPulseSpeedSec);
     return {
-      mode: (d.mode || 'auto_proxy_first') as CloudStreamingSettings['mode'],
-      tryHttpsUpgrade: Boolean(d.tryHttpsUpgrade),
-      proxyTimeoutSec: Number(d.proxyTimeoutSec) || 15,
+      logoEnabled: d.logoEnabled !== undefined ? Boolean(d.logoEnabled) : true,
+      logoOpacity: Number.isFinite(opacityRaw) ? Math.max(0, Math.min(100, Math.round(opacityRaw))) : 40,
+      logoPulseEnabled: d.logoPulseEnabled !== undefined ? Boolean(d.logoPulseEnabled) : false,
+      logoPulseSpeedSec: Number.isFinite(speedRaw) ? Math.max(0, Math.min(10, Math.round(speedRaw * 10) / 10)) : 3,
     };
   } catch {
     return null;
@@ -909,6 +1062,7 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
   const epgIds = await saveEpgToCloud(data.epgSources || [], false);
   const catInfo = await saveCatalogToCloud(data.catalog, false);
   await saveStreamingSettingsToCloud(data.streamingSettings);
+  await saveUiSettingsToCloud(data.uiSettings);
   await saveChannelHealthToCloud(data.channelHealth);
   await saveAdminSettingsToCloud(data.adminSettings);
 
@@ -1089,8 +1243,11 @@ export async function loadFullCloudSnapshot(): Promise<{
         throw err;
       }
 
-  // Streaming settings
-  const streamingSettings = await fetchStreamingSettingsFromCloud();
+  // Streaming & UI settings
+  const [streamingSettings, uiSettings] = await Promise.all([
+    fetchStreamingSettingsFromCloud(),
+    fetchUiSettingsFromCloud(),
+  ]);
 
   // Channel Health state
   const channelHealth = await loadChannelHealthFromCloud();
@@ -1145,6 +1302,7 @@ export async function loadFullCloudSnapshot(): Promise<{
       epgSources,
       catalog,
       streamingSettings,
+      ...(uiSettings ? { uiSettings } : {}),
       channelHealth,
       users,
       adminSettings,
@@ -1154,9 +1312,13 @@ export async function loadFullCloudSnapshot(): Promise<{
 
 export async function fetchViewerCloudState(playlistNames: string[]): Promise<{
   streaming: CloudStreamingSettings | null;
+  uiSettings: CloudUiSettings | null;
   playlists: Array<{ name: string; channels: CloudChannelItem[] }>;
 }> {
-  const streaming = await fetchStreamingSettingsFromCloud();
+  const [streaming, uiSettings] = await Promise.all([
+    fetchStreamingSettingsFromCloud(),
+    fetchUiSettingsFromCloud(),
+  ]);
   const playlists: Array<{ name: string; channels: CloudChannelItem[] }> = [];
 
   await Promise.all(
@@ -1181,11 +1343,12 @@ export async function fetchViewerCloudState(playlistNames: string[]): Promise<{
     })
   );
 
-  return { streaming, playlists };
+  return { streaming, uiSettings, playlists };
 }
 
 export async function fetchAdminWatchCloudState(): Promise<{
   streaming: CloudStreamingSettings | null;
+  uiSettings: CloudUiSettings | null;
   playlists: Array<{ name: string; channels: CloudChannelItem[] }>;
 }> {
   const manifest = await readManifest().catch(() => null);

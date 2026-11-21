@@ -189,6 +189,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof window.__refreshStreamingControls === 'function') {
             await window.__refreshStreamingControls().catch(() => {});
         }
+        if (typeof window.__refreshUiSettings === 'function') {
+            await window.__refreshUiSettings().catch(() => {});
+        }
     }
 
     async function bootstrapCloudDatabase() {
@@ -266,38 +269,168 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    const DEFAULT_STREAM_SETTINGS = {
+        preset: 'vlc_smooth',
+        mode: 'auto_proxy_first',
+        preferDirectOnTv: true,
+        tryHttpsUpgrade: true,
+        protocolHint: 'auto',
+        proxyUserAgent: 'VLC/3.0.20 LibVLC/3.0.20',
+        proxyFollowRedirects: 5,
+        proxyTimeoutSec: 15,
+        proxyKeepAlive: true,
+        proxyMaxSockets: 64,
+        proxyBufferKb: 128,
+        proxyRetryCount: 2,
+        hlsUseWorkers: true,
+        hlsLowLatency: false,
+        hlsLiveSyncDurationCount: 4,
+        hlsMaxBufferLengthSec: 45,
+        hlsMaxMaxBufferLengthSec: 90,
+        hlsBackBufferLengthSec: 15,
+        hlsStartFragPrefetch: true,
+        hlsManifestTimeoutSec: 12,
+        hlsManifestMaxRetry: 3,
+        hlsFragTimeoutSec: 25,
+        hlsFragMaxRetry: 4,
+        hlsMaxBufferHoleMs: 500,
+        mpegtsUseWorker: true,
+        mpegtsStashBuffer: true,
+        mpegtsStashSizeKb: 512,
+        mpegtsLiveLatencyChasing: false,
+        mpegtsMaxLatencySec: 5,
+        mpegtsMinRemainSec: 1.5,
+        attemptTimeoutSec: 15,
+        previewEnabled: true,
+        previewDebounceMs: 450,
+        previewResumeDelayMs: 350,
+        codecCheckDelaySec: 8,
+    };
+
+    const STREAM_PRESETS = {
+        vlc_smooth: {
+            preset: 'vlc_smooth',
+            hlsUseWorkers: true,
+            hlsLowLatency: false,
+            hlsLiveSyncDurationCount: 4,
+            hlsMaxBufferLengthSec: 45,
+            hlsMaxMaxBufferLengthSec: 90,
+            hlsBackBufferLengthSec: 15,
+            hlsStartFragPrefetch: true,
+            hlsManifestTimeoutSec: 12,
+            hlsManifestMaxRetry: 3,
+            hlsFragTimeoutSec: 25,
+            hlsFragMaxRetry: 4,
+            hlsMaxBufferHoleMs: 500,
+            mpegtsUseWorker: true,
+            mpegtsStashBuffer: true,
+            mpegtsStashSizeKb: 512,
+            mpegtsLiveLatencyChasing: false,
+            mpegtsMaxLatencySec: 5,
+            mpegtsMinRemainSec: 1.5,
+            proxyKeepAlive: true,
+            proxyBufferKb: 128,
+            proxyRetryCount: 2,
+            attemptTimeoutSec: 15,
+        },
+        balanced: {
+            preset: 'balanced',
+            hlsUseWorkers: true,
+            hlsLowLatency: false,
+            hlsLiveSyncDurationCount: 3,
+            hlsMaxBufferLengthSec: 30,
+            hlsMaxMaxBufferLengthSec: 60,
+            hlsBackBufferLengthSec: 15,
+            hlsStartFragPrefetch: true,
+            hlsManifestTimeoutSec: 10,
+            hlsManifestMaxRetry: 2,
+            hlsFragTimeoutSec: 20,
+            hlsFragMaxRetry: 3,
+            hlsMaxBufferHoleMs: 500,
+            mpegtsUseWorker: true,
+            mpegtsStashBuffer: true,
+            mpegtsStashSizeKb: 384,
+            mpegtsLiveLatencyChasing: false,
+            mpegtsMaxLatencySec: 4,
+            mpegtsMinRemainSec: 1.2,
+            proxyKeepAlive: true,
+            proxyBufferKb: 128,
+            proxyRetryCount: 2,
+            attemptTimeoutSec: 12,
+        },
+        low_latency: {
+            preset: 'low_latency',
+            hlsUseWorkers: true,
+            hlsLowLatency: true,
+            hlsLiveSyncDurationCount: 2,
+            hlsMaxBufferLengthSec: 12,
+            hlsMaxMaxBufferLengthSec: 25,
+            hlsBackBufferLengthSec: 5,
+            hlsStartFragPrefetch: true,
+            hlsManifestTimeoutSec: 8,
+            hlsManifestMaxRetry: 2,
+            hlsFragTimeoutSec: 12,
+            hlsFragMaxRetry: 2,
+            hlsMaxBufferHoleMs: 300,
+            mpegtsUseWorker: true,
+            mpegtsStashBuffer: false,
+            mpegtsStashSizeKb: 128,
+            mpegtsLiveLatencyChasing: true,
+            mpegtsMaxLatencySec: 2,
+            mpegtsMinRemainSec: 0.8,
+            proxyKeepAlive: true,
+            proxyBufferKb: 64,
+            proxyRetryCount: 1,
+            attemptTimeoutSec: 8,
+        },
+    };
+
+    let currentStreamingSettings = Object.assign({}, DEFAULT_STREAM_SETTINGS);
+
     (function initStreamingModeControl() {
         const select = document.getElementById('streaming-mode-select');
         const httpsToggle = document.getElementById('streaming-https-toggle');
-        if (!select && !httpsToggle) return;
-        let currentSettings = { mode: 'auto_proxy_first', tryHttpsUpgrade: true, proxyTimeoutSec: 15 };
+        const gearBtn = document.getElementById('btn-open-streaming-settings');
+        if (!select && !httpsToggle && !gearBtn) return;
+
+        function syncTopbar() {
+            if (select && currentStreamingSettings.mode && Array.from(select.options).some(option => option.value === currentStreamingSettings.mode)) {
+                select.value = currentStreamingSettings.mode;
+            }
+            if (httpsToggle) {
+                httpsToggle.checked = currentStreamingSettings.tryHttpsUpgrade !== false;
+            }
+        }
 
         async function refreshControls() {
             const res = await apiRequest('/api/settings/streaming');
             if (res && res.settings) {
-                currentSettings = Object.assign({}, currentSettings, res.settings);
-                if (select && currentSettings.mode && Array.from(select.options).some(option => option.value === currentSettings.mode)) {
-                    select.value = currentSettings.mode;
-                }
-                if (httpsToggle) {
-                    httpsToggle.checked = currentSettings.tryHttpsUpgrade !== false;
+                currentStreamingSettings = Object.assign({}, DEFAULT_STREAM_SETTINGS, res.settings);
+                syncTopbar();
+                if (typeof window.__syncStreamingForm === 'function') {
+                    window.__syncStreamingForm(currentStreamingSettings);
                 }
             }
         }
         window.__refreshStreamingControls = refreshControls;
+        window.__syncStreamingTopbar = syncTopbar;
         void refreshControls();
 
         async function saveStreamingControls() {
             if (select) select.disabled = true;
             if (httpsToggle) httpsToggle.disabled = true;
             try {
-                const payload = Object.assign({}, currentSettings, {
-                    mode: select ? select.value : currentSettings.mode,
-                    tryHttpsUpgrade: httpsToggle ? httpsToggle.checked : currentSettings.tryHttpsUpgrade,
+                const payload = Object.assign({}, currentStreamingSettings, {
+                    mode: select ? select.value : currentStreamingSettings.mode,
+                    tryHttpsUpgrade: httpsToggle ? httpsToggle.checked : currentStreamingSettings.tryHttpsUpgrade,
                 });
                 const saved = await apiRequest('/api/settings/streaming', 'POST', payload);
                 if (!saved || !saved.ok) throw new Error(saved && saved.error ? saved.error : 'Не удалось сохранить режим');
-                currentSettings = Object.assign({}, currentSettings, saved.settings || payload);
+                currentStreamingSettings = Object.assign({}, DEFAULT_STREAM_SETTINGS, saved.settings || payload);
+                syncTopbar();
+                if (typeof window.__syncStreamingForm === 'function') {
+                    window.__syncStreamingForm(currentStreamingSettings);
+                }
                 showToast('Настройки передачи потока сохранены', 'ok');
             } catch (err) {
                 showToast((err && err.message) ? err.message : 'Ошибка сохранения режима', 'err');
@@ -309,6 +442,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (select) select.addEventListener('change', saveStreamingControls);
         if (httpsToggle) httpsToggle.addEventListener('change', saveStreamingControls);
+        if (gearBtn) gearBtn.addEventListener('click', () => {
+            showScreen('streaming');
+            setNavActive('streaming');
+            if (typeof window.__refreshStreamingControls === 'function') void window.__refreshStreamingControls();
+        });
     })();
 
     (function initAdminAuthControls() {
@@ -363,6 +501,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const navBtnCatalog = document.getElementById('nav-btn-catalog');
     if (navBtnCatalog) navBtnCatalog.onclick = () => { showScreen('catalog'); setNavActive('catalog'); loadCatalog(); };
     if (navBtnHealth) navBtnHealth.onclick = () => { showScreen('health'); setNavActive('health'); loadHealthOverview(); };
+    const navBtnStreaming = document.getElementById('nav-btn-streaming');
+    if (navBtnStreaming) navBtnStreaming.onclick = () => {
+        showScreen('streaming');
+        setNavActive('streaming');
+        if (typeof window.__refreshStreamingControls === 'function') void window.__refreshStreamingControls();
+    };
+    const navBtnUiSettings = document.getElementById('nav-btn-ui-settings');
+    if (navBtnUiSettings) navBtnUiSettings.onclick = () => {
+        showScreen('ui-settings');
+        setNavActive('ui-settings');
+        if (typeof window.__refreshUiSettings === 'function') window.__refreshUiSettings();
+    };
     const navBtnApk = document.getElementById('nav-btn-apk');
     if (navBtnApk) navBtnApk.onclick = () => { showScreen('apk'); setNavActive('apk'); loadApkReleases(); };
 
@@ -377,8 +527,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const screenUsers = document.getElementById('screen-users');
         const screenCatalog = document.getElementById('screen-catalog');
         const screenHealth = document.getElementById('screen-health');
+        const screenStreaming = document.getElementById('screen-streaming');
+        const screenUiSettings = document.getElementById('screen-ui-settings');
         const screenApk = document.getElementById('screen-apk');
-        [screenEditor, screenParser, screenSources, screenEpg, screenUsers, screenCatalog, screenHealth, screenApk].forEach(s => s && s.classList.add('hidden'));
+        [screenEditor, screenParser, screenSources, screenEpg, screenUsers, screenCatalog, screenHealth, screenStreaming, screenUiSettings, screenApk].forEach(s => s && s.classList.add('hidden'));
         if (name === 'editor' && screenEditor) screenEditor.classList.remove('hidden');
         if (name === 'parser' && screenParser) screenParser.classList.remove('hidden');
         if (name === 'sources' && screenSources) screenSources.classList.remove('hidden');
@@ -386,6 +538,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (name === 'users' && screenUsers) screenUsers.classList.remove('hidden');
         if (name === 'catalog' && screenCatalog) screenCatalog.classList.remove('hidden');
         if (name === 'health' && screenHealth) screenHealth.classList.remove('hidden');
+        if (name === 'streaming' && screenStreaming) screenStreaming.classList.remove('hidden');
+        if (name === 'ui-settings' && screenUiSettings) screenUiSettings.classList.remove('hidden');
         if (name === 'apk' && screenApk) screenApk.classList.remove('hidden');
         if (name !== 'editor') closeForm();
         if (name !== 'apk' && typeof stopGithubPoll === 'function') stopGithubPoll();
@@ -2248,7 +2402,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         for (const s of (d.streams || [])) { if (s.status === 'online') { url = s.url; break; } }
                         if (!url && d.streams && d.streams.length) url = d.streams[0].url;
                         if (!url) { showToast('Нет потоков для этого канала', 'err'); return; }
-                        openPlayerByUrl(url, d.name, d.logo || '');
+                        openPlayerByUrl(url, d.name, d.logo || '', d.tvg_id || '');
                     });
             });
         }
@@ -2354,7 +2508,7 @@ document.addEventListener('DOMContentLoaded', () => {
             b.onclick = () => {
                 const url = decodeURIComponent(b.dataset.playUrl);
                 modal.remove();
-                openPlayerByUrl(url, ch.name, ch.logo || '');
+                openPlayerByUrl(url, ch.name, ch.logo || '', ch.tvg_id || '');
             };
         });
 
@@ -3274,11 +3428,100 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
     // ============ PLAYER ============
     let playerHls = null;
     let playerMpegts = null;
+    let currentPlayerChannel = null;
 
-    function openPlayerByUrl(url, name, logoUrl, tvgId) {
+    function formatPlaylistBadgeText(playlists) {
+        const clean = (Array.isArray(playlists) ? playlists : [])
+            .map(p => String(p || '').replace(/\.m3u$/i, '').trim())
+            .filter(Boolean);
+        if (clean.length === 0) return 'плейлист не найден';
+        if (clean.length === 1) return clean[0];
+        return `${clean[0]} + ${clean.length - 1}`;
+    }
+
+    function renderPlayerPlaylistBadge(playlists) {
+        const badge = document.getElementById('player-playlists-badge');
+        if (!badge) return;
+        const clean = (Array.isArray(playlists) ? playlists : [])
+            .map(p => String(p || '').replace(/\.m3u$/i, '').trim())
+            .filter(Boolean);
+        badge.textContent = formatPlaylistBadgeText(clean);
+        badge.classList.toggle('is-empty', clean.length === 0);
+        badge.title = clean.length > 0 ? clean.join(', ') : '';
+    }
+
+    function populatePlayerAddPlaylistSelect(allPlaylists) {
+        const sel = document.getElementById('player-add-pl-select');
+        const btn = document.getElementById('player-add-pl-btn');
+        if (!sel) return;
+        const sourceList = (Array.isArray(allPlaylists) && allPlaylists.length ? allPlaylists : playlistsList)
+            .map(p => String(p || '').replace(/\.m3u$/i, '').trim())
+            .filter(Boolean);
+        const prev = sel.value;
+        sel.innerHTML = '';
+        if (sourceList.length === 0) {
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '— нет плейлистов —';
+            sel.appendChild(opt);
+            if (btn) btn.disabled = true;
+            return;
+        }
+        sourceList.forEach(pl => {
+            const opt = document.createElement('option');
+            opt.value = pl;
+            opt.textContent = pl;
+            sel.appendChild(opt);
+        });
+        if (prev && sourceList.includes(prev)) sel.value = prev;
+        else if (currentPlaylist && sourceList.includes(currentPlaylist)) sel.value = currentPlaylist;
+        if (btn) btn.disabled = false;
+    }
+
+    async function refreshPlayerPlaylistHeader(ch) {
+        const badge = document.getElementById('player-playlists-badge');
+        if (badge) {
+            badge.textContent = 'проверка...';
+            badge.classList.add('is-empty');
+            badge.title = '';
+        }
+        populatePlayerAddPlaylistSelect(playlistsList);
+        try {
+            const qs = new URLSearchParams();
+            if (ch && ch.name) qs.set('name', ch.name);
+            if (ch && ch.url) qs.set('url', ch.url);
+            const res = await apiRequest('/api/channel/playlists?' + qs.toString());
+            if (!currentPlayerChannel || currentPlayerChannel.url !== (ch && ch.url)) return;
+            if (res && res.ok) {
+                renderPlayerPlaylistBadge(res.playlists || []);
+                if (Array.isArray(res.allPlaylists)) {
+                    populatePlayerAddPlaylistSelect(res.allPlaylists);
+                }
+            } else {
+                renderPlayerPlaylistBadge([]);
+            }
+        } catch {
+            renderPlayerPlaylistBadge([]);
+        }
+    }
+
+    function openPlayerByUrl(url, name, logoUrl, tvgId, meta) {
         if (!url) return;
+        const m = (meta && typeof meta === 'object') ? meta : {};
+        currentPlayerChannel = {
+            url: String(url || '').trim(),
+            name: String(name || 'Канал').trim(),
+            logo: String(logoUrl || '').trim(),
+            tvg_id: String(tvgId || '').trim(),
+            group: String(m.group || '').trim(),
+            userAgent: String(m.userAgent || '').trim(),
+            referer: String(m.referer || '').trim(),
+            origin: String(m.origin || '').trim(),
+        };
         document.getElementById('player-title').textContent = name || '—';
         document.getElementById('player-url').textContent = url;
+
+        void refreshPlayerPlaylistHeader(currentPlayerChannel);
 
         // Сброс EPG
         const epgCurrent = document.getElementById('epg-current');
@@ -3309,12 +3552,18 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
     function openPlayer(idx) {
         const ch = channelsData[idx];
         if (!ch) return;
-        openPlayerByUrl(ch.url, ch.name, ch.logo, ch.tvg_id || '');
+        openPlayerByUrl(ch.url, ch.name, ch.logo, ch.tvg_id || '', {
+            group: ch.group || '',
+            userAgent: ch.userAgent || '',
+            referer: ch.referer || '',
+            origin: ch.origin || '',
+        });
     }
 
     function closePlayer() {
         const pm = document.getElementById('player-modal');
         if (pm) pm.classList.add('hidden');
+        currentPlayerChannel = null;
         stopPlayerStream();
         if (window.__stopEpgAuto) window.__stopEpgAuto();
         stopBlackScreenDetector();
@@ -3376,6 +3625,53 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         try { v.pause(); v.removeAttribute('src'); v.load(); } catch (e) {}
     }
 
+    function buildAdminHlsConfig(s) {
+        const cfg = Object.assign({}, DEFAULT_STREAM_SETTINGS, s || {});
+        return {
+            enableWorker: Boolean(cfg.hlsUseWorkers),
+            lowLatencyMode: Boolean(cfg.hlsLowLatency),
+            liveSyncDurationCount: Math.max(1, Math.min(12, Number(cfg.hlsLiveSyncDurationCount) || 4)),
+            maxBufferLength: Math.max(5, Math.min(180, Number(cfg.hlsMaxBufferLengthSec) || 45)),
+            maxMaxBufferLength: Math.max(10, Math.min(360, Number(cfg.hlsMaxMaxBufferLengthSec) || 90)),
+            backBufferLength: Math.max(0, Math.min(120, Number(cfg.hlsBackBufferLengthSec) || 15)),
+            startFragPrefetch: Boolean(cfg.hlsStartFragPrefetch),
+            manifestLoadingTimeOut: Math.max(3, Math.min(60, Number(cfg.hlsManifestTimeoutSec) || 12)) * 1000,
+            manifestLoadingMaxRetry: Math.max(0, Math.min(10, Number(cfg.hlsManifestMaxRetry) ?? 3)),
+            fragLoadingTimeOut: Math.max(5, Math.min(60, Number(cfg.hlsFragTimeoutSec) || 25)) * 1000,
+            fragLoadingMaxRetry: Math.max(0, Math.min(10, Number(cfg.hlsFragMaxRetry) ?? 4)),
+            maxBufferHole: Math.max(0.1, Math.min(5, (Number(cfg.hlsMaxBufferHoleMs) || 500) / 1000)),
+        };
+    }
+
+    function buildAdminMpegtsConfig(s) {
+        const cfg = Object.assign({}, DEFAULT_STREAM_SETTINGS, s || {});
+        return {
+            enableWorker: Boolean(cfg.mpegtsUseWorker),
+            enableStashBuffer: Boolean(cfg.mpegtsStashBuffer),
+            stashInitialSize: Math.max(64, Math.min(2048, Number(cfg.mpegtsStashSizeKb) || 512)),
+            liveBufferLatencyChasing: Boolean(cfg.mpegtsLiveLatencyChasing),
+            liveBufferLatencyMaxLatency: Math.max(1, Math.min(20, Number(cfg.mpegtsMaxLatencySec) || 5)),
+            liveBufferLatencyMinRemain: Math.max(0.5, Math.min(10, Number(cfg.mpegtsMinRemainSec) || 1.5)),
+        };
+    }
+
+    async function resolveAdminStreamKind(url, settings) {
+        const hint = (settings && settings.protocolHint) ? settings.protocolHint : 'auto';
+        if (hint === 'hls' || hint === 'mpegts' || hint === 'native') return hint;
+        const low = String(url || '').split('?')[0].toLowerCase();
+        if (low.includes('.m3u8')) return 'hls';
+        if (low.endsWith('.ts')) return 'mpegts';
+        if (/\.(mp4|webm|mkv|mov)$/i.test(low)) return 'native';
+        try {
+            const res = await fetch('/api/stream/detect?url=' + encodeURIComponent(url));
+            const data = await res.json().catch(() => null);
+            if (data && (data.kind === 'hls' || data.kind === 'mpegts' || data.kind === 'native')) {
+                return data.kind;
+            }
+        } catch {}
+        return 'hls';
+    }
+
     function playStream(url) {
         stopPlayerStream();
         const v = document.getElementById('player-video');
@@ -3386,18 +3682,17 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         overlay.classList.remove('hidden');
         text.textContent = 'Загрузка потока...';
 
-        const low = url.split('?')[0].toLowerCase();
-        const isM3u8 = low.includes('.m3u8');
-        const isTs = low.endsWith('.ts');
         let attemptIndex = 0;
         let attemptId = 0;
         let attempts = [];
+        let activeSettings = Object.assign({}, DEFAULT_STREAM_SETTINGS, currentStreamingSettings);
+        let detectedKind = 'hls';
 
         const onReady = (label) => {
             clearTimeout(playerAttemptTimer);
             overlay.classList.add('hidden');
             if (playerUrlEl && label) {
-                playerUrlEl.textContent = '[' + label + '] ' + url;
+                playerUrlEl.textContent = '[' + label + ' · ' + detectedKind.toUpperCase() + '] ' + url;
             }
         };
         const onErr = (msg) => {
@@ -3430,7 +3725,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 v.load();
             } catch (e) {}
 
-            text.textContent = 'Загрузка (' + candidate.label + ')...';
+            text.textContent = 'Загрузка (' + candidate.label + ', ' + detectedKind.toUpperCase() + ')...';
 
             const advance = (fallbackMsg) => {
                 if (currentAttempt !== attemptId) return;
@@ -3442,24 +3737,19 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 }
             };
 
+            const timeoutMs = Math.max(4, Math.min(60, Number(activeSettings.attemptTimeoutSec) || 15)) * 1000;
             if (attemptIndex < attempts.length) {
                 playerAttemptTimer = setTimeout(() => {
                     advance('Таймаут загрузки потока');
-                }, 9500);
+                }, timeoutMs);
             }
 
             v.onloadeddata = () => { if (currentAttempt === attemptId) onReady(candidate.label); };
             v.oncanplay = () => { if (currentAttempt === attemptId) onReady(candidate.label); };
             v.onerror = () => advance('Поток недоступен или формат не поддерживается');
 
-            if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-                playerHls = new Hls({
-                    enableWorker: true,
-                    lowLatencyMode: false,
-                    manifestLoadingTimeOut: 10000,
-                    manifestLoadingMaxRetry: 1,
-                    fragLoadingTimeOut: 25000
-                });
+            if (detectedKind === 'hls' && window.Hls && window.Hls.isSupported()) {
+                playerHls = new Hls(buildAdminHlsConfig(activeSettings));
                 playerHls.loadSource(source);
                 playerHls.attachMedia(v);
                 playerHls.on(Hls.Events.MANIFEST_PARSED, () => {
@@ -3469,15 +3759,12 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     if (!data || !data.fatal || currentAttempt !== attemptId) return;
                     advance('Ошибка HLS: ' + (data.details || 'unknown'));
                 });
-            } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+            } else if (detectedKind === 'mpegts' && window.mpegts && window.mpegts.isSupported()) {
                 playerMpegts = mpegts.createPlayer({
                     type: 'mpegts',
                     url: source,
                     isLive: true
-                }, {
-                    enableWorker: true,
-                    liveBufferLatencyChasing: true
-                });
+                }, buildAdminMpegtsConfig(activeSettings));
                 playerMpegts.attachMediaElement(v);
                 playerMpegts.load();
                 playerMpegts.play().catch(() => {});
@@ -3490,13 +3777,15 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             }
         };
 
-        void apiRequest('/api/settings/streaming').then((result) => {
-            const settings = result && result.settings ? result.settings : {};
-            attempts = buildStreamCandidates(url, settings);
+        void apiRequest('/api/settings/streaming').then(async (result) => {
+            activeSettings = Object.assign({}, DEFAULT_STREAM_SETTINGS, (result && result.settings) ? result.settings : currentStreamingSettings);
+            detectedKind = await resolveAdminStreamKind(url, activeSettings);
+            attempts = buildStreamCandidates(url, activeSettings);
             attemptIndex = 0;
             attempt(attempts[attemptIndex++]);
-        }).catch(() => {
-            attempts = buildStreamCandidates(url, { mode: 'auto_proxy_first', tryHttpsUpgrade: true });
+        }).catch(async () => {
+            detectedKind = await resolveAdminStreamKind(url, activeSettings);
+            attempts = buildStreamCandidates(url, activeSettings);
             attemptIndex = 0;
             attempt(attempts[attemptIndex++]);
         });
@@ -3588,11 +3877,51 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
 
         const btnClose = document.getElementById('player-close');
         const btnReload = document.getElementById('player-reload');
+        const btnAddPl = document.getElementById('player-add-pl-btn');
+        const selAddPl = document.getElementById('player-add-pl-select');
         if (btnClose) btnClose.onclick = closePlayer;
         if (btnReload) btnReload.onclick = () => {
-            const u = document.getElementById('player-url').textContent;
+            const u = (currentPlayerChannel && currentPlayerChannel.url) || document.getElementById('player-url').textContent;
             if (u && u !== '—') playStream(u);
         };
+        if (btnAddPl) {
+            btnAddPl.onclick = async () => {
+                if (!currentPlayerChannel || !selAddPl || !selAddPl.value) {
+                    showToast('Выберите плейлист для добавления канала', 'err');
+                    return;
+                }
+                const targetPl = selAddPl.value;
+                btnAddPl.disabled = true;
+                const origTxt = btnAddPl.textContent;
+                btnAddPl.textContent = '...';
+                try {
+                    const res = await apiRequest('/api/channel/add-to-playlist', 'POST', {
+                        playlist: targetPl,
+                        name: currentPlayerChannel.name,
+                        url: currentPlayerChannel.url,
+                        logo: currentPlayerChannel.logo,
+                        group: currentPlayerChannel.group || 'Общие',
+                        tvg_id: currentPlayerChannel.tvg_id || '',
+                        userAgent: currentPlayerChannel.userAgent || '',
+                        referer: currentPlayerChannel.referer || '',
+                        origin: currentPlayerChannel.origin || '',
+                    });
+                    if (!res || !res.ok) {
+                        showToast((res && res.error) || 'Не удалось добавить канал в плейлист', 'err');
+                        return;
+                    }
+                    renderPlayerPlaylistBadge(res.playlists || [targetPl]);
+                    showToast(`Канал «${currentPlayerChannel.name}» успешно добавлен в плейлист «${targetPl}»`, 'ok');
+                    if (currentPlaylist === targetPl) {
+                        await loadChannels().catch(() => {});
+                    }
+                    loadCatalog().catch(() => {});
+                } finally {
+                    btnAddPl.disabled = false;
+                    btnAddPl.textContent = origTxt || 'Добавить';
+                }
+            };
+        }
         pm.querySelectorAll('[data-close-player]').forEach(el => el.onclick = closePlayer);
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape' && !pm.classList.contains('hidden')) closePlayer();
@@ -4167,6 +4496,261 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 }
             };
         }
+    })();
+
+    (function initUiSettingsScreen() {
+        const logoGroup = document.getElementById('ui-logo-enabled-group');
+        const opacityRange = document.getElementById('ui-logo-opacity');
+        const opacityVal = document.getElementById('ui-logo-opacity-val');
+        const pulseGroup = document.getElementById('ui-pulse-enabled-group');
+        const pulseSpeedRow = document.getElementById('ui-pulse-speed-row');
+        const pulseSpeedRange = document.getElementById('ui-pulse-speed');
+        const pulseSpeedVal = document.getElementById('ui-pulse-speed-val');
+        const previewMark = document.getElementById('ui-logo-preview-mark');
+        const btnSave = document.getElementById('btn-save-ui-settings');
+        if (!logoGroup || !opacityRange || !pulseGroup || !pulseSpeedRange) return;
+
+        let uiState = {
+            logoEnabled: true,
+            logoOpacity: 40,
+            logoPulseEnabled: false,
+            logoPulseSpeedSec: 3,
+        };
+
+        function syncUiControlsAndPreview() {
+            logoGroup.querySelectorAll('[data-ui-logo-enabled]').forEach(btn => {
+                const isVal = btn.dataset.uiLogoEnabled === 'true';
+                btn.classList.toggle('active', isVal === Boolean(uiState.logoEnabled));
+            });
+            pulseGroup.querySelectorAll('[data-ui-pulse-enabled]').forEach(btn => {
+                const isVal = btn.dataset.uiPulseEnabled === 'true';
+                btn.classList.toggle('active', isVal === Boolean(uiState.logoPulseEnabled));
+            });
+
+            opacityRange.value = String(uiState.logoOpacity);
+            if (opacityVal) opacityVal.textContent = `${uiState.logoOpacity}%`;
+
+            pulseSpeedRange.value = String(uiState.logoPulseSpeedSec);
+            pulseSpeedRange.disabled = !uiState.logoPulseEnabled;
+            if (pulseSpeedRow) pulseSpeedRow.classList.toggle('is-disabled', !uiState.logoPulseEnabled);
+            if (pulseSpeedVal) {
+                pulseSpeedVal.textContent = uiState.logoPulseSpeedSec === 0
+                    ? '0 сек (выкл)'
+                    : `${uiState.logoPulseSpeedSec} сек`;
+            }
+
+            if (previewMark) {
+                previewMark.classList.toggle('hidden', !uiState.logoEnabled);
+                const op = Math.max(0, Math.min(1, uiState.logoOpacity / 100));
+                previewMark.style.setProperty('--wm-opacity', String(op));
+                const pulsing = Boolean(uiState.logoEnabled && uiState.logoPulseEnabled && uiState.logoPulseSpeedSec > 0);
+                previewMark.classList.toggle('is-pulsing', pulsing);
+                if (pulsing) {
+                    previewMark.style.setProperty('--wm-pulse-dur', `${uiState.logoPulseSpeedSec}s`);
+                }
+            }
+        }
+
+        async function refreshUiSettings() {
+            try {
+                const res = await apiRequest('/api/settings/ui');
+                if (res && res.settings) {
+                    uiState = Object.assign({}, uiState, res.settings);
+                    syncUiControlsAndPreview();
+                }
+            } catch {}
+        }
+
+        window.__refreshUiSettings = refreshUiSettings;
+
+        logoGroup.querySelectorAll('[data-ui-logo-enabled]').forEach(btn => {
+            btn.onclick = () => {
+                uiState.logoEnabled = btn.dataset.uiLogoEnabled === 'true';
+                syncUiControlsAndPreview();
+            };
+        });
+
+        pulseGroup.querySelectorAll('[data-ui-pulse-enabled]').forEach(btn => {
+            btn.onclick = () => {
+                uiState.logoPulseEnabled = btn.dataset.uiPulseEnabled === 'true';
+                syncUiControlsAndPreview();
+            };
+        });
+
+        opacityRange.addEventListener('input', () => {
+            uiState.logoOpacity = Math.max(0, Math.min(100, Math.round(Number(opacityRange.value) || 0)));
+            syncUiControlsAndPreview();
+        });
+
+        pulseSpeedRange.addEventListener('input', () => {
+            const v = Number(pulseSpeedRange.value);
+            uiState.logoPulseSpeedSec = Number.isFinite(v) ? Math.max(0, Math.min(10, Math.round(v * 10) / 10)) : 3;
+            syncUiControlsAndPreview();
+        });
+
+        if (btnSave) {
+            btnSave.onclick = async () => {
+                btnSave.disabled = true;
+                const orig = btnSave.textContent;
+                btnSave.textContent = 'Сохранение...';
+                try {
+                    const res = await apiRequest('/api/settings/ui', 'POST', uiState);
+                    if (!res || !res.ok) {
+                        showToast((res && res.error) || 'Не удалось сохранить настройки интерфейса', 'err');
+                        return;
+                    }
+                    uiState = Object.assign({}, uiState, res.settings || uiState);
+                    syncUiControlsAndPreview();
+                    showToast('Настройки интерфейса сохранены', 'ok');
+                } finally {
+                    btnSave.disabled = false;
+                    btnSave.textContent = orig || 'Сохранить настройки';
+                }
+            };
+        }
+
+        syncUiControlsAndPreview();
+        void refreshUiSettings();
+    })();
+
+    (function initStreamingSettingsScreen() {
+        const screen = document.getElementById('screen-streaming');
+        const btnSave = document.getElementById('btn-streaming-save');
+        const btnReset = document.getElementById('btn-streaming-reset');
+        const presetBtns = document.querySelectorAll('.streaming-preset-btn');
+        if (!screen) return;
+
+        const fieldMap = {
+            mode: ['st-mode', 'str'],
+            protocolHint: ['st-protocol', 'str'],
+            proxyUserAgent: ['st-ua', 'str'],
+            proxyFollowRedirects: ['st-redirects', 'int'],
+            tryHttpsUpgrade: ['st-https', 'bool'],
+            preferDirectOnTv: ['st-tv-direct', 'bool'],
+            proxyTimeoutSec: ['st-proxy-timeout', 'int'],
+            proxyRetryCount: ['st-proxy-retries', 'int'],
+            proxyMaxSockets: ['st-proxy-sockets', 'int'],
+            proxyBufferKb: ['st-proxy-buffer', 'int'],
+            proxyKeepAlive: ['st-proxy-keepalive', 'bool'],
+            hlsLiveSyncDurationCount: ['st-hls-livesync', 'int'],
+            hlsMaxBufferLengthSec: ['st-hls-maxbuf', 'int'],
+            hlsMaxMaxBufferLengthSec: ['st-hls-maxmaxbuf', 'int'],
+            hlsBackBufferLengthSec: ['st-hls-backbuf', 'int'],
+            hlsUseWorkers: ['st-hls-workers', 'bool'],
+            hlsStartFragPrefetch: ['st-hls-prefetch', 'bool'],
+            hlsLowLatency: ['st-hls-ll', 'bool'],
+            hlsManifestTimeoutSec: ['st-hls-mtimeout', 'int'],
+            hlsManifestMaxRetry: ['st-hls-mretry', 'int'],
+            hlsFragTimeoutSec: ['st-hls-ftimeout', 'int'],
+            hlsFragMaxRetry: ['st-hls-fretry', 'int'],
+            hlsMaxBufferHoleMs: ['st-hls-hole', 'int'],
+            mpegtsStashSizeKb: ['st-ts-stashkb', 'int'],
+            mpegtsMaxLatencySec: ['st-ts-maxlat', 'float'],
+            mpegtsMinRemainSec: ['st-ts-minrem', 'float'],
+            mpegtsUseWorker: ['st-ts-worker', 'bool'],
+            mpegtsStashBuffer: ['st-ts-stash', 'bool'],
+            mpegtsLiveLatencyChasing: ['st-ts-chasing', 'bool'],
+            attemptTimeoutSec: ['st-attempt-timeout', 'int'],
+            codecCheckDelaySec: ['st-codec-delay', 'int'],
+            previewDebounceMs: ['st-prev-debounce', 'int'],
+            previewResumeDelayMs: ['st-prev-resume', 'int'],
+            previewEnabled: ['st-prev-enabled', 'bool'],
+        };
+
+        let formPreset = currentStreamingSettings.preset || 'vlc_smooth';
+
+        function syncPresetButtons() {
+            presetBtns.forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.streamPreset === formPreset);
+            });
+        }
+
+        function fillForm(settings) {
+            const s = Object.assign({}, DEFAULT_STREAM_SETTINGS, settings || {});
+            formPreset = s.preset || 'custom';
+            for (const [key, [elId, type]] of Object.entries(fieldMap)) {
+                const el = document.getElementById(elId);
+                if (!el) continue;
+                if (type === 'bool') el.checked = Boolean(s[key]);
+                else el.value = s[key] !== undefined ? String(s[key]) : '';
+            }
+            syncPresetButtons();
+        }
+
+        function readForm() {
+            const out = Object.assign({}, DEFAULT_STREAM_SETTINGS, currentStreamingSettings, {
+                preset: formPreset || 'custom',
+            });
+            for (const [key, [elId, type]] of Object.entries(fieldMap)) {
+                const el = document.getElementById(elId);
+                if (!el) continue;
+                if (type === 'bool') out[key] = Boolean(el.checked);
+                else if (type === 'int') out[key] = Math.round(Number(el.value));
+                else if (type === 'float') out[key] = Number(el.value);
+                else out[key] = String(el.value || '').trim();
+            }
+            return out;
+        }
+
+        window.__syncStreamingForm = fillForm;
+
+        for (const [, [elId]] of Object.entries(fieldMap)) {
+            const el = document.getElementById(elId);
+            if (el) {
+                el.addEventListener('change', () => {
+                    formPreset = 'custom';
+                    syncPresetButtons();
+                });
+            }
+        }
+
+        presetBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const id = btn.dataset.streamPreset;
+                if (!id || !STREAM_PRESETS[id]) return;
+                const next = Object.assign({}, readForm(), STREAM_PRESETS[id]);
+                fillForm(next);
+            });
+        });
+
+        async function saveStreamingForm(payload) {
+            if (btnSave) btnSave.disabled = true;
+            if (btnReset) btnReset.disabled = true;
+            const origText = btnSave ? btnSave.textContent : '';
+            if (btnSave) btnSave.textContent = 'Сохранение...';
+            try {
+                const res = await apiRequest('/api/settings/streaming', 'POST', payload);
+                if (!res || !res.ok) {
+                    showToast((res && res.error) || 'Ошибка сохранения настроек потока', 'err');
+                    return;
+                }
+                currentStreamingSettings = Object.assign({}, DEFAULT_STREAM_SETTINGS, res.settings || payload);
+                fillForm(currentStreamingSettings);
+                if (typeof window.__syncStreamingTopbar === 'function') window.__syncStreamingTopbar();
+                showToast('Настройки потока, буферизации и прокси сохранены', 'ok');
+            } finally {
+                if (btnSave) {
+                    btnSave.disabled = false;
+                    btnSave.textContent = origText || 'Сохранить настройки';
+                }
+                if (btnReset) btnReset.disabled = false;
+            }
+        }
+
+        if (btnSave) {
+            btnSave.addEventListener('click', () => {
+                void saveStreamingForm(readForm());
+            });
+        }
+        if (btnReset) {
+            btnReset.addEventListener('click', () => {
+                const resetPayload = Object.assign({}, DEFAULT_STREAM_SETTINGS);
+                fillForm(resetPayload);
+                void saveStreamingForm(resetPayload);
+            });
+        }
+
+        fillForm(currentStreamingSettings);
     })();
 
     // ===== СТАРТ: открываем каталог по умолчанию =====

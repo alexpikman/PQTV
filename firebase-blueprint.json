@@ -624,22 +624,102 @@
     },
     "StreamingSetting": {
       "title": "StreamingSetting",
-      "description": "Global stream proxy/direct delivery configuration readable by verified viewers and admins.",
+      "description": "Global stream delivery, proxy pooling, HLS/MPEG-TS buffering, worker, retry, and player delay configuration readable by verified viewers and admins.",
       "type": "object",
       "properties": {
         "settingId": {
           "type": "string",
           "enum": ["streaming"]
         },
+        "preset": {
+          "type": "string",
+          "enum": ["vlc_smooth", "balanced", "low_latency", "custom"]
+        },
         "mode": {
           "type": "string",
           "enum": ["auto_proxy_first", "auto_direct_first", "proxy_only", "direct_only"]
         },
-        "tryHttpsUpgrade": {
+        "preferDirectOnTv": { "type": "boolean" },
+        "tryHttpsUpgrade": { "type": "boolean" },
+        "protocolHint": {
+          "type": "string",
+          "enum": ["auto", "hls", "mpegts", "native"]
+        },
+        "proxyUserAgent": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "proxyFollowRedirects": { "type": "integer" },
+        "proxyTimeoutSec": { "type": "integer" },
+        "proxyKeepAlive": { "type": "boolean" },
+        "proxyMaxSockets": { "type": "integer" },
+        "proxyBufferKb": { "type": "integer" },
+        "proxyRetryCount": { "type": "integer" },
+        "hlsUseWorkers": { "type": "boolean" },
+        "hlsLowLatency": { "type": "boolean" },
+        "hlsLiveSyncDurationCount": { "type": "integer" },
+        "hlsMaxBufferLengthSec": { "type": "integer" },
+        "hlsMaxMaxBufferLengthSec": { "type": "integer" },
+        "hlsBackBufferLengthSec": { "type": "integer" },
+        "hlsStartFragPrefetch": { "type": "boolean" },
+        "hlsManifestTimeoutSec": { "type": "integer" },
+        "hlsManifestMaxRetry": { "type": "integer" },
+        "hlsFragTimeoutSec": { "type": "integer" },
+        "hlsFragMaxRetry": { "type": "integer" },
+        "hlsMaxBufferHoleMs": { "type": "integer" },
+        "mpegtsUseWorker": { "type": "boolean" },
+        "mpegtsStashBuffer": { "type": "boolean" },
+        "mpegtsStashSizeKb": { "type": "integer" },
+        "mpegtsLiveLatencyChasing": { "type": "boolean" },
+        "mpegtsMaxLatencySec": { "type": "number" },
+        "mpegtsMinRemainSec": { "type": "number" },
+        "attemptTimeoutSec": { "type": "integer" },
+        "previewEnabled": { "type": "boolean" },
+        "previewDebounceMs": { "type": "integer" },
+        "previewResumeDelayMs": { "type": "integer" },
+        "codecCheckDelaySec": { "type": "integer" },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "settingId", "preset", "mode", "preferDirectOnTv", "tryHttpsUpgrade",
+        "protocolHint", "proxyUserAgent", "proxyFollowRedirects", "proxyTimeoutSec",
+        "proxyKeepAlive", "proxyMaxSockets", "proxyBufferKb", "proxyRetryCount",
+        "hlsUseWorkers", "hlsLowLatency", "hlsLiveSyncDurationCount", "hlsMaxBufferLengthSec",
+        "hlsMaxMaxBufferLengthSec", "hlsBackBufferLengthSec", "hlsStartFragPrefetch",
+        "hlsManifestTimeoutSec", "hlsManifestMaxRetry", "hlsFragTimeoutSec", "hlsFragMaxRetry",
+        "hlsMaxBufferHoleMs", "mpegtsUseWorker", "mpegtsStashBuffer", "mpegtsStashSizeKb",
+        "mpegtsLiveLatencyChasing", "mpegtsMaxLatencySec", "mpegtsMinRemainSec",
+        "attemptTimeoutSec", "previewEnabled", "previewDebounceMs", "previewResumeDelayMs",
+        "codecCheckDelaySec", "createdAt", "updatedAt"
+      ]
+    },
+    "UiSetting": {
+      "title": "UiSetting",
+      "description": "Global viewer player watermark and UI display settings readable by verified viewers and admins.",
+      "type": "object",
+      "properties": {
+        "settingId": {
+          "type": "string",
+          "enum": ["ui"]
+        },
+        "logoEnabled": {
           "type": "boolean"
         },
-        "proxyTimeoutSec": {
+        "logoOpacity": {
           "type": "integer"
+        },
+        "logoPulseEnabled": {
+          "type": "boolean"
+        },
+        "logoPulseSpeedSec": {
+          "type": "number"
         },
         "createdAt": {
           "type": "string",
@@ -650,7 +730,7 @@
           "format": "date-time"
         }
       },
-      "required": ["settingId", "mode", "tryHttpsUpgrade", "proxyTimeoutSec", "createdAt", "updatedAt"]
+      "required": ["settingId", "logoEnabled", "logoOpacity", "logoPulseEnabled", "logoPulseSpeedSec", "createdAt", "updatedAt"]
     },
     "AdminSetting": {
       "title": "AdminSetting",
@@ -791,7 +871,7 @@
     },
     "/app_settings/{settingId}": {
       "schema": { "$ref": "#/entities/StreamingSetting" },
-      "description": "Global stream proxy/direct delivery settings; readable by verified viewers and admins."
+      "description": "Global application settings (streaming delivery mode and viewer UI watermark); readable by verified viewers and admins."
     },
     "/admin_settings/{settingId}": {
       "schema": { "$ref": "#/entities/AdminSetting" },

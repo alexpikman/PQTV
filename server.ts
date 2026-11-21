@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import http, { IncomingMessage } from 'node:http';
 import https from 'node:https';
+import { PassThrough } from 'node:stream';
 import express, { Request, Response, NextFunction } from 'express';
 import session from 'express-session';
 import { config, hashPassword, verifyPassword } from './src/config.js';
@@ -34,6 +35,7 @@ import {
   getWorkflowManualSetupInfo,
 } from './src/githubApkBuilder.js';
 import { getStreamingSettings, trySaveStreamingSettings } from './src/streamingSettings.js';
+import { getUiSettings, trySaveUiSettings } from './src/uiSettings.js';
 import { stateLifecycle } from './src/stateLifecycle.js';
 import {
   createPlaylistUnified,
@@ -800,6 +802,7 @@ app.post('/login', (req, res) => {
       isAdminViewer: false,
       appVersionName: apkManager.getLatest()?.versionName || '1.0.0',
       appVersionCode: apkManager.getLatest()?.versionCode || 1,
+      uiSettings: getUiSettings(),
       assetVersion,
     });
     return;
@@ -1025,6 +1028,7 @@ app.all(['/watch', '/watch/login'], (req, res) => {
     isAdminViewer: viewer.isAdminViewer,
     appVersionName: latestApk?.versionName || '1.0.0',
     appVersionCode: latestApk?.versionCode || 1,
+    uiSettings: getUiSettings(),
     assetVersion,
   });
 });
@@ -1242,6 +1246,7 @@ app.get('/watch/api/channels', (req, res) => {
     },
     playlists,
     streaming: getStreamingSettings(),
+    uiSettings: getUiSettings(),
     user: {
       name: viewer.name,
       login: viewer.login,
@@ -1254,6 +1259,10 @@ app.get('/watch/api/streaming-settings', (_req, res) => {
   noCacheJson(res, { ok: true, settings: getStreamingSettings() });
 });
 
+app.get('/watch/api/ui-settings', (_req, res) => {
+  noCacheJson(res, { ok: true, settings: getUiSettings() });
+});
+
 app.post('/watch/api/cloud/hydrate-playlists', (req, res) => {
   const viewer = (
     req as Request & { currentViewer: NonNullable<ReturnType<typeof getViewerFromRequest>> }
@@ -1263,6 +1272,14 @@ app.post('/watch/api/cloud/hydrate-playlists', (req, res) => {
     const sRes = trySaveStreamingSettings(req.body.streaming);
     if (!sRes.ok) {
       noCacheJson(res, { ok: false, error: sRes.error || 'Не удалось сохранить настройки' }, 500);
+      return;
+    }
+  }
+
+  if (req.body?.uiSettings) {
+    const uiRes = trySaveUiSettings(req.body.uiSettings);
+    if (!uiRes.ok) {
+      noCacheJson(res, { ok: false, error: uiRes.error || 'Не удалось сохранить настройки интерфейса' }, 500);
       return;
     }
   }
@@ -1287,6 +1304,7 @@ app.post('/watch/api/cloud/hydrate-playlists', (req, res) => {
     ok: true,
     restored,
     streaming: getStreamingSettings(),
+    uiSettings: getUiSettings(),
   });
 });
 
@@ -1629,6 +1647,66 @@ function buildProxyLink(
   return `/api/stream/proxy?${params.toString()}`;
 }
 
+interface ProxyAgentPool {
+  keepAlive: boolean;
+  maxSockets: number;
+  httpAgent: http.Agent;
+  httpsAgent: https.Agent;
+  httpsInsecureAgent: https.Agent;
+}
+
+let proxyAgentPool: ProxyAgentPool | null = null;
+
+function getProxyAgent(
+  protocol: string,
+  opts: { keepAlive: boolean; maxSockets: number; ignoreTlsErrors: boolean }
+): http.Agent | https.Agent {
+  const keepAlive = Boolean(opts.keepAlive);
+  const maxSockets = Math.max(4, Math.min(200, Math.round(opts.maxSockets || 64)));
+  if (
+    !proxyAgentPool ||
+    proxyAgentPool.keepAlive !== keepAlive ||
+    proxyAgentPool.maxSockets !== maxSockets
+  ) {
+    if (proxyAgentPool) {
+      try {
+        proxyAgentPool.httpAgent.destroy();
+        proxyAgentPool.httpsAgent.destroy();
+        proxyAgentPool.httpsInsecureAgent.destroy();
+      } catch {
+        // ignore old pool destroy errors
+      }
+    }
+    proxyAgentPool = {
+      keepAlive,
+      maxSockets,
+      httpAgent: new http.Agent({
+        keepAlive,
+        keepAliveMsecs: 15000,
+        maxSockets,
+        maxFreeSockets: keepAlive ? Math.min(32, maxSockets) : 0,
+      }),
+      httpsAgent: new https.Agent({
+        keepAlive,
+        keepAliveMsecs: 15000,
+        maxSockets,
+        maxFreeSockets: keepAlive ? Math.min(32, maxSockets) : 0,
+      }),
+      httpsInsecureAgent: new https.Agent({
+        keepAlive,
+        keepAliveMsecs: 15000,
+        maxSockets,
+        maxFreeSockets: keepAlive ? Math.min(16, maxSockets) : 0,
+        rejectUnauthorized: false,
+      }),
+    };
+  }
+  if (protocol === 'https:') {
+    return opts.ignoreTlsErrors ? proxyAgentPool.httpsInsecureAgent : proxyAgentPool.httpsAgent;
+  }
+  return proxyAgentPool.httpAgent;
+}
+
 interface OpenedProxyUpstream {
   status: number;
   headers: Record<string, string>;
@@ -1637,17 +1715,19 @@ interface OpenedProxyUpstream {
   destroyUpstream: () => void;
 }
 
-async function openProxyUpstream(
+async function openProxyUpstreamOnce(
   initialUrl: string,
   opts: {
     headers: Record<string, string>;
     connectTimeoutMs: number;
     ignoreTlsErrors: boolean;
-    maxRedirects?: number;
+    keepAlive: boolean;
+    maxSockets: number;
+    maxRedirects: number;
     onAbortRegister?: (abortFn: () => void) => void;
   }
 ): Promise<OpenedProxyUpstream> {
-  const maxRedirects = opts.maxRedirects ?? 5;
+  const maxRedirects = Math.max(0, Math.min(10, opts.maxRedirects));
   let currentUrl = initialUrl;
 
   for (let hop = 0; hop <= maxRedirects; hop++) {
@@ -1664,10 +1744,11 @@ async function openProxyUpstream(
       | { kind: 'open'; opened: OpenedProxyUpstream }
     >((resolve, reject) => {
       const mod = parsed.protocol === 'https:' ? https : http;
-      const agent =
-        parsed.protocol === 'https:' && opts.ignoreTlsErrors
-          ? new https.Agent({ rejectUnauthorized: false })
-          : undefined;
+      const agent = getProxyAgent(parsed.protocol, {
+        keepAlive: opts.keepAlive,
+        maxSockets: opts.maxSockets,
+        ignoreTlsErrors: opts.ignoreTlsErrors,
+      });
 
       let settled = false;
       let currentIncoming: IncomingMessage | null = null;
@@ -1774,6 +1855,176 @@ async function openProxyUpstream(
   throw Object.assign(new Error('Too many redirects'), { code: 'ERR_TOO_MANY_REDIRECTS' });
 }
 
+async function openProxyUpstream(
+  initialUrl: string,
+  opts: {
+    headers: Record<string, string>;
+    connectTimeoutMs: number;
+    ignoreTlsErrors: boolean;
+    keepAlive: boolean;
+    maxSockets: number;
+    maxRedirects: number;
+    retryCount: number;
+    isClientClosed?: () => boolean;
+    onAbortRegister?: (abortFn: () => void) => void;
+  }
+): Promise<OpenedProxyUpstream> {
+  const attempts = Math.max(1, 1 + Math.max(0, Math.min(5, opts.retryCount)));
+  let lastErr: unknown = null;
+  for (let i = 0; i < attempts; i++) {
+    if (opts.isClientClosed && opts.isClientClosed()) {
+      throw Object.assign(new Error('Client closed'), { code: 'ERR_CLIENT_CLOSED' });
+    }
+    try {
+      const opened = await openProxyUpstreamOnce(initialUrl, opts);
+      if (opened.status >= 502 && opened.status <= 504 && i < attempts - 1) {
+        opened.destroyUpstream();
+        await new Promise((r) => setTimeout(r, 150));
+        continue;
+      }
+      return opened;
+    } catch (err) {
+      lastErr = err;
+      const code = String((err as { code?: string } | null)?.code || '');
+      if (code === 'ERR_UNSUPPORTED_PROTOCOL' || code === 'ERR_BLOCKED_HOST') {
+        throw err;
+      }
+      if (i < attempts - 1 && !(opts.isClientClosed && opts.isClientClosed())) {
+        await new Promise((r) => setTimeout(r, 150));
+        continue;
+      }
+    }
+  }
+  throw lastErr;
+}
+
+const detectedFormatCache = new Map<string, { kind: 'hls' | 'mpegts' | 'native'; finalUrl: string; expiresAt: number }>();
+
+app.get('/api/stream/detect', async (req, res) => {
+  const rawUrl = String(req.query.url || '').trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(rawUrl);
+  } catch {
+    noCacheJson(res, { ok: false, kind: 'native', error: 'Bad URL' }, 400);
+    return;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    noCacheJson(res, { ok: false, kind: 'native', error: 'Bad scheme' }, 400);
+    return;
+  }
+  if (isBlockedHostname(parsed.hostname)) {
+    noCacheJson(res, { ok: false, kind: 'native', error: 'Blocked host' }, 403);
+    return;
+  }
+
+  const now = Date.now();
+  const cached = detectedFormatCache.get(rawUrl);
+  if (cached && cached.expiresAt > now) {
+    noCacheJson(res, { ok: true, kind: cached.kind, finalUrl: cached.finalUrl, cached: true });
+    return;
+  }
+
+  const streamCfg = getStreamingSettings();
+  const srcOpts = StreamParser.getSourceRequestOptions(rawUrl);
+  const chHints = findPlaylistChannelHints(rawUrl);
+  const effectiveUa = chHints.userAgent || srcOpts.userAgent || streamCfg.proxyUserAgent || 'VLC/3.0.20 LibVLC/3.0.20';
+
+  let clientClosed = false;
+  let activeAbortFn: (() => void) | null = null;
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      clientClosed = true;
+      if (activeAbortFn) activeAbortFn();
+    }
+  });
+
+  try {
+    const opened = await openProxyUpstreamOnce(rawUrl, {
+      headers: buildOutboundHeaders({
+        headers: srcOpts.headers,
+        userAgent: effectiveUa,
+        referer: chHints.referer || srcOpts.referer || undefined,
+        origin: chHints.origin || srcOpts.origin || undefined,
+      }),
+      connectTimeoutMs: Math.min(8000, Math.max(3000, (streamCfg.proxyTimeoutSec || 15) * 1000)),
+      ignoreTlsErrors: srcOpts.ignoreTlsErrors,
+      keepAlive: streamCfg.proxyKeepAlive,
+      maxSockets: streamCfg.proxyMaxSockets,
+      maxRedirects: streamCfg.proxyFollowRedirects,
+      onAbortRegister: (fn) => {
+        activeAbortFn = fn;
+        if (clientClosed) fn();
+      },
+    });
+
+    const ctype = (opened.headers['content-type'] || '').toLowerCase();
+    const lowFinal = opened.finalUrl.split('?')[0].toLowerCase();
+    let kind: 'hls' | 'mpegts' | 'native' | null = null;
+    if (ctype.includes('mpegurl') || ctype.includes('m3u') || lowFinal.includes('.m3u8')) {
+      kind = 'hls';
+    } else if (ctype.includes('mp2t') || ctype.includes('mpegts') || lowFinal.endsWith('.ts')) {
+      kind = 'mpegts';
+    } else if (ctype.includes('mp4') || ctype.includes('webm') || ctype.includes('matroska')) {
+      kind = 'native';
+    }
+
+    if (!kind) {
+      const sample = await new Promise<Buffer>((resolve) => {
+        const chunks: Buffer[] = [];
+        let bytes = 0;
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(peekTimer);
+          resolve(Buffer.concat(chunks));
+        };
+        const peekTimer = setTimeout(() => {
+          opened.destroyUpstream();
+          finish();
+        }, 2500);
+        opened.incoming.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+          bytes += chunk.length;
+          if (bytes >= 512) {
+            opened.destroyUpstream();
+            finish();
+          }
+        });
+        opened.incoming.on('end', finish);
+        opened.incoming.on('error', finish);
+        opened.incoming.on('close', finish);
+      });
+      const txt = sample.toString('utf-8').trimStart();
+      if (txt.startsWith('#EXTM3U')) {
+        kind = 'hls';
+      } else if (sample.length >= 189 && sample[0] === 0x47 && sample[188] === 0x47) {
+        kind = 'mpegts';
+      } else if (sample.length >= 1 && sample[0] === 0x47) {
+        kind = 'mpegts';
+      } else {
+        kind = 'native';
+      }
+    } else {
+      opened.destroyUpstream();
+    }
+
+    if (detectedFormatCache.size >= 500) {
+      const firstKey = detectedFormatCache.keys().next().value;
+      if (firstKey) detectedFormatCache.delete(firstKey);
+    }
+    detectedFormatCache.set(rawUrl, { kind, finalUrl: opened.finalUrl, expiresAt: now + 5 * 60 * 1000 });
+    if (!clientClosed) {
+      noCacheJson(res, { ok: true, kind, finalUrl: opened.finalUrl, contentType: ctype });
+    }
+  } catch {
+    if (!clientClosed) {
+      noCacheJson(res, { ok: true, kind: 'native', finalUrl: rawUrl });
+    }
+  }
+});
+
 app.options('/api/stream/proxy', (_req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -1806,18 +2057,23 @@ app.get('/api/stream/proxy', async (req, res) => {
   const qRef = typeof req.query.ref === 'string' ? req.query.ref.trim() : '';
   const qOrig = typeof req.query.orig === 'string' ? req.query.orig.trim() : '';
 
-  const effectiveUa = qUa || chHints.userAgent || srcOpts.userAgent || '';
+  const effectiveUa =
+    qUa ||
+    chHints.userAgent ||
+    srcOpts.userAgent ||
+    streamCfg.proxyUserAgent ||
+    String(req.headers['user-agent'] || 'VLC/3.0.20 LibVLC/3.0.20');
   const effectiveRef = qRef || chHints.referer || srcOpts.referer || '';
   const effectiveOrig = qOrig || chHints.origin || srcOpts.origin || '';
   const propagatedHints = { ua: effectiveUa, ref: effectiveRef, orig: effectiveOrig };
 
   const connectTimeoutMs = Math.max(
-    5000,
+    3000,
     Math.min(60000, srcOpts.timeoutMs || (streamCfg.proxyTimeoutSec || 15) * 1000)
   );
   const upstreamHeaders = buildOutboundHeaders({
     headers: srcOpts.headers,
-    userAgent: effectiveUa || String(req.headers['user-agent'] || 'Mozilla/5.0'),
+    userAgent: effectiveUa,
     referer: effectiveRef || undefined,
     origin: effectiveOrig || undefined,
     range: typeof req.headers.range === 'string' ? req.headers.range : undefined,
@@ -1837,6 +2093,11 @@ app.get('/api/stream/proxy', async (req, res) => {
       headers: upstreamHeaders,
       connectTimeoutMs,
       ignoreTlsErrors: srcOpts.ignoreTlsErrors,
+      keepAlive: streamCfg.proxyKeepAlive,
+      maxSockets: streamCfg.proxyMaxSockets,
+      maxRedirects: streamCfg.proxyFollowRedirects,
+      retryCount: streamCfg.proxyRetryCount,
+      isClientClosed: () => clientClosed,
       onAbortRegister: (fn) => {
         activeAbortFn = fn;
         if (clientClosed) fn();
@@ -1914,12 +2175,22 @@ app.get('/api/stream/proxy', async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Cache-Control', isOk ? 'public, max-age=30' : 'no-store');
 
+    const highWaterBytes = Math.max(16384, Math.min(1024 * 1024, (streamCfg.proxyBufferKb || 128) * 1024));
+    const bufferStream = new PassThrough({ highWaterMark: highWaterBytes });
     opened.incoming.on('error', () => {
       opened.destroyUpstream();
+      bufferStream.destroy();
       if (!res.headersSent) res.status(502);
       res.end();
     });
-    opened.incoming.pipe(res);
+    bufferStream.on('error', () => {
+      opened.destroyUpstream();
+      if (!res.writableEnded) res.end();
+    });
+    res.on('close', () => {
+      if (!res.writableFinished) bufferStream.destroy();
+    });
+    opened.incoming.pipe(bufferStream).pipe(res);
   } catch (err) {
     if (clientClosed) return;
     const net = classifyNetworkError(err);
@@ -1980,6 +2251,117 @@ app.post('/api/settings/streaming', (req, res) => {
   noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
 });
 
+app.get('/api/settings/ui', (_req, res) => {
+  noCacheJson(res, { ok: true, settings: getUiSettings() });
+});
+
+app.post('/api/settings/ui', (req, res) => {
+  const saved = trySaveUiSettings(req.body || {});
+  if (!saved.ok) {
+    noCacheJson(res, { ok: false, error: saved.error || 'Ошибка сохранения настроек интерфейса' }, 500);
+    return;
+  }
+  const meta = stateLifecycle.bumpRevision('health_update', 'ui_settings');
+  noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
+});
+
+function findMatchingPlaylistsForChannel(name: string, url: string): {
+  playlists: string[];
+  allPlaylists: string[];
+} {
+  const allPlaylists = storage.getPlaylists();
+  const normName = name.trim().toLowerCase();
+  const normUrl = url.trim();
+  const matched: string[] = [];
+
+  for (const pl of allPlaylists) {
+    const filePath = storage.getPlaylistPath(pl);
+    if (!fs.existsSync(filePath)) continue;
+    const list = parseM3uFile(filePath);
+    const hit = list.some(
+      (ch) =>
+        (normName && ch.name.trim().toLowerCase() === normName) ||
+        (normUrl && ch.url.trim() === normUrl)
+    );
+    if (hit) matched.push(pl);
+  }
+  return { playlists: matched, allPlaylists };
+}
+
+app.get('/api/channel/playlists', (req, res) => {
+  const name = String(req.query.name || '').trim();
+  const url = String(req.query.url || '').trim();
+  const out = findMatchingPlaylistsForChannel(name, url);
+  noCacheJson(res, { ok: true, playlists: out.playlists, allPlaylists: out.allPlaylists });
+});
+
+app.post('/api/channel/add-to-playlist', async (req, res) => {
+  const playlist = String(req.body?.playlist || '')
+    .replace(/\.m3u$/i, '')
+    .trim();
+  const name = String(req.body?.name || '').trim();
+  const url = String(req.body?.url || '').trim();
+  const group = String(req.body?.group || '').trim() || 'Общие';
+  const logo = String(req.body?.logo || '').trim();
+  const tvgId = String(req.body?.tvg_id || '').trim();
+  const userAgent = String(req.body?.userAgent || '').trim();
+  const referer = String(req.body?.referer || '').trim();
+  const origin = String(req.body?.origin || '').trim();
+
+  if (!playlist || !name || !url) {
+    noCacheJson(res, { ok: false, error: 'Не указаны плейлист, название или URL канала' }, 400);
+    return;
+  }
+  if (!storage.isValidFilename(playlist)) {
+    noCacheJson(res, { ok: false, error: 'Неверное имя плейлиста' }, 400);
+    return;
+  }
+  const filePath = storage.getPlaylistPath(playlist);
+  if (!fs.existsSync(filePath)) {
+    noCacheJson(res, { ok: false, error: 'Плейлист не найден' }, 404);
+    return;
+  }
+
+  const list = parseM3uFile(filePath);
+  const normName = name.toLowerCase();
+  const duplicate = list.some(
+    (item) => item.name.trim().toLowerCase() === normName || item.url.trim() === url
+  );
+  if (duplicate) {
+    noCacheJson(res, { ok: false, error: 'Такой канал уже есть в этом плейлисте' }, 400);
+    return;
+  }
+
+  const newChannel: Channel = {
+    name,
+    group,
+    logo,
+    url,
+    tvg_id: tvgId,
+  };
+  if (userAgent) newChannel.userAgent = userAgent;
+  if (referer) newChannel.referer = referer;
+  if (origin) newChannel.origin = origin;
+
+  list.push(newChannel);
+  const saved = await savePlaylistChannelsUnified(playlist, list);
+  if (!saved.ok) {
+    noCacheJson(res, saved, saved.status);
+    return;
+  }
+
+  const updated = findMatchingPlaylistsForChannel(name, url);
+  noCacheJson(res, {
+    ok: true,
+    playlist,
+    name,
+    playlists: updated.playlists,
+    allPlaylists: updated.allPlaylists,
+    count: list.length,
+    revision: saved.revision,
+  });
+});
+
 app.get('/api/cloud/export', (_req, res) => {
   const playlistNames = storage.getPlaylists();
   const playlists: Record<string, Channel[]> = {};
@@ -1996,6 +2378,7 @@ app.get('/api/cloud/export', (_req, res) => {
     epgSources: EpgParser.getSources(),
     catalog: catalogStore.exportRawState(),
     streamingSettings: getStreamingSettings(),
+    uiSettings: getUiSettings(),
     users: userAuth.all().map((u) => ({
       id: u.id,
       login: u.login,

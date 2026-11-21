@@ -58,6 +58,14 @@
                         <input type="checkbox" id="streaming-https-toggle" checked>
                         <span>HTTPS</span>
                     </label>
+                    <button type="button" id="btn-open-streaming-settings" class="streaming-gear-btn" title="Тонкая настройка буферизации, воркеров, протоколов и прокси">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+                            <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+                            <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+                            <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+                        </svg>
+                    </button>
                 </div>
                 <button type="button" id="btn-admin-alerts" class="logout-link" style="background:transparent; cursor:pointer;" title="Предупреждения о недоступных каналах у пользователей">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -151,6 +159,24 @@
                             <line x1="3" y1="10" x2="21" y2="10"/>
                         </svg>
                         Телепрограмма
+                    </button>
+                    <button id="nav-btn-streaming" class="nav-item" data-screen="streaming">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
+                            <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
+                            <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
+                            <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+                        </svg>
+                        Настройки потока
+                    </button>
+                    <button id="nav-btn-ui-settings" class="nav-item" data-screen="ui-settings">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="2" y="4" width="20" height="14" rx="2"/>
+                            <path d="M8 21h8"/>
+                            <path d="M12 18v3"/>
+                            <path d="M7 13h4"/>
+                        </svg>
+                        Настройки интерфейса
                     </button>
                     <button id="nav-btn-apk" class="nav-item" data-screen="apk">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -617,12 +643,414 @@
                             </div>
                         </div>
 
+                        <div class="apk-panel" style="margin-bottom:16px;">
+                            <h3>Когда обновлять APK, а когда — Публикацию (Republish)</h3>
+                            <p style="font-size:12.5px; color:var(--muted); margin-bottom:12px; line-height:1.5;">
+                                Приложение Android TV — это нативный контейнер, который загружает интерфейс <code>/watch</code> с сервера. Поэтому большинство изменений не требуют переустановки APK на телевизорах.
+                            </p>
+                            <div class="deploy-matrix-wrap">
+                                <table class="deploy-matrix-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Какие изменения внесены</th>
+                                            <th>Republish (tvpqnet.ai.studio)</th>
+                                            <th>Пересборка и OTA APK</th>
+                                            <th>Пояснение</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        <tr>
+                                            <td>Каналы, плейлисты, источники, EPG, пользователи, инвайты</td>
+                                            <td><span class="health-badge muted">Не нужен</span></td>
+                                            <td><span class="health-badge muted">Не нужен</span></td>
+                                            <td>Сохраняется в Firestore и сразу доступно на всех устройствах.</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Настройки потока, буферизации, воркеров, прокси и логотипа PQTV</td>
+                                            <td><span class="health-badge muted">Не нужен</span></td>
+                                            <td><span class="health-badge muted">Не нужен</span></td>
+                                            <td>Сохраняется в Firestore; плеер на ТВ и в браузере подхватывает их при открытии.</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Веб-плеер (<code>/watch</code>), админка (<code>/editor</code>), прокси сервера, парсеры, правила Firestore</td>
+                                            <td><span class="health-badge ok">Нужен Republish</span></td>
+                                            <td><span class="health-badge muted">Не нужен</span></td>
+                                            <td>После Republish телевизор с уже установленным APK сразу получит новый интерфейс и плеер при запуске.</td>
+                                        </tr>
+                                        <tr>
+                                            <td>Нативный код <code>android-tv/</code> (<code>MainActivity.kt</code>, настройки WebView, пульт, иконка, адрес сервера, OTA-модуль)</td>
+                                            <td><span class="health-badge warn">Если менялся сервер</span></td>
+                                            <td><span class="health-badge danger">Нужен APK</span></td>
+                                            <td>Соберите новый APK через GitHub Actions — телевизоры получат его по OTA («Обновить ТВ»).</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
                         <div class="apk-panel">
                             <h3>Справка: ручная сборка через CLI / GitHub Secrets</h3>
                             <p style="font-size:12.5px; color:var(--muted); line-height:1.5;">
                                 При запуске из админки выше PQTV сам синхронизирует <code>android-tv/</code>, запускает <code>build-apk.yml</code> и автоматически забирает готовый APK из артефакта GitHub в OTA-релизы. Если вы запускаете workflow вручную на GitHub, можно также задать секрет <code>PQTV_UPLOAD_TOKEN</code>:
                             </p>
                             <pre class="apk-code" id="apk-ci-snippet">Загрузка параметров...</pre>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SCREEN: НАСТРОЙКИ ПОТОКА И БУФЕРИЗАЦИИ -->
+                <div id="screen-streaming" class="hidden">
+                    <div class="col-header">
+                        <h2>Настройки потока, буферизации и протоколов</h2>
+                        <div class="header-actions">
+                            <button type="button" id="btn-streaming-reset" class="btn btn-secondary">Сбросить (как VLC)</button>
+                            <button type="button" id="btn-streaming-save" class="btn btn-primary">Сохранить настройки</button>
+                        </div>
+                    </div>
+                    <div id="streaming-settings-scroll">
+                        <div class="apk-panel streaming-presets-panel" style="margin-bottom:16px;">
+                            <div class="streaming-presets-head">
+                                <div>
+                                    <h3 style="margin:0 0 4px 0;">Готовые профили воспроизведения</h3>
+                                    <p style="margin:0; font-size:12.5px; color:var(--muted); line-height:1.45;">
+                                        VLC на ПК держит большой сетевой кэш, переиспользует HTTP-соединения (Keep-Alive) и подключается напрямую к источнику. Выберите готовый профиль или отрегулируйте любой параметр ниже.
+                                    </p>
+                                </div>
+                                <div class="streaming-preset-btns" id="streaming-preset-btns">
+                                    <button type="button" class="btn btn-secondary streaming-preset-btn" data-stream-preset="vlc_smooth">Как VLC (плавно)</button>
+                                    <button type="button" class="btn btn-secondary streaming-preset-btn" data-stream-preset="balanced">Сбалансированный</button>
+                                    <button type="button" class="btn btn-secondary streaming-preset-btn" data-stream-preset="low_latency">Минимальная задержка</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="streaming-settings-grid">
+                            <!-- 1. Доставка, извлечение и протокол -->
+                            <div class="apk-panel">
+                                <h3>1. Извлечение потока и протоколы</h3>
+                                <div class="stream-form-grid">
+                                    <div class="form-group">
+                                        <label for="st-mode">Маршрут доставки потока</label>
+                                        <select id="st-mode">
+                                            <option value="auto_proxy_first">Авто: сначала серверный proxy, потом напрямую</option>
+                                            <option value="auto_direct_first">Авто: сначала напрямую (как VLC), потом proxy</option>
+                                            <option value="proxy_only">Только через серверный proxy</option>
+                                            <option value="direct_only">Только напрямую к источнику</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="st-protocol">Принудительный протокол / извлечение</label>
+                                        <select id="st-protocol">
+                                            <option value="auto">Автоопределение (URL + анализ заголовков/байтов)</option>
+                                            <option value="hls">Всегда HLS (hls.js — .m3u8 и без расширения)</option>
+                                            <option value="mpegts">Всегда MPEG-TS (mpegts.js — .ts / Xtream)</option>
+                                            <option value="native">Нативный &lt;video&gt; (MP4 / WebM / встроенный плеер)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="st-ua">User-Agent серверного proxy (как VLC или браузер)</label>
+                                        <input type="text" id="st-ua" placeholder="VLC/3.0.20 LibVLC/3.0.20">
+                                    </div>
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-redirects">Макс. редиректов (301/302)</label>
+                                            <input type="number" id="st-redirects" min="0" max="10" step="1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label class="stream-check-label" for="st-https">
+                                                <input type="checkbox" id="st-https">
+                                                <span>Пробовать HTTPS перед HTTP</span>
+                                            </label>
+                                            <label class="stream-check-label" for="st-tv-direct" title="В нативном Android TV APK смешанный HTTP-контент разрешён: прямое подключение убирает задержку облачного сервера">
+                                                <input type="checkbox" id="st-tv-direct">
+                                                <span>На Android TV APK сначала напрямую (минуя сервер)</span>
+                                            </label>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 2. Серверный прокси и сокеты -->
+                            <div class="apk-panel">
+                                <h3>2. Серверный proxy, пул потоков и сокеты</h3>
+                                <div class="stream-form-grid">
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-proxy-timeout">Таймаут подключения proxy (сек)</label>
+                                            <input type="number" id="st-proxy-timeout" min="3" max="60" step="1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-proxy-retries">Повторы при обрыве proxy</label>
+                                            <input type="number" id="st-proxy-retries" min="0" max="5" step="1">
+                                        </div>
+                                    </div>
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-proxy-sockets">Макс. одновременных потоков/сокетов</label>
+                                            <input type="number" id="st-proxy-sockets" min="4" max="200" step="4">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-proxy-buffer">Буфер трубы proxy (КБ, 16–1024)</label>
+                                            <input type="number" id="st-proxy-buffer" min="16" max="1024" step="16">
+                                        </div>
+                                    </div>
+                                    <label class="stream-check-label" for="st-proxy-keepalive">
+                                        <input type="checkbox" id="st-proxy-keepalive">
+                                        <span>Keep-Alive пул соединений (ускоряет загрузку .ts сегментов без повторного TLS)</span>
+                                    </label>
+                                </div>
+                            </div>
+
+                            <!-- 3. HLS.js — буферизация и воркеры -->
+                            <div class="apk-panel">
+                                <h3>3. HLS (.m3u8) — буферизация и потоки</h3>
+                                <div class="stream-form-grid">
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-hls-livesync">Запас от края эфира (сегментов)</label>
+                                            <input type="number" id="st-hls-livesync" min="1" max="12" step="1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-hls-maxbuf">Целевой буфер вперёд (сек)</label>
+                                            <input type="number" id="st-hls-maxbuf" min="5" max="180" step="1">
+                                        </div>
+                                    </div>
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-hls-maxmaxbuf">Макс. предел буфера (сек)</label>
+                                            <input type="number" id="st-hls-maxmaxbuf" min="10" max="360" step="5">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-hls-backbuf">Хранить прошлый буфер (сек, 0=сразу удалять)</label>
+                                            <input type="number" id="st-hls-backbuf" min="0" max="120" step="5">
+                                        </div>
+                                    </div>
+                                    <div class="stream-checks-col">
+                                        <label class="stream-check-label" for="st-hls-workers">
+                                            <input type="checkbox" id="st-hls-workers">
+                                            <span>Отдельный поток Web Worker (уменьшает фризы интерфейса на ТВ)</span>
+                                        </label>
+                                        <label class="stream-check-label" for="st-hls-prefetch">
+                                            <input type="checkbox" id="st-hls-prefetch">
+                                            <span>Предзагрузка следующего сегмента (startFragPrefetch)</span>
+                                        </label>
+                                        <label class="stream-check-label" for="st-hls-ll">
+                                            <input type="checkbox" id="st-hls-ll">
+                                            <span>Low-Latency режим (меньше задержка, но выше риск подгрузок)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 4. HLS.js — таймауты, паузы и повторы -->
+                            <div class="apk-panel">
+                                <h3>4. HLS (.m3u8) — паузы, таймауты и повторы</h3>
+                                <div class="stream-form-grid">
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-hls-mtimeout">Таймаут манифеста .m3u8 (сек)</label>
+                                            <input type="number" id="st-hls-mtimeout" min="3" max="60" step="1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-hls-mretry">Повторы загрузки манифеста</label>
+                                            <input type="number" id="st-hls-mretry" min="0" max="10" step="1">
+                                        </div>
+                                    </div>
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-hls-ftimeout">Таймаут сегмента .ts (сек)</label>
+                                            <input type="number" id="st-hls-ftimeout" min="5" max="60" step="1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-hls-fretry">Повторы загрузки сегмента</label>
+                                            <input type="number" id="st-hls-fretry" min="0" max="10" step="1">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="st-hls-hole">Допустимая «дыра» в буфере (мс, 100–5000)</label>
+                                        <input type="number" id="st-hls-hole" min="100" max="5000" step="50">
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 5. MPEG-TS (.ts / Xtream) -->
+                            <div class="apk-panel">
+                                <h3>5. MPEG-TS (.ts) — буфер и рассинхрон</h3>
+                                <div class="stream-form-grid">
+                                    <div class="form-group">
+                                        <label for="st-ts-stashkb">Размер предварительного буфера Stash (КБ, 64–2048)</label>
+                                        <input type="number" id="st-ts-stashkb" min="64" max="2048" step="32">
+                                    </div>
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-ts-maxlat">Макс. задержка live (сек)</label>
+                                            <input type="number" id="st-ts-maxlat" min="1" max="20" step="0.5">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-ts-minrem">Мин. остаток буфера (сек)</label>
+                                            <input type="number" id="st-ts-minrem" min="0.5" max="10" step="0.5">
+                                        </div>
+                                    </div>
+                                    <div class="stream-checks-col">
+                                        <label class="stream-check-label" for="st-ts-worker">
+                                            <input type="checkbox" id="st-ts-worker">
+                                            <span>Web Worker для декодирования MPEG-TS</span>
+                                        </label>
+                                        <label class="stream-check-label" for="st-ts-stash">
+                                            <input type="checkbox" id="st-ts-stash">
+                                            <span>Включить Stash-буфер (сглаживает рывки сети)</span>
+                                        </label>
+                                        <label class="stream-check-label" for="st-ts-chasing">
+                                            <input type="checkbox" id="st-ts-chasing">
+                                            <span>Агрессивно догонять live-край (ускоряет видео, может вызывать фризы)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 6. Плеер, паузы и превью -->
+                            <div class="apk-panel">
+                                <h3>6. Плеер пользователя — паузы и превью</h3>
+                                <div class="stream-form-grid">
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-attempt-timeout">Таймаут попытки запуска (сек)</label>
+                                            <input type="number" id="st-attempt-timeout" min="4" max="60" step="1">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-codec-delay">Пауза проверки кодека HEVC (сек, 0=выкл)</label>
+                                            <input type="number" id="st-codec-delay" min="0" max="30" step="1">
+                                        </div>
+                                    </div>
+                                    <div class="stream-row-2">
+                                        <div class="form-group">
+                                            <label for="st-prev-debounce">Пауза до старта превью при навигации (мс)</label>
+                                            <input type="number" id="st-prev-debounce" min="0" max="3000" step="50">
+                                        </div>
+                                        <div class="form-group">
+                                            <label for="st-prev-resume">Пауза возврата превью после выхода (мс)</label>
+                                            <input type="number" id="st-prev-resume" min="0" max="3000" step="50">
+                                        </div>
+                                    </div>
+                                    <label class="stream-check-label" for="st-prev-enabled">
+                                        <input type="checkbox" id="st-prev-enabled">
+                                        <span>Автоматически запускать живое превью в боковом окне</span>
+                                    </label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SCREEN: НАСТРОЙКИ ИНТЕРФЕЙСА -->
+                <div id="screen-ui-settings" class="hidden">
+                    <div class="col-header">
+                        <h2>Настройки интерфейса</h2>
+                    </div>
+                    <div id="ui-settings-scroll">
+                        <div class="ui-settings-grid">
+                            <div class="apk-panel">
+                                <h3>Отображение логотипа на экране пользователя</h3>
+                                <p style="font-size:12.5px; color:var(--muted); margin-bottom:18px; line-height:1.5;">
+                                    Полупрозрачный логотип «PQTV» отображается в нижнем левом углу на всех каналах в проигрывателе пользователя.
+                                </p>
+
+                                <div class="ui-setting-row">
+                                    <div class="ui-setting-label-wrap">
+                                        <span class="ui-setting-title">Отображение</span>
+                                        <span class="ui-setting-hint">Показывать логотип PQTV во время просмотра</span>
+                                    </div>
+                                    <div class="ui-yn-group" id="ui-logo-enabled-group" role="group" aria-label="Отображение логотипа">
+                                        <button type="button" class="ui-yn-btn" data-ui-logo-enabled="true">ДА</button>
+                                        <button type="button" class="ui-yn-btn" data-ui-logo-enabled="false">НЕТ</button>
+                                    </div>
+                                </div>
+
+                                <div class="ui-setting-row ui-setting-row-col">
+                                    <div class="ui-setting-row-head">
+                                        <div class="ui-setting-label-wrap">
+                                            <span class="ui-setting-title">Прозрачность</span>
+                                            <span class="ui-setting-hint">0% — полностью невидимый, 100% — полностью непрозрачный</span>
+                                        </div>
+                                        <span id="ui-logo-opacity-val" class="ui-range-badge">40%</span>
+                                    </div>
+                                    <div class="ui-range-wrap">
+                                        <span class="ui-range-bound">0%</span>
+                                        <input type="range" id="ui-logo-opacity" min="0" max="100" step="1" value="40">
+                                        <span class="ui-range-bound">100%</span>
+                                    </div>
+                                </div>
+
+                                <div class="ui-setting-row">
+                                    <div class="ui-setting-label-wrap">
+                                        <span class="ui-setting-title">Пульсация</span>
+                                        <span class="ui-setting-hint">Плавное пульсирующее свечение логотипа</span>
+                                    </div>
+                                    <div class="ui-yn-group" id="ui-pulse-enabled-group" role="group" aria-label="Пульсация логотипа">
+                                        <button type="button" class="ui-yn-btn" data-ui-pulse-enabled="true">ДА</button>
+                                        <button type="button" class="ui-yn-btn" data-ui-pulse-enabled="false">НЕТ</button>
+                                    </div>
+                                </div>
+
+                                <div class="ui-setting-row ui-setting-row-col" id="ui-pulse-speed-row">
+                                    <div class="ui-setting-row-head">
+                                        <div class="ui-setting-label-wrap">
+                                            <span class="ui-setting-title">Скорость пульсации</span>
+                                            <span class="ui-setting-hint">Длительность одного цикла пульсации (0 — без анимации, до 10 сек)</span>
+                                        </div>
+                                        <span id="ui-pulse-speed-val" class="ui-range-badge">3 сек</span>
+                                    </div>
+                                    <div class="ui-range-wrap">
+                                        <span class="ui-range-bound">0 сек</span>
+                                        <input type="range" id="ui-pulse-speed" min="0" max="10" step="0.5" value="3">
+                                        <span class="ui-range-bound">10 сек</span>
+                                    </div>
+                                </div>
+
+                                <div class="form-actions" style="margin-top:20px;">
+                                    <button type="button" id="btn-save-ui-settings" class="btn btn-primary">Сохранить настройки</button>
+                                </div>
+                            </div>
+
+                            <div class="apk-panel">
+                                <h3>Предпросмотр на экране пользователя</h3>
+                                <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px;">
+                                    Так логотип «PQTV» будет выглядеть в нижнем левом углу плеера.
+                                </p>
+                                <div class="ui-logo-preview-stage">
+                                    <div class="ui-logo-preview-hint">Экран канала 16:9</div>
+                                    <div id="ui-logo-preview-mark" class="ui-logo-preview-mark">
+                                        <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
+                                            <defs>
+                                                <linearGradient id="LGRAD_PREV" x1="0%" y1="0%" x2="100%" y2="100%">
+                                                    <stop offset="0%" stop-color="#4A0E4E"/>
+                                                    <stop offset="25%" stop-color="#673AB7"/>
+                                                    <stop offset="55%" stop-color="#311B92"/>
+                                                    <stop offset="80%" stop-color="#1A237E"/>
+                                                    <stop offset="100%" stop-color="#00BCD4"/>
+                                                </linearGradient>
+                                            </defs>
+                                            <rect width="320" height="180" rx="20" fill="url(#LGRAD_PREV)"/>
+                                            <g stroke="#FFFFFF" fill="none" stroke-linecap="round" stroke-linejoin="round">
+                                                <rect x="30" y="35" width="260" height="110" rx="12" stroke-width="7"/>
+                                                <line x1="145" y1="12" x2="160" y2="35" stroke-width="3"/>
+                                                <circle cx="144" cy="10" r="2.5" fill="#FFFFFF" stroke="none"/>
+                                                <line x1="175" y1="12" x2="160" y2="35" stroke-width="3"/>
+                                                <circle cx="176" cy="10" r="2.5" fill="#FFFFFF" stroke="none"/>
+                                                <line x1="130" y1="158" x2="190" y2="158" stroke-width="6"/>
+                                                <g stroke-width="6">
+                                                    <path d="M83,102 L83,64 L103,64 Q117,64 117,75 Q117,86 103,86 L83,86"/>
+                                                    <ellipse cx="140" cy="83" rx="18" ry="19"/>
+                                                    <line x1="148" y1="95" x2="158" y2="105"/>
+                                                    <line x1="163" y1="64" x2="197" y2="64"/>
+                                                    <line x1="180" y1="64" x2="180" y2="102"/>
+                                                    <path d="M202,64 L219,102 L236,64"/>
+                                                </g>
+                                            </g>
+                                        </svg>
+                                    </div>
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -842,33 +1270,48 @@
         <div class="player-backdrop" data-close-player></div>
         <div class="player-window">
             <div class="player-head">
-                <div class="player-info">
-                    <div class="player-logo-wrap">
-                        <img id="player-logo" class="player-logo" alt="" style="display:none;">
-                        <svg id="player-logo-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="2" y="7" width="20" height="15" rx="2"/>
-                            <polyline points="17 2 12 7 7 2"/>
-                        </svg>
+                <div class="player-head-top">
+                    <div class="player-info">
+                        <div class="player-logo-wrap">
+                            <img id="player-logo" class="player-logo" alt="" style="display:none;">
+                            <svg id="player-logo-placeholder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="2" y="7" width="20" height="15" rx="2"/>
+                                <polyline points="17 2 12 7 7 2"/>
+                            </svg>
+                        </div>
+                        <div class="player-meta">
+                            <div id="player-title" class="player-title">—</div>
+                            <div id="player-url" class="player-url">—</div>
+                        </div>
                     </div>
-                    <div class="player-meta">
-                        <div id="player-title" class="player-title">—</div>
-                        <div id="player-url" class="player-url">—</div>
+                    <div class="player-actions">
+                        <button id="player-reload" class="btn-icon" title="Перезагрузить">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="23 4 23 10 17 10"/>
+                                <polyline points="1 20 1 14 7 14"/>
+                                <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                            </svg>
+                        </button>
+                        <button id="player-close" class="btn-icon" title="Закрыть">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
-                <div class="player-actions">
-                    <button id="player-reload" class="btn-icon" title="Перезагрузить">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <polyline points="23 4 23 10 17 10"/>
-                            <polyline points="1 20 1 14 7 14"/>
-                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                        </svg>
-                    </button>
-                    <button id="player-close" class="btn-icon" title="Закрыть">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="18" y1="6" x2="6" y2="18"/>
-                            <line x1="6" y1="6" x2="18" y2="18"/>
-                        </svg>
-                    </button>
+                <div class="player-head-playlist-row">
+                    <div class="player-pl-status">
+                        <span class="player-pl-label">Плейлист:</span>
+                        <span id="player-playlists-badge" class="player-pl-value is-empty">плейлист не найден</span>
+                    </div>
+                    <div class="player-pl-add">
+                        <label for="player-add-pl-select" class="player-pl-label">Добавить в плейлист:</label>
+                        <select id="player-add-pl-select" class="player-pl-select">
+                            <option value="">— нет плейлистов —</option>
+                        </select>
+                        <button type="button" id="player-add-pl-btn" class="btn btn-primary player-pl-add-btn">Добавить</button>
+                    </div>
                 </div>
             </div>
             <div class="player-body">

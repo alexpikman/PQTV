@@ -374,12 +374,78 @@ service cloud.firestore {
     }
 
     function isValidStreamingSetting(data) {
-      return data.keys().hasAll(['settingId', 'mode', 'tryHttpsUpgrade', 'proxyTimeoutSec', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['settingId', 'mode', 'tryHttpsUpgrade', 'proxyTimeoutSec', 'createdAt', 'updatedAt'])
+      return data.keys().hasAll([
+          'settingId', 'preset', 'mode', 'preferDirectOnTv', 'tryHttpsUpgrade',
+          'protocolHint', 'proxyUserAgent', 'proxyFollowRedirects', 'proxyTimeoutSec',
+          'proxyKeepAlive', 'proxyMaxSockets', 'proxyBufferKb', 'proxyRetryCount',
+          'hlsUseWorkers', 'hlsLowLatency', 'hlsLiveSyncDurationCount', 'hlsMaxBufferLengthSec',
+          'hlsMaxMaxBufferLengthSec', 'hlsBackBufferLengthSec', 'hlsStartFragPrefetch',
+          'hlsManifestTimeoutSec', 'hlsManifestMaxRetry', 'hlsFragTimeoutSec', 'hlsFragMaxRetry',
+          'hlsMaxBufferHoleMs', 'mpegtsUseWorker', 'mpegtsStashBuffer', 'mpegtsStashSizeKb',
+          'mpegtsLiveLatencyChasing', 'mpegtsMaxLatencySec', 'mpegtsMinRemainSec',
+          'attemptTimeoutSec', 'previewEnabled', 'previewDebounceMs', 'previewResumeDelayMs',
+          'codecCheckDelaySec', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'settingId', 'preset', 'mode', 'preferDirectOnTv', 'tryHttpsUpgrade',
+          'protocolHint', 'proxyUserAgent', 'proxyFollowRedirects', 'proxyTimeoutSec',
+          'proxyKeepAlive', 'proxyMaxSockets', 'proxyBufferKb', 'proxyRetryCount',
+          'hlsUseWorkers', 'hlsLowLatency', 'hlsLiveSyncDurationCount', 'hlsMaxBufferLengthSec',
+          'hlsMaxMaxBufferLengthSec', 'hlsBackBufferLengthSec', 'hlsStartFragPrefetch',
+          'hlsManifestTimeoutSec', 'hlsManifestMaxRetry', 'hlsFragTimeoutSec', 'hlsFragMaxRetry',
+          'hlsMaxBufferHoleMs', 'mpegtsUseWorker', 'mpegtsStashBuffer', 'mpegtsStashSizeKb',
+          'mpegtsLiveLatencyChasing', 'mpegtsMaxLatencySec', 'mpegtsMinRemainSec',
+          'attemptTimeoutSec', 'previewEnabled', 'previewDebounceMs', 'previewResumeDelayMs',
+          'codecCheckDelaySec', 'createdAt', 'updatedAt'
+        ])
         && data.settingId is string && data.settingId == 'streaming'
+        && data.preset is string && data.preset in ['vlc_smooth', 'balanced', 'low_latency', 'custom']
         && data.mode is string && data.mode in ['auto_proxy_first', 'auto_direct_first', 'proxy_only', 'direct_only']
+        && data.preferDirectOnTv is bool
         && data.tryHttpsUpgrade is bool
+        && data.protocolHint is string && data.protocolHint in ['auto', 'hls', 'mpegts', 'native']
+        && data.proxyUserAgent is string && data.proxyUserAgent.size() <= 240
+        && data.proxyFollowRedirects is int && data.proxyFollowRedirects >= 0 && data.proxyFollowRedirects <= 10
         && data.proxyTimeoutSec is int && data.proxyTimeoutSec >= 3 && data.proxyTimeoutSec <= 60
+        && data.proxyKeepAlive is bool
+        && data.proxyMaxSockets is int && data.proxyMaxSockets >= 4 && data.proxyMaxSockets <= 200
+        && data.proxyBufferKb is int && data.proxyBufferKb >= 16 && data.proxyBufferKb <= 1024
+        && data.proxyRetryCount is int && data.proxyRetryCount >= 0 && data.proxyRetryCount <= 5
+        && data.hlsUseWorkers is bool
+        && data.hlsLowLatency is bool
+        && data.hlsLiveSyncDurationCount is int && data.hlsLiveSyncDurationCount >= 1 && data.hlsLiveSyncDurationCount <= 12
+        && data.hlsMaxBufferLengthSec is int && data.hlsMaxBufferLengthSec >= 5 && data.hlsMaxBufferLengthSec <= 180
+        && data.hlsMaxMaxBufferLengthSec is int && data.hlsMaxMaxBufferLengthSec >= 10 && data.hlsMaxMaxBufferLengthSec <= 360
+        && data.hlsBackBufferLengthSec is int && data.hlsBackBufferLengthSec >= 0 && data.hlsBackBufferLengthSec <= 120
+        && data.hlsStartFragPrefetch is bool
+        && data.hlsManifestTimeoutSec is int && data.hlsManifestTimeoutSec >= 3 && data.hlsManifestTimeoutSec <= 60
+        && data.hlsManifestMaxRetry is int && data.hlsManifestMaxRetry >= 0 && data.hlsManifestMaxRetry <= 10
+        && data.hlsFragTimeoutSec is int && data.hlsFragTimeoutSec >= 5 && data.hlsFragTimeoutSec <= 60
+        && data.hlsFragMaxRetry is int && data.hlsFragMaxRetry >= 0 && data.hlsFragMaxRetry <= 10
+        && data.hlsMaxBufferHoleMs is int && data.hlsMaxBufferHoleMs >= 100 && data.hlsMaxBufferHoleMs <= 5000
+        && data.mpegtsUseWorker is bool
+        && data.mpegtsStashBuffer is bool
+        && data.mpegtsStashSizeKb is int && data.mpegtsStashSizeKb >= 64 && data.mpegtsStashSizeKb <= 2048
+        && data.mpegtsLiveLatencyChasing is bool
+        && (data.mpegtsMaxLatencySec is int || data.mpegtsMaxLatencySec is float) && data.mpegtsMaxLatencySec >= 1 && data.mpegtsMaxLatencySec <= 20
+        && (data.mpegtsMinRemainSec is int || data.mpegtsMinRemainSec is float) && data.mpegtsMinRemainSec >= 0.5 && data.mpegtsMinRemainSec <= 10
+        && data.attemptTimeoutSec is int && data.attemptTimeoutSec >= 4 && data.attemptTimeoutSec <= 60
+        && data.previewEnabled is bool
+        && data.previewDebounceMs is int && data.previewDebounceMs >= 0 && data.previewDebounceMs <= 3000
+        && data.previewResumeDelayMs is int && data.previewResumeDelayMs >= 0 && data.previewResumeDelayMs <= 3000
+        && data.codecCheckDelaySec is int && data.codecCheckDelaySec >= 0 && data.codecCheckDelaySec <= 30
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidUiSetting(data) {
+      return data.keys().hasAll(['settingId', 'logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['settingId', 'logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec', 'createdAt', 'updatedAt'])
+        && data.settingId is string && data.settingId == 'ui'
+        && data.logoEnabled is bool
+        && data.logoOpacity is int && data.logoOpacity >= 0 && data.logoOpacity <= 100
+        && data.logoPulseEnabled is bool
+        && (data.logoPulseSpeedSec is int || data.logoPulseSpeedSec is float) && data.logoPulseSpeedSec >= 0 && data.logoPulseSpeedSec <= 10
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -835,25 +901,43 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(chunkId);
     }
 
-    // ===== STREAMING SETTINGS (Verified users & Admins read; Admins write) =====
+    // ===== STREAMING & UI SETTINGS (Verified users & Admins read; Admins write) =====
     match /app_settings/{settingId} {
-      allow get: if isValidId(settingId) && settingId == 'streaming' && isVerifiedEmail();
+      allow get: if isValidId(settingId) && settingId in ['streaming', 'ui'] && isVerifiedEmail();
       allow list: if false;
       allow create: if isAdmin()
         && isValidId(settingId)
-        && settingId == 'streaming'
-        && isValidStreamingSetting(incoming())
+        && (
+          (settingId == 'streaming' && isValidStreamingSetting(incoming())) ||
+          (settingId == 'ui' && isValidUiSetting(incoming()))
+        )
         && incoming().settingId == settingId
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
       allow update: if isAdmin()
         && isValidId(settingId)
-        && settingId == 'streaming'
-        && isValidStreamingSetting(incoming())
+        && (
+          (settingId == 'streaming'
+            && isValidStreamingSetting(incoming())
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'preset', 'mode', 'preferDirectOnTv', 'tryHttpsUpgrade',
+              'protocolHint', 'proxyUserAgent', 'proxyFollowRedirects', 'proxyTimeoutSec',
+              'proxyKeepAlive', 'proxyMaxSockets', 'proxyBufferKb', 'proxyRetryCount',
+              'hlsUseWorkers', 'hlsLowLatency', 'hlsLiveSyncDurationCount', 'hlsMaxBufferLengthSec',
+              'hlsMaxMaxBufferLengthSec', 'hlsBackBufferLengthSec', 'hlsStartFragPrefetch',
+              'hlsManifestTimeoutSec', 'hlsManifestMaxRetry', 'hlsFragTimeoutSec', 'hlsFragMaxRetry',
+              'hlsMaxBufferHoleMs', 'mpegtsUseWorker', 'mpegtsStashBuffer', 'mpegtsStashSizeKb',
+              'mpegtsLiveLatencyChasing', 'mpegtsMaxLatencySec', 'mpegtsMinRemainSec',
+              'attemptTimeoutSec', 'previewEnabled', 'previewDebounceMs', 'previewResumeDelayMs',
+              'codecCheckDelaySec', 'updatedAt'
+            ])) ||
+          (settingId == 'ui'
+            && isValidUiSetting(incoming())
+            && incoming().diff(existing()).affectedKeys().hasOnly(['logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec', 'updatedAt']))
+        )
         && incoming().settingId == existing().settingId
         && incoming().createdAt == existing().createdAt
-        && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['mode', 'tryHttpsUpgrade', 'proxyTimeoutSec', 'updatedAt']);
+        && incoming().updatedAt == request.time;
       allow delete: if isAdmin() && isValidId(settingId);
     }
 

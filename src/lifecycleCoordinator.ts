@@ -8,6 +8,7 @@ import { channelHealth } from './channelHealth.js';
 import { userAuth } from './userAuth.js';
 import { EpgParser, EpgSource } from './epgParser.js';
 import { trySaveStreamingSettings, StreamingSettings } from './streamingSettings.js';
+import { trySaveUiSettings, UiSettings } from './uiSettings.js';
 import { Channel } from './m3uParser.js';
 
 export interface UnifiedOpResult {
@@ -380,6 +381,7 @@ export async function hydrateStateUnified(body: {
   sourceIndex?: Record<string, { items?: Array<{ name: string; url: string; logo: string; group: string; tvg_id: string; userAgent?: string; referer?: string; origin?: string }>; updatedAt?: number }>;
   epgSources?: EpgSource[];
   streamingSettings?: Partial<StreamingSettings>;
+  uiSettings?: Partial<UiSettings>;
   channelHealth?: { urlDiagnostics?: Record<string, never>; issues?: Record<string, never> };
   catalog?: {
     nextChannelId?: number;
@@ -518,6 +520,18 @@ export async function hydrateStateUnified(body: {
         };
       }
       streamingHydrated = true;
+    }
+
+    // 5b. UI Settings
+    if (body.uiSettings && typeof body.uiSettings === 'object') {
+      const uiRes = trySaveUiSettings(body.uiSettings);
+      if (!uiRes.ok) {
+        return {
+          ok: false,
+          status: 500,
+          error: uiRes.error || 'Не удалось восстановить ui_settings.json',
+        };
+      }
     }
 
     // 6. Channel Health State

@@ -75,7 +75,9 @@ document.addEventListener('DOMContentLoaded', () => {
         catMusic: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>',
         catKids: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>',
         catDoc: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>',
-        catHeart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>'
+        catHeart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"/></svg>',
+        check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>',
+        warn: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'
     };
 
     const GROUP_ICONS = [
@@ -202,10 +204,87 @@ document.addEventListener('DOMContentLoaded', () => {
         proxy_only: 'Только proxy',
         direct_only: 'Только напрямую'
     };
-    let serverStreamingSettings = { mode: 'auto_proxy_first', tryHttpsUpgrade: true, proxyTimeoutSec: 15 };
+    let serverStreamingSettings = {
+        preset: 'vlc_smooth',
+        mode: 'auto_proxy_first',
+        preferDirectOnTv: true,
+        tryHttpsUpgrade: true,
+        protocolHint: 'auto',
+        proxyUserAgent: 'VLC/3.0.20 LibVLC/3.0.20',
+        proxyFollowRedirects: 5,
+        proxyTimeoutSec: 15,
+        proxyKeepAlive: true,
+        proxyMaxSockets: 64,
+        proxyBufferKb: 128,
+        proxyRetryCount: 2,
+        hlsUseWorkers: true,
+        hlsLowLatency: false,
+        hlsLiveSyncDurationCount: 4,
+        hlsMaxBufferLengthSec: 45,
+        hlsMaxMaxBufferLengthSec: 90,
+        hlsBackBufferLengthSec: 15,
+        hlsStartFragPrefetch: true,
+        hlsManifestTimeoutSec: 12,
+        hlsManifestMaxRetry: 3,
+        hlsFragTimeoutSec: 25,
+        hlsFragMaxRetry: 4,
+        hlsMaxBufferHoleMs: 500,
+        mpegtsUseWorker: true,
+        mpegtsStashBuffer: true,
+        mpegtsStashSizeKb: 512,
+        mpegtsLiveLatencyChasing: false,
+        mpegtsMaxLatencySec: 5,
+        mpegtsMinRemainSec: 1.5,
+        attemptTimeoutSec: 15,
+        previewEnabled: true,
+        previewDebounceMs: 450,
+        previewResumeDelayMs: 350,
+        codecCheckDelaySec: 8,
+    };
+    let serverUiSettings = { logoEnabled: true, logoOpacity: 40, logoPulseEnabled: false, logoPulseSpeedSec: 3 };
+
+    function sanitizeUiSettings(raw) {
+        const obj = (raw && typeof raw === 'object') ? raw : {};
+        const opRaw = Number(obj.logoOpacity);
+        const spRaw = Number(obj.logoPulseSpeedSec);
+        return {
+            logoEnabled: obj.logoEnabled !== undefined ? Boolean(obj.logoEnabled) : true,
+            logoOpacity: Number.isFinite(opRaw) ? Math.max(0, Math.min(100, Math.round(opRaw))) : 40,
+            logoPulseEnabled: obj.logoPulseEnabled !== undefined ? Boolean(obj.logoPulseEnabled) : false,
+            logoPulseSpeedSec: Number.isFinite(spRaw) ? Math.max(0, Math.min(10, Math.round(spRaw * 10) / 10)) : 3
+        };
+    }
+
+    function applyUiSettings(raw) {
+        if (raw && typeof raw === 'object') {
+            serverUiSettings = sanitizeUiSettings(Object.assign({}, serverUiSettings, raw));
+        }
+        const wm = $('player-watermark');
+        if (!wm) return;
+        const enabled = Boolean(serverUiSettings.logoEnabled);
+        wm.classList.toggle('hidden', !enabled);
+        const op = Math.max(0, Math.min(1, serverUiSettings.logoOpacity / 100));
+        wm.style.setProperty('--wm-opacity', String(op));
+        const pulsing = Boolean(enabled && serverUiSettings.logoPulseEnabled && serverUiSettings.logoPulseSpeedSec > 0);
+        wm.classList.toggle('is-pulsing', pulsing);
+        if (pulsing) {
+            wm.style.setProperty('--wm-pulse-dur', serverUiSettings.logoPulseSpeedSec + 's');
+        }
+    }
+
+    async function loadUiSettings() {
+        const res = await api('/watch/api/ui-settings?_=' + Date.now());
+        if (res && res.settings) {
+            applyUiSettings(res.settings);
+        }
+        return serverUiSettings;
+    }
 
     function isNativeTvApp() {
         return Boolean(window.PQTVAndroid && typeof window.PQTVAndroid.isAndroidTV === 'function' && window.PQTVAndroid.isAndroidTV());
+    }
+    if (isNativeTvApp()) {
+        document.documentElement.classList.add('is-tv');
     }
     function currentAppCode() {
         if (window.PQTVAndroid && typeof window.PQTVAndroid.getVersionCode === 'function') {
@@ -223,18 +302,72 @@ document.addEventListener('DOMContentLoaded', () => {
     function getEffectiveStreamingSettings() {
         const localMode = !window.IS_ADMIN_VIEWER ? (localStorage.getItem('pqtv_stream_mode') || '') : '';
         const localHttps = !window.IS_ADMIN_VIEWER ? localStorage.getItem('pqtv_stream_https') : null;
-        const mode = STREAM_MODES.includes(localMode)
+        let mode = STREAM_MODES.includes(localMode)
             ? localMode
             : (STREAM_MODES.includes(serverStreamingSettings.mode) ? serverStreamingSettings.mode : 'auto_proxy_first');
+        if (!STREAM_MODES.includes(localMode) && serverStreamingSettings.preferDirectOnTv && isNativeTvApp() && mode === 'auto_proxy_first') {
+            mode = 'auto_direct_first';
+        }
         const tryHttpsUpgrade = (localHttps === '1' || localHttps === '0')
             ? localHttps === '1'
             : (serverStreamingSettings.tryHttpsUpgrade !== false);
-        return {
+        return Object.assign({}, serverStreamingSettings, {
             mode,
             tryHttpsUpgrade,
             proxyTimeoutSec: Number(serverStreamingSettings.proxyTimeoutSec) || 15,
             isOverride: !window.IS_ADMIN_VIEWER && (STREAM_MODES.includes(localMode) || localHttps === '1' || localHttps === '0')
+        });
+    }
+
+    function buildWatchHlsConfig(eff, isPreview) {
+        const s = eff || getEffectiveStreamingSettings();
+        const maxBuf = Math.max(5, Math.min(180, Number(s.hlsMaxBufferLengthSec) || 45));
+        return {
+            enableWorker: s.hlsUseWorkers !== false,
+            lowLatencyMode: Boolean(s.hlsLowLatency),
+            liveSyncDurationCount: Math.max(1, Math.min(12, Number(s.hlsLiveSyncDurationCount) || 4)),
+            maxBufferLength: isPreview ? Math.min(20, maxBuf) : maxBuf,
+            maxMaxBufferLength: isPreview ? Math.min(40, Math.max(20, Number(s.hlsMaxMaxBufferLengthSec) || 90)) : Math.max(maxBuf, Number(s.hlsMaxMaxBufferLengthSec) || 90),
+            backBufferLength: isPreview ? Math.min(10, Number(s.hlsBackBufferLengthSec) || 15) : Math.max(0, Math.min(120, Number(s.hlsBackBufferLengthSec) || 15)),
+            startFragPrefetch: s.hlsStartFragPrefetch !== false,
+            manifestLoadingTimeOut: Math.max(3, Math.min(60, Number(s.hlsManifestTimeoutSec) || 12)) * 1000,
+            manifestLoadingMaxRetry: Math.max(0, Math.min(10, Number(s.hlsManifestMaxRetry) ?? 3)),
+            fragLoadingTimeOut: Math.max(5, Math.min(60, Number(s.hlsFragTimeoutSec) || 25)) * 1000,
+            fragLoadingMaxRetry: Math.max(0, Math.min(10, Number(s.hlsFragMaxRetry) ?? 4)),
+            maxBufferHole: Math.max(0.1, Math.min(5, (Number(s.hlsMaxBufferHoleMs) || 500) / 1000)),
         };
+    }
+
+    function buildWatchMpegtsConfig(eff) {
+        const s = eff || getEffectiveStreamingSettings();
+        return {
+            enableWorker: s.mpegtsUseWorker !== false,
+            enableStashBuffer: s.mpegtsStashBuffer !== false,
+            stashInitialSize: Math.max(64, Math.min(2048, Number(s.mpegtsStashSizeKb) || 512)),
+            liveBufferLatencyChasing: Boolean(s.mpegtsLiveLatencyChasing),
+            liveBufferLatencyMaxLatency: Math.max(1, Math.min(20, Number(s.mpegtsMaxLatencySec) || 5)),
+            liveBufferLatencyMinRemain: Math.max(0.5, Math.min(10, Number(s.mpegtsMinRemainSec) || 1.5)),
+        };
+    }
+
+    const detectedWatchFormatCache = new Map();
+    async function resolveWatchStreamKind(url, eff) {
+        const hint = eff && eff.protocolHint ? eff.protocolHint : 'auto';
+        if (hint === 'hls' || hint === 'mpegts' || hint === 'native') return hint;
+        const low = String(url || '').split('?')[0].toLowerCase();
+        if (low.includes('.m3u8')) return 'hls';
+        if (low.endsWith('.ts')) return 'mpegts';
+        if (/\.(mp4|webm|mkv|mov)$/i.test(low)) return 'native';
+        if (detectedWatchFormatCache.has(url)) return detectedWatchFormatCache.get(url);
+        try {
+            const res = await fetch('/api/stream/detect?url=' + encodeURIComponent(url));
+            const data = await res.json().catch(() => null);
+            const kind = (data && (data.kind === 'hls' || data.kind === 'mpegts' || data.kind === 'native')) ? data.kind : 'hls';
+            detectedWatchFormatCache.set(url, kind);
+            return kind;
+        } catch {
+            return 'hls';
+        }
     }
 
     function buildProxyCandidateUrl(targetUrl, ch) {
@@ -700,6 +833,9 @@ document.addEventListener('DOMContentLoaded', () => {
             serverStreamingSettings = Object.assign({}, serverStreamingSettings, res.streaming);
             syncSettingsModalLabels();
         }
+        if (res && res.uiSettings && typeof res.uiSettings === 'object') {
+            applyUiSettings(res.uiSettings);
+        }
         channels = Array.isArray(res.channels) ? res.channels : [];
         serverUnavailable = Array.isArray(res.unavailable) ? res.unavailable : [];
         serverStats = (res.stats && typeof res.stats === 'object')
@@ -991,12 +1127,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         previewKey = newKey;
 
-        // Debounce — запускаем через 500мс
+        const eff = getEffectiveStreamingSettings();
+        if (eff.previewEnabled === false) {
+            stopPreviewStream();
+            return;
+        }
+        const delayMs = Math.max(0, Math.min(3000, Number(eff.previewDebounceMs) ?? 450));
+
         clearTimeout(previewDebounceTimer);
         previewDebounceTimer = setTimeout(() => {
             if (previewKey !== newKey) return;
             startPreviewStream(ch);
-        }, 500);
+        }, delayMs);
     }
 
     function applyPreviewEpg(c) {
@@ -1040,16 +1182,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function startPreviewStream(ch) {
         if (!ch || !ch.url) return;
+        const eff = getEffectiveStreamingSettings();
+        if (eff.previewEnabled === false) {
+            stopPreviewStream();
+            return;
+        }
         stopPreviewStream();
 
         previewLoading.classList.remove('hidden');
 
         const url = ch.url;
-        const low = url.split('?')[0].toLowerCase();
-        const isM3u8 = low.includes('.m3u8');
-        const isTs = low.endsWith('.ts');
-        const candidates = buildStreamCandidates(url, getEffectiveStreamingSettings(), ch);
+        const candidates = buildStreamCandidates(url, eff, ch);
         let candidateIdx = 0;
+        let resolvedKind = 'hls';
 
         const onReady = () => {
             clearTimeout(previewAttemptTimer);
@@ -1107,7 +1252,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
-            previewAttemptTimer = setTimeout(advance, 8500);
+            const timeoutMs = Math.max(4, Math.min(60, Number(eff.attemptTimeoutSec) || 15)) * 1000;
+            previewAttemptTimer = setTimeout(advance, timeoutMs);
 
             previewVideo.onloadeddata = () => {
                 if (myAttempt !== previewAttemptId) return;
@@ -1121,28 +1267,20 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             previewVideo.onerror = advance;
 
-            if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-                previewHls = new Hls({
-                    enableWorker: true,
-                    lowLatencyMode: false,
-                    backBufferLength: 15,
-                    maxBufferLength: 20,
-                    manifestLoadingTimeOut: 9000,
-                    manifestLoadingMaxRetry: 1,
-                    fragLoadingTimeOut: 20000
-                });
+            if (resolvedKind === 'hls' && window.Hls && window.Hls.isSupported()) {
+                previewHls = new Hls(buildWatchHlsConfig(eff, true));
                 previewHls.loadSource(cand.src);
                 previewHls.attachMedia(previewVideo);
                 previewHls.on(Hls.Events.MANIFEST_PARSED, () => tryPlay(myAttempt));
                 previewHls.on(Hls.Events.ERROR, (e, d) => {
                     if (d && d.fatal) advance();
                 });
-            } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+            } else if (resolvedKind === 'mpegts' && window.mpegts && window.mpegts.isSupported()) {
                 previewMpegts = mpegts.createPlayer({
                     type: 'mpegts',
                     url: cand.src,
                     isLive: true
-                }, { enableWorker: true, liveBufferLatencyChasing: true });
+                }, buildWatchMpegtsConfig(eff));
                 previewMpegts.attachMediaElement(previewVideo);
                 previewMpegts.load();
                 previewMpegts.play().catch(()=>{});
@@ -1157,7 +1295,12 @@ document.addEventListener('DOMContentLoaded', () => {
             onAllFailed();
             return;
         }
-        runAttempt(candidates[candidateIdx++]);
+        const launchAttemptToken = ++previewAttemptId;
+        void resolveWatchStreamKind(url, eff).then((kind) => {
+            if (launchAttemptToken !== previewAttemptId) return;
+            resolvedKind = kind;
+            runAttempt(candidates[candidateIdx++]);
+        });
     }
 
     // Клик по кнопке fullscreen на превью
@@ -1265,15 +1408,75 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ===== FULLSCREEN PLAYER =====
     let hls = null, mpegtsP = null;
+    let playerSessionId = 0;
+
+    function setPlayerOverlayChannel(ch) {
+        const logoImg = $('player-overlay-logo');
+        const logoPh = $('player-overlay-ph');
+        const titleEl = $('player-overlay-title');
+        if (titleEl) titleEl.textContent = (ch && ch.name) ? ch.name : 'Канал';
+        if (logoImg && logoPh) {
+            logoImg.onerror = null;
+            if (ch && ch.logo) {
+                logoImg.src = ch.logo;
+                logoImg.style.display = '';
+                logoPh.style.display = 'none';
+                logoImg.onerror = () => {
+                    logoImg.style.display = 'none';
+                    logoPh.style.display = '';
+                };
+            } else {
+                logoImg.removeAttribute('src');
+                logoImg.style.display = 'none';
+                logoPh.style.display = '';
+            }
+        }
+    }
+
+    function setPlayerStage(stageName, state, detail) {
+        const stagesEl = $('player-overlay-stages');
+        if (!stagesEl) return;
+        const row = stagesEl.querySelector('[data-stage="' + stageName + '"]');
+        if (!row) return;
+        row.setAttribute('data-state', state);
+        const ico = row.querySelector('.player-stage-ico');
+        if (ico) {
+            if (state === 'done') ico.innerHTML = IC.check;
+            else if (state === 'error') ico.innerHTML = IC.warn;
+            else ico.innerHTML = '';
+        }
+        const detailEl = row.querySelector('.player-stage-detail');
+        if (detailEl && detail !== undefined) {
+            detailEl.textContent = detail || '';
+        }
+    }
+
+    function resetPlayerOverlayState(ch) {
+        setPlayerOverlayChannel(ch);
+        setPlayerStage('prepare', 'active', '');
+        setPlayerStage('connect', 'pending', '');
+        setPlayerStage('buffer', 'pending', '');
+        const text = $('player-overlay-text');
+        const errBox = $('player-overlay-error');
+        if (text) {
+            text.textContent = 'Подготовка параметров потока...';
+            text.classList.remove('hidden');
+        }
+        if (errBox) errBox.classList.add('hidden');
+    }
 
     function openFullscreenPlayer(ch) {
+        if (!ch) return;
+        window.__playerChannel = ch;
         // Останавливаем превью, чтобы не тянул трафик параллельно
         stopPreviewStream();
         if (previewLoading) previewLoading.classList.add('hidden');
 
+        applyUiSettings(serverUiSettings);
+        loadUiSettings().catch(() => {});
         playerModal.classList.remove('hidden');
         document.body.classList.add('player-open');
-        playStream(ch.url);
+        playStream(ch.url, ch);
     }
 
     function closePlayer() {
@@ -1283,9 +1486,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (document.fullscreenElement) document.exitFullscreen().catch(()=>{});
 
         // Возвращаем preview текущего канала
-        if (previewChannel) {
-            // Небольшая задержка, чтобы освободились ресурсы прокси
-            setTimeout(() => startPreviewStream(previewChannel), 300);
+        const eff = getEffectiveStreamingSettings();
+        if (previewChannel && eff.previewEnabled !== false) {
+            const resumeMs = Math.max(0, Math.min(3000, Number(eff.previewResumeDelayMs) ?? 350));
+            setTimeout(() => startPreviewStream(previewChannel), resumeMs);
         }
     }
 
@@ -1293,6 +1497,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let playerCodecTimer = null;
 
     function stopStream() {
+        playerSessionId++;
         clearTimeout(playerAttemptTimer);
         clearTimeout(playerCodecTimer);
         const v = playerVideoHost.querySelector('video');
@@ -1324,8 +1529,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return 'Поток недоступен или формат не поддерживается';
     }
 
-    function playStream(url) {
+    function playStream(url, channelObj) {
         stopStream();
+        const mySession = playerSessionId;
+        const ch = channelObj || window.__playerChannel || previewChannel;
+        const safeUrl = String(url || '').trim();
+
         const v = document.createElement('video');
         v.id = 'player-video';
         v.controls = true;
@@ -1340,41 +1549,77 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const overlay = $('player-overlay');
         const text = $('player-overlay-text');
+        const errBox = $('player-overlay-error');
+        const errText = $('player-overlay-error-text');
         const toast = $('player-toast');
         overlay.classList.remove('hidden');
-        text.textContent = 'Загрузка потока...';
+        resetPlayerOverlayState(ch);
         if (toast) toast.style.display = 'none';
 
-        const low = url.split('?')[0].toLowerCase();
-        const isM3u8 = low.includes('.m3u8');
-        const isTs = low.endsWith('.ts');
-        const ch = window.__playerChannel || previewChannel;
         let attempts = [];
         let attemptIndex = 0;
         let attemptId = 0;
+        let activeStage = 'prepare';
+        let activeSettings = getEffectiveStreamingSettings();
+        let resolvedKind = 'hls';
 
         const ready = () => {
+            if (mySession !== playerSessionId) return;
             clearTimeout(playerAttemptTimer);
+            setPlayerStage('prepare', 'done');
+            setPlayerStage('connect', 'done');
+            setPlayerStage('buffer', 'done', 'Готово');
             overlay.classList.add('hidden');
             clearRuntimeUnavailable(ch);
         };
         const err = (message) => {
+            if (mySession !== playerSessionId) return;
             clearTimeout(playerAttemptTimer);
             const msg = message || 'Ошибка воспроизведения';
             overlay.classList.remove('hidden');
-            text.textContent = msg;
+            if (activeStage === 'buffer') {
+                setPlayerStage('buffer', 'error', 'Ошибка');
+            } else if (activeStage === 'connect') {
+                setPlayerStage('connect', 'error', 'Ошибка');
+            } else {
+                setPlayerStage('prepare', 'error', 'Ошибка');
+            }
+            if (text) text.classList.add('hidden');
+            if (errText) errText.textContent = msg;
+            if (errBox) errBox.classList.remove('hidden');
             recordRuntimeUnavailable(ch, msg);
         };
 
+        if (!safeUrl) {
+            err('Ссылка на поток не задана');
+            return;
+        }
+
+        const enterBufferStage = (currentAttempt) => {
+            if (mySession !== playerSessionId || currentAttempt !== attemptId) return;
+            if (activeStage === 'buffer') return;
+            activeStage = 'buffer';
+            setPlayerStage('connect', 'done');
+            setPlayerStage('buffer', 'active', 'Буферизация');
+            if (text) text.textContent = 'Буферизация и запуск видео...';
+        };
+
         const attempt = (candidate) => {
+            if (mySession !== playerSessionId) return;
             if (!candidate) {
-                err(window.location.protocol === 'https:' && !isNativeTvApp() && /^http:\/\//i.test(url)
+                err(window.location.protocol === 'https:' && !isNativeTvApp() && /^http:\/\//i.test(safeUrl)
                     ? 'Прямая http:// ссылка заблокирована браузером (HTTPS) — включите proxy'
                     : 'Поток недоступен или формат не поддерживается');
                 return;
             }
             const source = candidate.src;
             const currentAttempt = ++attemptId;
+            const stepLabel = (attempts.length > 1 ? (attemptIndex + '/' + attempts.length + ' · ') : '') + candidate.label + ' · ' + resolvedKind.toUpperCase();
+            activeStage = 'connect';
+            setPlayerStage('connect', 'active', stepLabel);
+            setPlayerStage('buffer', 'pending', '');
+            if (text) text.textContent = 'Подключение (' + candidate.label + ')...';
+
             clearTimeout(playerAttemptTimer);
             if (hls) {
                 try { hls.destroy(); } catch (e) {}
@@ -1390,10 +1635,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 v.load();
             } catch (e) {}
 
-            text.textContent = 'Загрузка (' + candidate.label + ')...';
-
             const advance = (fallbackMsg) => {
-                if (currentAttempt !== attemptId) return;
+                if (mySession !== playerSessionId || currentAttempt !== attemptId) return;
                 clearTimeout(playerAttemptTimer);
                 if (attemptIndex < attempts.length) {
                     attempt(attempts[attemptIndex++]);
@@ -1402,42 +1645,39 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             };
 
+            const timeoutMs = Math.max(4, Math.min(60, Number(activeSettings.attemptTimeoutSec) || 15)) * 1000;
             if (attemptIndex < attempts.length) {
                 playerAttemptTimer = setTimeout(() => {
                     advance('Таймаут загрузки потока');
-                }, 9500);
+                }, timeoutMs);
             }
 
-            v.onloadeddata = () => { if (currentAttempt === attemptId) ready(); };
-            v.oncanplay = () => { if (currentAttempt === attemptId) ready(); };
+            v.onloadedmetadata = () => { enterBufferStage(currentAttempt); };
+            v.onloadeddata = () => { if (mySession === playerSessionId && currentAttempt === attemptId) ready(); };
+            v.oncanplay = () => { if (mySession === playerSessionId && currentAttempt === attemptId) ready(); };
             v.onerror = () => advance(describeMediaError(v));
 
-            if (isM3u8 && window.Hls && window.Hls.isSupported()) {
-                hls = new Hls({
-                    enableWorker: true,
-                    lowLatencyMode: false,
-                    manifestLoadingTimeOut: 10000,
-                    manifestLoadingMaxRetry: 1,
-                    fragLoadingTimeOut: 30000,
-                    maxBufferLength: 30,
-                    maxMaxBufferLength: 60
-                });
+            if (resolvedKind === 'hls' && window.Hls && window.Hls.isSupported()) {
+                hls = new Hls(buildWatchHlsConfig(activeSettings, false));
                 hls.loadSource(source);
                 hls.attachMedia(v);
                 hls.on(Hls.Events.MANIFEST_PARSED, () => {
-                    if (currentAttempt === attemptId) v.play().catch(() => {});
+                    if (mySession !== playerSessionId || currentAttempt !== attemptId) return;
+                    enterBufferStage(currentAttempt);
+                    v.play().catch(() => {});
                 });
                 hls.on(Hls.Events.ERROR, (event, data) => {
-                    if (!data || !data.fatal || currentAttempt !== attemptId) return;
+                    if (!data || !data.fatal || mySession !== playerSessionId || currentAttempt !== attemptId) return;
                     advance(describeHlsError(data));
                 });
-            } else if (isTs && window.mpegts && window.mpegts.isSupported()) {
+            } else if (resolvedKind === 'mpegts' && window.mpegts && window.mpegts.isSupported()) {
                 mpegtsP = mpegts.createPlayer(
                     { type: 'mpegts', url: source, isLive: true },
-                    { enableWorker: true, liveBufferLatencyChasing: true }
+                    buildWatchMpegtsConfig(activeSettings)
                 );
                 mpegtsP.attachMediaElement(v);
                 mpegtsP.load();
+                enterBufferStage(currentAttempt);
                 mpegtsP.play().catch(() => {});
                 mpegtsP.on(mpegts.Events.ERROR, (type, detail) => {
                     advance('Ошибка TS: ' + detail);
@@ -1448,28 +1688,39 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        void loadStreamingSettings().then((eff) => {
-            attempts = buildStreamCandidates(url, eff, ch);
+        const startWithSettings = async (eff) => {
+            if (mySession !== playerSessionId) return;
+            activeSettings = eff || getEffectiveStreamingSettings();
+            resolvedKind = await resolveWatchStreamKind(safeUrl, activeSettings);
+            if (mySession !== playerSessionId) return;
+            setPlayerStage('prepare', 'done', resolvedKind.toUpperCase());
+            attempts = buildStreamCandidates(safeUrl, activeSettings, ch);
             attemptIndex = 0;
             attempt(attempts[attemptIndex++]);
-        }).catch(() => {
-            attempts = buildStreamCandidates(url, getEffectiveStreamingSettings(), ch);
-            attemptIndex = 0;
-            attempt(attempts[attemptIndex++]);
-        });
 
-        playerCodecTimer = setTimeout(() => {
-            try {
-                if (v && v.isConnected && v.videoWidth === 0 && v.currentTime > 1 && !v.paused) {
-                    if (toast) {
-                        toast.textContent = 'Видео не отображается. Возможно формат H.265/HEVC или MPEG-2 не поддерживается.';
-                        toast.style.display = 'block';
-                        setTimeout(() => { if (toast) toast.style.display = 'none'; }, 10000);
-                    }
-                    recordRuntimeUnavailable(ch, 'Кодек HEVC/MPEG-2 не поддерживается браузером (нет видеопотока)');
-                }
-            } catch (e) {}
-        }, 8000);
+            const codecDelaySec = Math.max(0, Math.min(30, Number(activeSettings.codecCheckDelaySec) ?? 8));
+            if (codecDelaySec > 0) {
+                clearTimeout(playerCodecTimer);
+                playerCodecTimer = setTimeout(() => {
+                    try {
+                        if (mySession === playerSessionId && v && v.isConnected && v.videoWidth === 0 && v.currentTime > 1 && !v.paused) {
+                            if (toast) {
+                                toast.textContent = 'Видео не отображается. Возможно формат H.265/HEVC или MPEG-2 не поддерживается.';
+                                toast.style.display = 'block';
+                                setTimeout(() => { if (toast) toast.style.display = 'none'; }, 10000);
+                            }
+                            recordRuntimeUnavailable(ch, 'Кодек HEVC/MPEG-2 не поддерживается браузером (нет видеопотока)');
+                        }
+                    } catch (e) {}
+                }, codecDelaySec * 1000);
+            }
+        };
+
+        void loadStreamingSettings().then((eff) => {
+            void startWithSettings(eff);
+        }).catch(() => {
+            void startWithSettings(getEffectiveStreamingSettings());
+        });
     }
 
     // ===== FULLSCREEN =====
@@ -1483,19 +1734,20 @@ document.addEventListener('DOMContentLoaded', () => {
     (function initPlayer() {
         const btnClose = $('player-close');
         const btnReload = $('player-reload');
+        const isTv = document.documentElement.classList.contains('is-tv') || isNativeTvApp();
+        if (isTv) {
+            if (btnClose) { btnClose.disabled = true; btnClose.style.display = 'none'; }
+            if (btnReload) { btnReload.disabled = true; btnReload.style.display = 'none'; }
+            const toolsWrap = document.querySelector('.player-tools');
+            if (toolsWrap) toolsWrap.style.display = 'none';
+            return;
+        }
         if (btnClose) btnClose.onclick = closePlayer;
         if (btnReload) btnReload.onclick = () => {
             const ch = window.__playerChannel;
-            if (ch) playStream(ch.url);
+            if (ch) playStream(ch.url, ch);
         };
     })();
-
-    // Запоминаем активный канал плеера, чтобы reload работал
-    const _origOpenFull = openFullscreenPlayer;
-    openFullscreenPlayer = function(ch) {
-        window.__playerChannel = ch;
-        _origOpenFull(ch);
-    };
 
     // ===== KEYBOARD =====
     // ============ SWITCH CHANNEL IN FULLSCREEN ============
@@ -2387,6 +2639,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         serverStreamingSettings = Object.assign({}, serverStreamingSettings, res.streaming);
                         syncSettingsModalLabels();
                     }
+                    if (res && res.uiSettings) {
+                        applyUiSettings(res.uiSettings);
+                    }
                     if (res && res.restored > 0) {
                         await loadChannels();
                     }
@@ -2396,7 +2651,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ===== BOOT =====
+    applyUiSettings(window.UI_SETTINGS || {});
     loadStreamingSettings().catch(() => {});
+    loadUiSettings().catch(() => {});
     loadChannels();
     checkTvUpdate(false);
     initViewerCloudHydration();
