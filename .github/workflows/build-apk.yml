@@ -22,6 +22,8 @@ on:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -49,6 +51,19 @@ jobs:
         with:
           name: pqtv-android-tv-apk
           path: android-tv/app/build/outputs/apk/release/*.apk
+      - name: Publish GitHub Release (Persistent Backup)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APK_FILE=$(ls android-tv/app/build/outputs/apk/release/*.apk | head -n 1)
+          TAG="apk-v${{ inputs.version_name }}-c${{ inputs.version_code }}"
+          RENAMED="pqtv-tv-v${{ inputs.version_name }}-c${{ inputs.version_code }}.apk"
+          cp "${APK_FILE}" "${RENAMED}"
+          gh release create "${TAG}" "${RENAMED}" \
+            --title "PQTV Android TV v${{ inputs.version_name }} (code ${{ inputs.version_code }})" \
+            --notes "${{ inputs.changelog }}" || \
+          gh release upload "${TAG}" "${RENAMED}" --clobber
       - name: Publish OTA directly to PQTV Server
         if: env.PQTV_UPLOAD_TOKEN != ''
         env:

@@ -1,8 +1,10 @@
 import {
+  collection,
   deleteDoc,
   doc,
   DocumentReference,
   getDoc,
+  getDocs,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -97,6 +99,38 @@ export interface CloudUiSettings {
   logoPulseSpeedSec: number;
 }
 
+export interface CloudApkRelease {
+  id: string;
+  versionCode: number;
+  versionName: string;
+  filename: string;
+  size: number;
+  sha256: string;
+  changelog: string;
+  mandatory: boolean;
+  blocked: boolean;
+  blockReason?: string;
+  source?: 'github' | 'upload';
+  githubRunId?: number;
+  externalApkUrl?: string;
+  uploadedAt: number;
+}
+
+export interface CloudApkPolicy {
+  lastVersionCode: number;
+  lastVersionName: string;
+  minSupportedVersionCode: number;
+  blockedVersionCodes: number[];
+  blockMode: 'hard' | 'soft';
+  blockMessage: string;
+  updatedAt?: number;
+}
+
+export interface CloudApkState {
+  policy: CloudApkPolicy;
+  releases: CloudApkRelease[];
+}
+
 export interface CloudChannelHealthState {
   urlDiagnostics?: Record<string, Record<string, unknown>>;
   issues?: Record<string, Record<string, unknown>>;
@@ -118,6 +152,7 @@ export interface CloudExportPayload {
   };
   streamingSettings: CloudStreamingSettings;
   uiSettings?: CloudUiSettings;
+  apkState?: CloudApkState;
   channelHealth?: CloudChannelHealthState;
   users: Array<{
     id: string;
@@ -303,6 +338,67 @@ async function writeManifestPatch(patch: Partial<{
       'updatedByUid',
     ]
   );
+}
+
+export async function getCloudManifestStatus(): Promise<{
+  exists: boolean;
+  revision: number | null;
+  playlists: string[];
+  localUserIds: string[];
+}> {
+  const cur = await readManifest().catch(() => null);
+  if (!cur) {
+    return { exists: false, revision: null, playlists: [], localUserIds: [] };
+  }
+  return {
+    exists: true,
+    revision: typeof cur.revision === 'number' ? cur.revision : null,
+    playlists: cur.playlists,
+    localUserIds: cur.localUserIds,
+  };
+}
+
+export async function bumpCloudManifestRevision(
+  revision: number,
+  extra?: {
+    addLocalUserId?: string;
+    removeLocalUserId?: string;
+    playlists?: string[];
+  }
+): Promise<boolean> {
+  const uid = auth.currentUser?.uid;
+  if (!uid) return false;
+  const cur = await readManifest().catch(() => null);
+  if (!cur) return false;
+
+  const cleanRev = Math.max(0, Math.floor(Number(revision) || 0));
+  const nextRevision = Math.max(cur.revision ?? 0, cleanRev);
+
+  let localUserIds = [...cur.localUserIds];
+  if (extra?.addLocalUserId) {
+    const addId = safeId(extra.addLocalUserId);
+    if (!localUserIds.includes(addId)) localUserIds.push(addId);
+  }
+  if (extra?.removeLocalUserId) {
+    const remId = safeId(extra.removeLocalUserId);
+    localUserIds = localUserIds.filter((id) => id !== remId);
+  }
+
+  const patch: Parameters<typeof writeManifestPatch>[0] = {
+    revision: nextRevision,
+    ...(extra?.addLocalUserId || extra?.removeLocalUserId ? { localUserIds } : {}),
+    ...(Array.isArray(extra?.playlists)
+      ? {
+          playlists: extra.playlists
+            .map((p) => cleanPlaylistName(p))
+            .filter(isValidPlaylistName)
+            .sort(),
+        }
+      : {}),
+  };
+
+  await writeManifestPatch(patch);
+  return true;
 }
 
 function normalizeChannelItem(raw: Partial<CloudChannelItem>): CloudChannelItem {
@@ -877,6 +973,136 @@ export async function fetchUiSettingsFromCloud(): Promise<CloudUiSettings | null
   }
 }
 
+const DEFAULT_APK_BLOCK_MSG =
+  'Эта версия приложения устарела и заблокирована администратором. Пожалуйста, установите обновление.';
+
+function normalizeCloudApkState(raw?: Partial<CloudApkState> | Record<string, unknown> | null): CloudApkState {
+  const src = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+  const rawPol = (src.policy && typeof src.policy === 'object' ? src.policy : src) as Record<string, unknown>;
+  const rawReleases = Array.isArray(src.releases) ? src.releases : [];
+
+  const cleanReleases: CloudApkRelease[] = [];
+  for (const item of rawReleases.slice(0, 15)) {
+    if (!item || typeof item !== 'object') continue;
+    const r = item as Record<string, unknown>;
+    const versionCode = Math.max(1, Math.min(1000000, Math.floor(Number(r.versionCode) || 1)));
+    const versionName = sReq(r.versionName, 32, `1.0.${versionCode}`);
+    const id = sReq(r.id, 80, `v${versionName}-c${versionCode}`);
+    const filename = sReq(r.filename, 160, `pqtv-v${versionName}-c${versionCode}.apk`);
+    const clean: CloudApkRelease = {
+      id,
+      versionCode,
+      versionName,
+      filename,
+      size: Math.max(0, Math.floor(Number(r.size) || 0)),
+      sha256: s(r.sha256, 128),
+      changelog: s(r.changelog, 1000),
+      mandatory: Boolean(r.mandatory),
+      blocked: Boolean(r.blocked),
+      uploadedAt: Math.max(0, Math.floor(Number(r.uploadedAt) || 0)),
+    };
+    const blockReason = s(r.blockReason, 300).trim();
+    if (blockReason) clean.blockReason = blockReason;
+    if (r.source === 'github' || r.source === 'upload') clean.source = r.source;
+    const runId = Math.floor(Number(r.githubRunId) || 0);
+    if (runId > 0) clean.githubRunId = runId;
+    const extUrl = s(r.externalApkUrl, 500).trim();
+    if (extUrl) clean.externalApkUrl = extUrl;
+    cleanReleases.push(clean);
+  }
+  cleanReleases.sort((a, b) => b.versionCode - a.versionCode);
+
+  const maxReleaseCode = cleanReleases.reduce((m, r) => Math.max(m, r.versionCode), 0);
+  const lastVersionCode = Math.max(
+    maxReleaseCode,
+    Math.max(0, Math.min(1000000, Math.floor(Number(rawPol.lastVersionCode) || 0)))
+  );
+  let lastVersionName = s(rawPol.lastVersionName, 32).trim();
+  if (!lastVersionName && cleanReleases[0]) {
+    lastVersionName = cleanReleases[0].versionName;
+  }
+
+  const rawBlocked = Array.isArray(rawPol.blockedVersionCodes) ? rawPol.blockedVersionCodes : [];
+  const blockedSet = new Set<number>();
+  for (const c of rawBlocked) {
+    const n = Math.floor(Number(c));
+    if (Number.isFinite(n) && n >= 1 && n <= 1000000) blockedSet.add(n);
+  }
+  for (const rel of cleanReleases) {
+    if (rel.blocked) blockedSet.add(rel.versionCode);
+  }
+  const blockedVersionCodes = Array.from(blockedSet).sort((a, b) => a - b).slice(0, 100);
+
+  const blockMode: 'hard' | 'soft' = rawPol.blockMode === 'soft' ? 'soft' : 'hard';
+  const blockMessage = sReq(rawPol.blockMessage, 300, DEFAULT_APK_BLOCK_MSG);
+  const minSupportedVersionCode = Math.max(
+    0,
+    Math.min(1000000, Math.floor(Number(rawPol.minSupportedVersionCode) || 0))
+  );
+
+  return {
+    policy: {
+      lastVersionCode,
+      lastVersionName,
+      minSupportedVersionCode,
+      blockedVersionCodes,
+      blockMode,
+      blockMessage,
+    },
+    releases: cleanReleases,
+  };
+}
+
+export async function saveApkStateToCloud(
+  apkState?: Partial<CloudApkState> | null
+): Promise<void> {
+  if (!apkState || typeof apkState !== 'object') return;
+  const norm = normalizeCloudApkState(apkState);
+  await upsertDoc(
+    doc(db, 'app_settings', 'apk'),
+    {
+      settingId: 'apk',
+      lastVersionCode: norm.policy.lastVersionCode,
+      lastVersionName: norm.policy.lastVersionName,
+      minSupportedVersionCode: norm.policy.minSupportedVersionCode,
+      blockedVersionCodes: norm.policy.blockedVersionCodes,
+      blockMode: norm.policy.blockMode,
+      blockMessage: norm.policy.blockMessage,
+      releases: norm.releases,
+    },
+    [
+      'lastVersionCode',
+      'lastVersionName',
+      'minSupportedVersionCode',
+      'blockedVersionCodes',
+      'blockMode',
+      'blockMessage',
+      'releases',
+    ]
+  );
+}
+
+export async function fetchApkStateFromCloud(): Promise<CloudApkState | null> {
+  try {
+    const snap = await getDoc(doc(db, 'app_settings', 'apk'));
+    if (!snap.exists()) return null;
+    const d = snap.data();
+    return normalizeCloudApkState({
+      policy: {
+        lastVersionCode: Number(d.lastVersionCode) || 0,
+        lastVersionName: String(d.lastVersionName || ''),
+        minSupportedVersionCode: Number(d.minSupportedVersionCode) || 0,
+        blockedVersionCodes: Array.isArray(d.blockedVersionCodes) ? (d.blockedVersionCodes as number[]) : [],
+        blockMode: d.blockMode === 'soft' ? 'soft' : 'hard',
+        blockMessage: String(d.blockMessage || DEFAULT_APK_BLOCK_MSG),
+      },
+      releases: Array.isArray(d.releases) ? (d.releases as CloudApkRelease[]) : [],
+    });
+  } catch {
+    return null;
+  }
+}
+
 export async function saveLocalUserCredentialsToCloud(
   users: CloudExportPayload['users'],
   updateManifest = true
@@ -1063,10 +1289,11 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
   const catInfo = await saveCatalogToCloud(data.catalog, false);
   await saveStreamingSettingsToCloud(data.streamingSettings);
   await saveUiSettingsToCloud(data.uiSettings);
+  await saveApkStateToCloud(data.apkState);
   await saveChannelHealthToCloud(data.channelHealth);
   await saveAdminSettingsToCloud(data.adminSettings);
 
-  // Also ensure local users exist in /users and store their password hashes in /private/credentials
+  // Also ensure local users exist in /users (preserving admin role on existing docs) and store password hashes
   for (const u of data.users || []) {
     const uid = safeId(u.id);
     const login = String(u.login || uid)
@@ -1078,18 +1305,38 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
     const playlists = Array.isArray(u.playlists)
       ? u.playlists.map((p) => cleanPlaylistName(p)).filter(Boolean).slice(0, 50)
       : [];
-    await upsertDoc(
-      doc(db, 'users', uid),
-      {
+    const userRef = doc(db, 'users', uid);
+    const existingSnap = await getDoc(userRef).catch(() => null);
+    if (!existingSnap || !existingSnap.exists()) {
+      await setDoc(userRef, {
         uid,
         login,
         name,
         playlists,
         enabled: Boolean(u.enabled),
         role: 'user',
-      },
-      ['login', 'name', 'playlists', 'enabled', 'role']
-    );
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      const existingData = existingSnap.data();
+      const nextFields: Record<string, unknown> = {
+        login,
+        name,
+        playlists,
+        enabled: Boolean(u.enabled),
+      };
+      const changedKeys = ['login', 'name', 'playlists', 'enabled'].filter(
+        (key) => JSON.stringify(existingData[key]) !== JSON.stringify(nextFields[key])
+      );
+      if (changedKeys.length > 0) {
+        const patch: Record<string, unknown> = { updatedAt: serverTimestamp() };
+        for (const key of changedKeys) {
+          patch[key] = nextFields[key];
+        }
+        await updateDoc(userRef, patch);
+      }
+    }
   }
   const localUserIds = await saveLocalUserCredentialsToCloud(data.users || [], false);
 
@@ -1243,10 +1490,11 @@ export async function loadFullCloudSnapshot(): Promise<{
         throw err;
       }
 
-  // Streaming & UI settings
-  const [streamingSettings, uiSettings] = await Promise.all([
+  // Streaming, UI & APK settings
+  const [streamingSettings, uiSettings, apkState] = await Promise.all([
     fetchStreamingSettingsFromCloud(),
     fetchUiSettingsFromCloud(),
+    fetchApkStateFromCloud(),
   ]);
 
   // Channel Health state
@@ -1263,21 +1511,26 @@ export async function loadFullCloudSnapshot(): Promise<{
         throw err;
       }
 
-  // Local users + password hashes
-  const users: Array<Record<string, unknown>> = [];
-  await Promise.all(
-    manifest.localUserIds.map(async (uid) => {
-      try {
-        const [uSnap, credSnap] = await Promise.all([
-          getDoc(doc(db, 'users', uid)),
-          getDoc(doc(db, 'users', uid, 'private', 'credentials')),
-        ]);
-        if (!uSnap.exists()) return;
-        const ud = uSnap.data();
-        const password_hash = credSnap.exists()
-          ? String(credSnap.data().passwordHash || '')
-          : '';
-        users.push({
+  // All users (both local password users + Google viewer profiles) + password hashes
+  const usersById = new Map<string, Record<string, unknown>>();
+  try {
+    const allUsersSnap = await getDocs(collection(db, 'users'));
+    await Promise.all(
+      allUsersSnap.docs.map(async (uDoc) => {
+        const uid = uDoc.id;
+        const ud = uDoc.data();
+        let password_hash = '';
+        if (manifest.localUserIds.includes(uid) || uid.startsWith('u_')) {
+          try {
+            const credSnap = await getDoc(doc(db, 'users', uid, 'private', 'credentials'));
+            if (credSnap.exists()) {
+              password_hash = String(credSnap.data().passwordHash || '');
+            }
+          } catch {
+            // Optional credentials subdoc
+          }
+        }
+        usersById.set(uid, {
           id: uid,
           login: String(ud.login || uid),
           name: String(ud.name || ud.login || uid),
@@ -1285,11 +1538,68 @@ export async function loadFullCloudSnapshot(): Promise<{
           enabled: Boolean(ud.enabled),
           password_hash,
         });
-      } catch (err) {
-        throw err;
-      }
-    })
-  );
+      })
+    );
+  } catch {
+    // Fallback to manifest.localUserIds if list query isn't permitted
+    await Promise.all(
+      manifest.localUserIds.map(async (uid) => {
+        try {
+          const [uSnap, credSnap] = await Promise.all([
+            getDoc(doc(db, 'users', uid)),
+            getDoc(doc(db, 'users', uid, 'private', 'credentials')),
+          ]);
+          if (!uSnap.exists()) return;
+          const ud = uSnap.data();
+          const password_hash = credSnap.exists()
+            ? String(credSnap.data().passwordHash || '')
+            : '';
+          usersById.set(uid, {
+            id: uid,
+            login: String(ud.login || uid),
+            name: String(ud.name || ud.login || uid),
+            playlists: Array.isArray(ud.playlists) ? ud.playlists : [],
+            enabled: Boolean(ud.enabled),
+            password_hash,
+          });
+        } catch (err) {
+          throw err;
+        }
+      })
+    );
+  }
+  const users = Array.from(usersById.values());
+
+  // Invites (Google Email invitations + private/info email)
+  const invites: Array<Record<string, unknown>> = [];
+  try {
+    const allInvSnap = await getDocs(collection(db, 'invites'));
+    await Promise.all(
+      allInvSnap.docs.map(async (invDoc) => {
+        const d = invDoc.data();
+        let email = '';
+        try {
+          const piiSnap = await getDoc(doc(db, 'invites', invDoc.id, 'private', 'info'));
+          if (piiSnap.exists()) {
+            email = String(piiSnap.data().email || '');
+          }
+        } catch {
+          // Optional private info
+        }
+        if (!email) return;
+        invites.push({
+          id: invDoc.id,
+          email,
+          name: String(d.name || ''),
+          playlists: Array.isArray(d.playlists) ? d.playlists : [],
+          enabled: d.enabled !== undefined ? Boolean(d.enabled) : true,
+          claimed_uid: typeof d.claimedUid === 'string' ? d.claimedUid : '',
+        });
+      })
+    );
+  } catch {
+    // Best-effort invites hydration
+  }
 
   return {
     hasCloud: true,
@@ -1303,8 +1613,10 @@ export async function loadFullCloudSnapshot(): Promise<{
       catalog,
       streamingSettings,
       ...(uiSettings ? { uiSettings } : {}),
+      ...(apkState ? { apkState } : {}),
       channelHealth,
       users,
+      invites,
       adminSettings,
     },
   };
@@ -1313,11 +1625,13 @@ export async function loadFullCloudSnapshot(): Promise<{
 export async function fetchViewerCloudState(playlistNames: string[]): Promise<{
   streaming: CloudStreamingSettings | null;
   uiSettings: CloudUiSettings | null;
+  apkState: CloudApkState | null;
   playlists: Array<{ name: string; channels: CloudChannelItem[] }>;
 }> {
-  const [streaming, uiSettings] = await Promise.all([
+  const [streaming, uiSettings, apkState] = await Promise.all([
     fetchStreamingSettingsFromCloud(),
     fetchUiSettingsFromCloud(),
+    fetchApkStateFromCloud(),
   ]);
   const playlists: Array<{ name: string; channels: CloudChannelItem[] }> = [];
 
@@ -1343,12 +1657,13 @@ export async function fetchViewerCloudState(playlistNames: string[]): Promise<{
     })
   );
 
-  return { streaming, uiSettings, playlists };
+  return { streaming, uiSettings, apkState, playlists };
 }
 
 export async function fetchAdminWatchCloudState(): Promise<{
   streaming: CloudStreamingSettings | null;
   uiSettings: CloudUiSettings | null;
+  apkState: CloudApkState | null;
   playlists: Array<{ name: string; channels: CloudChannelItem[] }>;
 }> {
   const manifest = await readManifest().catch(() => null);

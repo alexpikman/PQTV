@@ -17,7 +17,8 @@ export type LifecycleAction =
   | 'reconcile'
   | 'cloud_hydrate'
   | 'users_update'
-  | 'health_update';
+  | 'health_update'
+  | 'apk_update';
 
 export interface StateMeta {
   revision: number;

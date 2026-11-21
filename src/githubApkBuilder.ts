@@ -3,7 +3,8 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { config } from './config.js';
-import { apkManager, isValidApkBuffer, type ApkRelease } from './apkManager.js';
+import { apkManager, isValidApkBuffer, type ApkRelease, type VersionBumpType } from './apkManager.js';
+import { stateLifecycle } from './stateLifecycle.js';
 
 export interface GithubConfigStored {
   owner: string;
@@ -49,9 +50,11 @@ export interface GithubBuildState {
   branch: string;
   versionName: string;
   versionCode: number;
+  bumpType?: VersionBumpType;
   serverUrl: string;
   changelog: string;
   mandatory: boolean;
+  autoBlockOlder?: boolean;
   dispatchedAt: number;
   commitSha?: string;
   syncedFiles?: number;
@@ -699,25 +702,31 @@ export function extractApkFromArtifactZip(zipBuf: Buffer): Buffer | null {
   return null;
 }
 
-export async function importApkFromGithubRun(opts: {
-  runId: number;
-  versionName: string;
-  versionCode: number;
-  changelog?: string;
-  mandatory?: boolean;
-}): Promise<ApkRelease> {
-  const eff = getEffectiveConfig();
-  if (!eff) throw new Error('GitHub не настроен');
-  const { owner, repo, token } = eff.cfg;
-
-  const existing = apkManager
-    .getReleases()
-    .find((r) => r.versionCode === opts.versionCode && r.versionName === opts.versionName);
-  if (existing) {
-    return existing;
+function isSafeGithubDownloadHost(rawUrl: string): boolean {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return false;
+    const h = parsed.hostname.toLowerCase();
+    return (
+      h === 'github.com' ||
+      h === 'api.github.com' ||
+      h === 'uploads.github.com' ||
+      h === 'objects.githubusercontent.com' ||
+      h === 'release-assets.githubusercontent.com' ||
+      h.endsWith('.githubusercontent.com')
+    );
+  } catch {
+    return false;
   }
+}
 
-  const artRes = await ghFetch(`/repos/${owner}/${repo}/actions/runs/${opts.runId}/artifacts`, token);
+async function fetchApkFromRunArtifact(
+  owner: string,
+  repo: string,
+  runId: number,
+  token: string
+): Promise<Buffer> {
+  const artRes = await ghFetch(`/repos/${owner}/${repo}/actions/runs/${runId}/artifacts`, token);
   if (!artRes.ok) throw new Error(extractGhError(artRes));
 
   const artifacts = ((artRes.data as Record<string, unknown>)?.artifacts || []) as Array<
@@ -763,14 +772,200 @@ export async function importApkFromGithubRun(opts: {
   if (!apkBuf || !isValidApkBuffer(apkBuf)) {
     throw new Error('Внутри артефакта GitHub не найден корректный .apk файл');
   }
+  return apkBuf;
+}
 
-  return apkManager.publishApk({
+async function findOrCreateGithubReleaseApkUrl(opts: {
+  owner: string;
+  repo: string;
+  token: string;
+  versionName: string;
+  versionCode: number;
+  changelog?: string;
+  apkBuf?: Buffer;
+}): Promise<string | undefined> {
+  const tag = `apk-v${opts.versionName}-c${opts.versionCode}`;
+  const assetName = `pqtv-tv-v${opts.versionName}-c${opts.versionCode}.apk`;
+
+  try {
+    const existingRes = await ghFetch(
+      `/repos/${opts.owner}/${opts.repo}/releases/tags/${encodeURIComponent(tag)}`,
+      opts.token
+    );
+    if (existingRes.ok && existingRes.data && typeof existingRes.data === 'object') {
+      const assets = ((existingRes.data as Record<string, unknown>).assets || []) as Array<
+        Record<string, unknown>
+      >;
+      const apkAsset = assets.find((a) => String(a.name || '').toLowerCase().endsWith('.apk'));
+      if (apkAsset?.browser_download_url) {
+        return String(apkAsset.browser_download_url);
+      }
+    }
+
+    if (!opts.apkBuf) return undefined;
+
+    let uploadUrl = '';
+    if (existingRes.ok && existingRes.data && typeof existingRes.data === 'object') {
+      uploadUrl = String((existingRes.data as Record<string, unknown>).upload_url || '');
+    } else {
+      const createRes = await ghFetch(`/repos/${opts.owner}/${opts.repo}/releases`, opts.token, {
+        method: 'POST',
+        body: JSON.stringify({
+          tag_name: tag,
+          name: `PQTV Android TV v${opts.versionName} (code ${opts.versionCode})`,
+          body: opts.changelog || 'Автоматический релиз PQTV Android TV',
+          draft: false,
+          prerelease: false,
+        }),
+      });
+      if (createRes.ok && createRes.data && typeof createRes.data === 'object') {
+        uploadUrl = String((createRes.data as Record<string, unknown>).upload_url || '');
+      }
+    }
+
+    if (!uploadUrl) return undefined;
+    const targetUploadUrl = `${uploadUrl.replace(/\{.*$/, '')}?name=${encodeURIComponent(assetName)}`;
+    const upRes = await fetch(targetUploadUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'PQTV-Server/1.0',
+        Authorization: `Bearer ${opts.token}`,
+        'Content-Type': 'application/vnd.android.package-archive',
+      },
+      body: new Uint8Array(opts.apkBuf),
+    });
+    if (upRes.ok) {
+      const upJson = (await upRes.json().catch(() => null)) as Record<string, unknown> | null;
+      if (upJson?.browser_download_url) {
+        return String(upJson.browser_download_url);
+      }
+    }
+  } catch {
+    // Non-fatal: release creation is a best-effort cloud binary backup
+  }
+  return undefined;
+}
+
+export async function restoreApkReleaseFromGithub(release: ApkRelease): Promise<ApkRelease | null> {
+  if (!release) return null;
+  const localPath = apkManager.getApkFilePath(release.filename);
+  if (localPath) return release;
+
+  const eff = getEffectiveConfig();
+
+  // 1. Prefer downloading from GitHub Actions run artifact if runId + token exist
+  if (release.githubRunId && eff) {
+    try {
+      const apkBuf = await fetchApkFromRunArtifact(
+        eff.cfg.owner,
+        eff.cfg.repo,
+        release.githubRunId,
+        eff.cfg.token
+      );
+      const updated = apkManager.cacheApkBufferForRelease(release.id, apkBuf);
+      if (updated) return updated;
+    } catch {
+      // Fallback to externalApkUrl below
+    }
+  }
+
+  // 2. Fallback to GitHub Release asset URL
+  if (release.externalApkUrl && isSafeGithubDownloadHost(release.externalApkUrl)) {
+    try {
+      let url = release.externalApkUrl;
+      for (let hop = 0; hop < 4; hop++) {
+        if (!isSafeGithubDownloadHost(url)) break;
+        const host = new URL(url).hostname.toLowerCase();
+        const headers: Record<string, string> = {
+          'User-Agent': 'PQTV-Server/1.0',
+          Accept: 'application/octet-stream',
+        };
+        if (eff && (host === 'api.github.com' || host === 'github.com')) {
+          headers.Authorization = `Bearer ${eff.cfg.token}`;
+        }
+        const res = await fetch(url, { redirect: 'manual', headers });
+        if (res.status >= 300 && res.status < 400) {
+          const nextLoc = res.headers.get('location');
+          if (!nextLoc) break;
+          url = nextLoc;
+          continue;
+        }
+        if (!res.ok) break;
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (isValidApkBuffer(buf)) {
+          return apkManager.cacheApkBufferForRelease(release.id, buf);
+        }
+        break;
+      }
+    } catch {
+      // Ignore restore failure
+    }
+  }
+
+  return null;
+}
+
+export async function importApkFromGithubRun(opts: {
+  runId: number;
+  versionName: string;
+  versionCode: number;
+  changelog?: string;
+  mandatory?: boolean;
+  autoBlockOlder?: boolean;
+  manualOverride?: boolean;
+}): Promise<ApkRelease> {
+  const eff = getEffectiveConfig();
+  if (!eff) throw new Error('GitHub не настроен');
+  const { owner, repo, token } = eff.cfg;
+
+  const existing = apkManager
+    .getReleases()
+    .find((r) => r.versionCode === opts.versionCode && r.versionName === opts.versionName);
+  if (existing) {
+    if (!apkManager.getApkFilePath(existing.filename)) {
+      const restored = await restoreApkReleaseFromGithub({
+        ...existing,
+        githubRunId: existing.githubRunId || opts.runId,
+      });
+      if (restored) return restored;
+    } else {
+      return existing;
+    }
+  }
+
+  const apkBuf = await fetchApkFromRunArtifact(owner, repo, opts.runId, token);
+  const externalApkUrl = await findOrCreateGithubReleaseApkUrl({
+    owner,
+    repo,
+    token,
+    versionName: opts.versionName,
+    versionCode: opts.versionCode,
+    changelog: opts.changelog,
+    apkBuf,
+  });
+
+  const release = apkManager.publishApk({
     buffer: apkBuf,
     versionCode: opts.versionCode,
     versionName: opts.versionName,
+    manualOverride: opts.manualOverride ?? true,
     changelog: opts.changelog || 'Собрано через GitHub Actions',
     mandatory: Boolean(opts.mandatory),
+    autoBlockOlder: Boolean(opts.autoBlockOlder),
+    source: 'github',
+    githubRunId: opts.runId,
+    externalApkUrl,
   });
+
+  stateLifecycle.bumpRevision('apk_update', 'apk_github_import', {
+    versionCode: release.versionCode,
+    versionName: release.versionName,
+    runId: opts.runId,
+  });
+
+  return release;
 }
 
 let activePollTimer: ReturnType<typeof setInterval> | null = null;
@@ -794,11 +989,14 @@ function startBackgroundPoller(): void {
 }
 
 export async function triggerGithubApkBuild(input: {
-  versionName: string;
-  versionCode: number;
+  versionName?: string;
+  versionCode?: number;
+  bumpType?: VersionBumpType;
+  manualOverride?: boolean;
   serverUrl: string;
   changelog?: string;
   mandatory?: boolean;
+  autoBlockOlder?: boolean;
   syncProject?: boolean;
 }): Promise<GithubBuildState> {
   const eff = getEffectiveConfig();
@@ -807,14 +1005,24 @@ export async function triggerGithubApkBuild(input: {
   }
   const { owner, repo, branch, token } = eff.cfg;
 
-  const versionName = String(input.versionName || '').trim() || '1.0.1';
-  const versionCode = Math.max(1, Math.floor(Number(input.versionCode) || 1));
+  const bumpType: VersionBumpType =
+    input.bumpType === 'major' || input.bumpType === 'minor' ? input.bumpType : 'patch';
+  const resolved = apkManager.resolveAutoVersion({
+    versionCode: input.versionCode,
+    versionName: input.versionName,
+    bumpType,
+    manualOverride: Boolean(input.manualOverride),
+  });
+  const versionName = resolved.versionName;
+  const versionCode = resolved.versionCode;
+
   const serverUrl = String(input.serverUrl || '').trim().replace(/\/+$/, '');
   if (!/^https?:\/\/.+/.test(serverUrl)) {
     throw new Error('Укажите корректный URL сервера PQTV (начинающийся с http:// или https://)');
   }
   const changelog = String(input.changelog || '').trim() || 'Обновление приложения для Android TV';
   const mandatory = Boolean(input.mandatory);
+  const autoBlockOlder = Boolean(input.autoBlockOlder);
 
   let commitSha: string | undefined;
   let syncedFiles = 0;
@@ -853,9 +1061,11 @@ export async function triggerGithubApkBuild(input: {
     branch,
     versionName,
     versionCode,
+    bumpType,
     serverUrl,
     changelog,
     mandatory,
+    autoBlockOlder,
     dispatchedAt,
     commitSha,
     syncedFiles,
@@ -992,6 +1202,8 @@ export async function refreshGithubBuildStatus(): Promise<GithubBuildState> {
             versionCode: state.versionCode,
             changelog: state.changelog,
             mandatory: state.mandatory,
+            autoBlockOlder: state.autoBlockOlder,
+            manualOverride: true,
           });
           state.imported = true;
           state.release = release;

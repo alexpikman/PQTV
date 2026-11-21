@@ -9,6 +9,7 @@ import { userAuth } from './userAuth.js';
 import { EpgParser, EpgSource } from './epgParser.js';
 import { trySaveStreamingSettings, StreamingSettings } from './streamingSettings.js';
 import { trySaveUiSettings, UiSettings } from './uiSettings.js';
+import { apkManager, ApkStateSnapshot } from './apkManager.js';
 import { Channel } from './m3uParser.js';
 
 export interface UnifiedOpResult {
@@ -382,6 +383,7 @@ export async function hydrateStateUnified(body: {
   epgSources?: EpgSource[];
   streamingSettings?: Partial<StreamingSettings>;
   uiSettings?: Partial<UiSettings>;
+  apkState?: ApkStateSnapshot;
   channelHealth?: { urlDiagnostics?: Record<string, never>; issues?: Record<string, never> };
   catalog?: {
     nextChannelId?: number;
@@ -534,6 +536,13 @@ export async function hydrateStateUnified(body: {
       }
     }
 
+    // 5c. APK Releases & Version Blocking Policy
+    let apkHydrated = false;
+    if (body.apkState && typeof body.apkState === 'object') {
+      apkManager.hydrateState(body.apkState);
+      apkHydrated = true;
+    }
+
     // 6. Channel Health State
     let healthHydrated = false;
     if (body.channelHealth && typeof body.channelHealth === 'object') {
@@ -637,6 +646,7 @@ export async function hydrateStateUnified(body: {
       catalogHydrated,
       reconcile: reconcileSummary,
       streamingHydrated,
+      apkHydrated,
       healthHydrated,
       usersHydrated,
     };

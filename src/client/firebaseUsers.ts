@@ -22,18 +22,23 @@ import {
 import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebaseApp.js';
 import blueprint from '../../firebase-blueprint.json' with { type: 'json' };
 import {
+  bumpCloudManifestRevision,
   clearSourceIndexInCloud,
+  CloudApkState,
   CloudExportPayload,
   CloudStreamingSettings,
   CloudUiSettings,
   deletePlaylistFromCloud,
   fetchAdminWatchCloudState,
+  fetchApkStateFromCloud,
   fetchStreamingSettingsFromCloud,
   fetchUiSettingsFromCloud,
   fetchViewerCloudState,
+  getCloudManifestStatus,
   loadFullCloudSnapshot,
   pushFullLocalToCloud,
   saveAdminSettingsToCloud,
+  saveApkStateToCloud,
   saveCatalogToCloud,
   saveEpgToCloud,
   saveLocalUserCredentialsToCloud,
@@ -95,7 +100,7 @@ function validateUserPayload(input: {
     ? input.playlists
         .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
         .map((p) => p.trim().slice(0, 64))
-        .slice(0, 20)
+        .slice(0, 50)
     : [];
 
   return { uid, login, name, playlists };
@@ -452,13 +457,15 @@ export const PQTVFirebase = {
         handleFirestoreError(error, OperationType.CREATE, userPath);
       }
     } else {
+      const existingRole = existingSnap.data()?.role === 'admin' ? 'admin' : 'user';
+      const nextRole = payload.role === 'admin' ? 'admin' : existingRole;
       try {
         await updateDoc(ref, {
           login: clean.login,
           name: clean.name,
           playlists: clean.playlists,
           enabled: Boolean(payload.enabled),
-          role: payload.role === 'admin' ? 'admin' : 'user',
+          role: nextRole,
           updatedAt: serverTimestamp(),
         });
       } catch (error) {
@@ -557,7 +564,7 @@ export const PQTVFirebase = {
       ? payload.playlists
           .filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
           .map((p) => p.trim().slice(0, 64))
-          .slice(0, 20)
+          .slice(0, 50)
       : [];
 
     const invitePath = `invites/${emailHash}`;
@@ -855,6 +862,8 @@ export const PQTVFirebase = {
   },
 
   // ===== FULL DATABASE CLOUD PERSISTENCE =====
+  getCloudManifestStatus,
+  bumpCloudManifestRevision,
   savePlaylistToCloud,
   deletePlaylistFromCloud,
   saveSourcesToCloud,
@@ -866,6 +875,8 @@ export const PQTVFirebase = {
   fetchStreamingSettingsFromCloud,
   saveUiSettingsToCloud,
   fetchUiSettingsFromCloud,
+  saveApkStateToCloud,
+  fetchApkStateFromCloud,
   saveLocalUserCredentialsToCloud,
   saveAdminSettingsToCloud,
   pushFullLocalToCloud(data: CloudExportPayload) {
@@ -877,30 +888,32 @@ export const PQTVFirebase = {
     restored: number;
     streaming: CloudStreamingSettings | null;
     uiSettings: CloudUiSettings | null;
+    apkState: CloudApkState | null;
   }> {
     const user = auth.currentUser;
     if (!user || !user.emailVerified) {
-      return { restored: 0, streaming: null, uiSettings: null };
+      return { restored: 0, streaming: null, uiSettings: null, apkState: null };
     }
     const admin = await isCurrentUserAdmin(user);
     try {
       let cloud: {
         streaming: CloudStreamingSettings | null;
         uiSettings: CloudUiSettings | null;
+        apkState: CloudApkState | null;
         playlists: Array<{ name: string; channels: unknown[] }>;
       };
       if (admin) {
         cloud = await fetchAdminWatchCloudState();
       } else {
         const uSnap = await getDoc(doc(db, 'users', user.uid));
-        if (!uSnap.exists()) return { restored: 0, streaming: null, uiSettings: null };
+        if (!uSnap.exists()) return { restored: 0, streaming: null, uiSettings: null, apkState: null };
         const ud = uSnap.data();
-        if (!ud.enabled) return { restored: 0, streaming: null, uiSettings: null };
+        if (!ud.enabled) return { restored: 0, streaming: null, uiSettings: null, apkState: null };
         const playlists = Array.isArray(ud.playlists) ? (ud.playlists as string[]) : [];
         cloud = await fetchViewerCloudState(playlists);
       }
-      if (cloud.playlists.length === 0 && !cloud.streaming && !cloud.uiSettings) {
-        return { restored: 0, streaming: null, uiSettings: null };
+      if (cloud.playlists.length === 0 && !cloud.streaming && !cloud.uiSettings && !cloud.apkState) {
+        return { restored: 0, streaming: null, uiSettings: null, apkState: null };
       }
       const headers: Record<string, string> = { 'Content-Type': 'application/json' };
       if (watchToken) headers['X-Watch-Token'] = watchToken;
@@ -912,6 +925,7 @@ export const PQTVFirebase = {
           playlists: cloud.playlists,
           streaming: cloud.streaming,
           uiSettings: cloud.uiSettings,
+          apkState: cloud.apkState,
         }),
       });
       const json = await res.json().catch(() => ({}));
@@ -919,9 +933,10 @@ export const PQTVFirebase = {
         restored: Number(json.restored) || 0,
         streaming: (json.streaming || cloud.streaming || null) as CloudStreamingSettings | null,
         uiSettings: (json.uiSettings || cloud.uiSettings || null) as CloudUiSettings | null,
+        apkState: (cloud.apkState || null) as CloudApkState | null,
       };
     } catch {
-      return { restored: 0, streaming: null, uiSettings: null };
+      return { restored: 0, streaming: null, uiSettings: null, apkState: null };
     }
   },
 };

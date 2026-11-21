@@ -506,9 +506,38 @@
                     <div id="apk-screen-scroll">
                         <div class="apk-grid">
                             <div class="apk-panel">
-                                <h3>Текущий OTA-релиз для ТВ</h3>
+                                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+                                    <h3 style="margin:0;">Автонумерация и текущий OTA-релиз</h3>
+                                    <span id="apk-next-badge" class="apk-next-badge">Следующий: v1.0.0 (code 1)</span>
+                                </div>
                                 <div id="apk-status-box" style="font-size:13px; color:var(--text-dim); line-height:1.6;">
                                     Загрузка статуса релизов...
+                                </div>
+                                <div class="apk-autover-box">
+                                    <div style="font-size:12px; font-weight:700; color:#fff; margin-bottom:6px;">
+                                        Выберите тип следующего релиза (счётчик Code растёт автоматически)
+                                    </div>
+                                    <div class="apk-bump-group" id="apk-bump-group">
+                                        <button type="button" class="apk-bump-btn active" data-apk-bump="patch">
+                                            <span>Авто +0.0.1</span>
+                                            <small id="apk-sug-patch">v1.0.0 (c1)</small>
+                                        </button>
+                                        <button type="button" class="apk-bump-btn" data-apk-bump="minor">
+                                            <span>Минор +0.1.0</span>
+                                            <small id="apk-sug-minor">v1.1.0 (c1)</small>
+                                        </button>
+                                        <button type="button" class="apk-bump-btn" data-apk-bump="major">
+                                            <span>Мажор +1.0.0</span>
+                                            <small id="apk-sug-major">v2.0.0 (c1)</small>
+                                        </button>
+                                    </div>
+                                    <div style="font-size:11.5px; color:var(--muted); margin-top:8px; line-height:1.45;">
+                                        Нумерация с переносом <code>0..9</code>: <code>1.0.9 → 1.1.0</code>, <code>1.9.9 → 2.0.0</code>. Внутренний <code>versionCode</code> для Android TV увеличивается строго на <code>+1</code> и никогда не откатывается даже при удалении релизов или Republish.
+                                    </div>
+                                    <label style="display:flex; align-items:center; gap:8px; margin-top:10px; font-size:12px; color:var(--text-dim); cursor:pointer;">
+                                        <input type="checkbox" id="apk-manual-override">
+                                        <span>Задавать версию вручную (если не выбрано — система всё считает сама)</span>
+                                    </label>
                                 </div>
                                 <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
                                     <a id="apk-latest-download" href="/apk/latest.apk" class="btn btn-secondary hidden">Скачать latest.apk</a>
@@ -516,6 +545,38 @@
                                 </div>
                             </div>
 
+                            <div class="apk-panel">
+                                <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+                                    <h3 style="margin:0;">Блокировка старых версий APK</h3>
+                                    <button type="button" id="btn-apk-block-older" class="btn btn-secondary" style="padding:6px 11px; font-size:12px;">Заблокировать все ниже актуальной</button>
+                                </div>
+                                <form id="apk-policy-form">
+                                    <div class="form-group">
+                                        <label for="apk-policy-min-code">Минимально разрешённая версия на ТВ</label>
+                                        <select id="apk-policy-min-code">
+                                            <option value="0">Не блокировать по минимальной версии (все разрешены)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="apk-policy-mode">Режим блокировки устаревших APK</label>
+                                        <select id="apk-policy-mode">
+                                            <option value="hard">Жёсткая блокировка (запрет просмотра, пока ТВ не обновится)</option>
+                                            <option value="soft">Мягкое предупреждение (канал смотреть можно + кнопка обновления)</option>
+                                        </select>
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="apk-policy-message">Сообщение на экране заблокированного ТВ</label>
+                                        <input type="text" id="apk-policy-message" maxlength="300" placeholder="Эта версия приложения устарела. Установите обновление.">
+                                    </div>
+                                    <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                                        <span id="apk-policy-summary" style="font-size:11.5px; color:var(--muted);">Блокируется сразу после нажатия — даже на уже установленных ТВ.</span>
+                                        <button type="submit" id="btn-apk-policy-save" class="btn btn-primary">Сохранить политику</button>
+                                    </div>
+                                </form>
+                            </div>
+                        </div>
+
+                        <div class="apk-grid">
                             <div class="apk-panel">
                                 <h3>Опубликовать .apk с компьютера</h3>
                                 <form id="apk-upload-form">
@@ -525,12 +586,12 @@
                                     </div>
                                     <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
                                         <div class="form-group">
-                                            <label>Version Name (напр. 1.0.2)</label>
-                                            <input type="text" id="apk-ver-name" required placeholder="1.0.1">
+                                            <label>Version Name (авто)</label>
+                                            <input type="text" id="apk-ver-name" required readonly placeholder="1.0.0">
                                         </div>
                                         <div class="form-group">
-                                            <label>Version Code (целое)</label>
-                                            <input type="number" id="apk-ver-code" min="1" required placeholder="2">
+                                            <label>Version Code (авто)</label>
+                                            <input type="number" id="apk-ver-code" min="1" required readonly placeholder="1">
                                         </div>
                                     </div>
                                     <div class="form-group">
@@ -541,13 +602,55 @@
                                         <input type="checkbox" id="apk-mandatory">
                                         <label for="apk-mandatory" style="margin:0; cursor:pointer;">Обязательное обновление при запуске на ТВ</label>
                                     </div>
+                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="apk-auto-block-older">
+                                        <label for="apk-auto-block-older" style="margin:0; cursor:pointer;">Заблокировать все старые версии после публикации</label>
+                                    </div>
                                     <button type="submit" id="btn-apk-upload" class="btn btn-primary" style="width:100%;">Загрузить APK для OTA</button>
                                 </form>
+                            </div>
+
+                            <div class="apk-panel">
+                                <h3>Собрать APK на GitHub в 1 клик</h3>
+                                <form id="gh-build-form">
+                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+                                        <div class="form-group">
+                                            <label>Version Name (авто)</label>
+                                            <input type="text" id="gh-ver-name" required readonly placeholder="1.0.0">
+                                        </div>
+                                        <div class="form-group">
+                                            <label>Version Code (авто)</label>
+                                            <input type="number" id="gh-ver-code" min="1" required readonly placeholder="1">
+                                        </div>
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Адрес сервера PQTV для ТВ</label>
+                                        <input type="url" id="gh-server-url" required placeholder="https://tv.pqnet.ru">
+                                    </div>
+                                    <div class="form-group">
+                                        <label>Что нового (changelog)</label>
+                                        <input type="text" id="gh-changelog" placeholder="Обновление PQTV для Android TV">
+                                    </div>
+                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="gh-sync-before" checked>
+                                        <label for="gh-sync-before" style="margin:0; cursor:pointer;">Синхронизировать <code>android-tv/</code> перед сборкой</label>
+                                    </div>
+                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="gh-mandatory">
+                                        <label for="gh-mandatory" style="margin:0; cursor:pointer;">Обязательное обновление на ТВ</label>
+                                    </div>
+                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                                        <input type="checkbox" id="gh-auto-block-older">
+                                        <label for="gh-auto-block-older" style="margin:0; cursor:pointer;">Заблокировать все старые версии после публикации</label>
+                                    </div>
+                                    <button type="submit" id="btn-gh-build" class="btn btn-primary" style="width:100%;">Запустить сборку APK на GitHub</button>
+                                </form>
+                                <div id="gh-build-status-box" class="hidden" style="margin-top:12px; padding:12px; background:var(--bg-0); border:1px solid var(--border); border-radius:var(--radius-sm); font-size:12.5px; line-height:1.5;"></div>
                             </div>
                         </div>
 
                         <div class="apk-grid">
-                            <div class="apk-panel">
+                            <div class="apk-panel" style="grid-column:1 / -1;">
                                 <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px;">
                                     <h3 style="margin:0;">Подключение GitHub</h3>
                                     <span id="gh-conn-badge" class="badge-status">Проверка...</span>
@@ -590,44 +693,13 @@
                                     </div>
                                 </div>
                             </div>
-
-                            <div class="apk-panel">
-                                <h3>Собрать APK на GitHub в 1 клик</h3>
-                                <form id="gh-build-form">
-                                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
-                                        <div class="form-group">
-                                            <label>Version Name</label>
-                                            <input type="text" id="gh-ver-name" required placeholder="1.0.1">
-                                        </div>
-                                        <div class="form-group">
-                                            <label>Version Code</label>
-                                            <input type="number" id="gh-ver-code" min="1" required placeholder="2">
-                                        </div>
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Адрес сервера PQTV для ТВ</label>
-                                        <input type="url" id="gh-server-url" required placeholder="https://tv.pqnet.ru">
-                                    </div>
-                                    <div class="form-group">
-                                        <label>Что нового (changelog)</label>
-                                        <input type="text" id="gh-changelog" placeholder="Обновление PQTV для Android TV">
-                                    </div>
-                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
-                                        <input type="checkbox" id="gh-sync-before" checked>
-                                        <label for="gh-sync-before" style="margin:0; cursor:pointer;">Синхронизировать <code>android-tv/</code> перед сборкой</label>
-                                    </div>
-                                    <div class="form-group" style="display:flex; align-items:center; gap:8px;">
-                                        <input type="checkbox" id="gh-mandatory">
-                                        <label for="gh-mandatory" style="margin:0; cursor:pointer;">Обязательное обновление на ТВ</label>
-                                    </div>
-                                    <button type="submit" id="btn-gh-build" class="btn btn-primary" style="width:100%;">Запустить сборку APK на GitHub</button>
-                                </form>
-                                <div id="gh-build-status-box" class="hidden" style="margin-top:12px; padding:12px; background:var(--bg-0); border:1px solid var(--border); border-radius:var(--radius-sm); font-size:12.5px; line-height:1.5;"></div>
-                            </div>
                         </div>
 
                         <div class="apk-panel" style="margin-bottom:16px;">
-                            <h3>Опубликованные версии APK</h3>
+                            <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:10px; flex-wrap:wrap;">
+                                <h3 style="margin:0;">Реестр и история версий APK</h3>
+                                <span style="font-size:12px; color:var(--muted);">История версий, статусы и блокировки сохраняются в Firestore</span>
+                            </div>
                             <div id="apk-releases-container">
                                 <p class="placeholder-text" style="margin:20px 0;">Нет опубликованных APK</p>
                             </div>

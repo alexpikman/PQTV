@@ -31,6 +31,7 @@ class MainActivity : AppCompatActivity() {
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
     private var pendingApkFile: File? = null
     private var isDownloading = false
+    private var isHardBlocked = false
 
     private val baseUrl: String
         get() {
@@ -92,7 +93,7 @@ class MainActivity : AppCompatActivity() {
             loadWithOverviewMode = true
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             // Clean Chrome-like UA so Google Sign-In works cleanly without Disallowed User-Agent blocks
-            userAgentString = "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 PQTV-APK/${BuildConfig.VERSION_NAME}"
+            userAgentString = "Mozilla/5.0 (Linux; Android ${Build.VERSION.RELEASE}; Android TV) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 PQTV-APK/${BuildConfig.VERSION_NAME} PQTV-Code/${BuildConfig.VERSION_CODE}"
         }
 
         webView.addJavascriptInterface(AndroidBridge(), "PQTVAndroid")
@@ -164,6 +165,9 @@ class MainActivity : AppCompatActivity() {
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_ESCAPE) {
+            if (isHardBlocked) {
+                return true
+            }
             if (customView != null) {
                 webView.webChromeClient?.onHideCustomView()
                 return true
@@ -185,6 +189,9 @@ class MainActivity : AppCompatActivity() {
                     launchApkInstaller(file)
                 } else {
                     Toast.makeText(this, "Разрешите установку обновлений для PQTV", Toast.LENGTH_LONG).show()
+                    if (isHardBlocked) {
+                        installApkFile(file)
+                    }
                 }
             }
         }
@@ -226,38 +233,55 @@ class MainActivity : AppCompatActivity() {
     private fun checkForUpdatesNative(showUpToDateToast: Boolean) {
         thread {
             try {
-                val conn = (URL("$baseUrl/api/app/version?currentCode=${BuildConfig.VERSION_CODE}").openConnection() as HttpURLConnection).apply {
+                val urlStr = "$baseUrl/api/app/version?currentCode=${BuildConfig.VERSION_CODE}&currentName=${Uri.encode(BuildConfig.VERSION_NAME)}"
+                val conn = (URL(urlStr).openConnection() as HttpURLConnection).apply {
                     connectTimeout = 8000
                     readTimeout = 8000
                 }
                 val body = conn.inputStream.bufferedReader().readText()
                 conn.disconnect()
                 val json = JSONObject(body)
-                val latest = json.optJSONObject("latest") ?: run {
-                    if (showUpToDateToast) runOnUiThread {
-                        Toast.makeText(this, "Нет опубликованных APK обновлений", Toast.LENGTH_SHORT).show()
-                    }
-                    return@thread
-                }
-                val remoteCode = latest.optInt("versionCode", 0)
-                val remoteName = latest.optString("versionName", "")
-                val apkUrl = latest.optString("apkUrl", "/apk/latest.apk")
-                val changelog = latest.optString("changelog", "")
-                val mandatory = latest.optBoolean("mandatory", false)
+                val isBlocked = json.optBoolean("isBlocked", false)
+                val mustUpdate = json.optBoolean("mustUpdate", false)
+                val blockMode = json.optString("blockMode", "hard")
+                val blockReason = json.optString("blockReason", "")
+                val latest = json.optJSONObject("latest")
 
                 runOnUiThread {
                     emitJsEvent("window.onPQTVUpdateInfo && window.onPQTVUpdateInfo(${json})")
-                    if (remoteCode > BuildConfig.VERSION_CODE) {
+                    isHardBlocked = (isBlocked && blockMode == "hard") || (mustUpdate && blockMode == "hard")
+
+                    if (latest == null) {
+                        if (showUpToDateToast) {
+                            Toast.makeText(this, "Нет опубликованных APK обновлений", Toast.LENGTH_SHORT).show()
+                        }
+                        return@runOnUiThread
+                    }
+
+                    val remoteCode = latest.optInt("versionCode", 0)
+                    val remoteName = latest.optString("versionName", "")
+                    val apkUrl = latest.optString("apkUrl", "/apk/latest.apk")
+                    val changelog = latest.optString("changelog", "")
+                    val mandatory = latest.optBoolean("mandatory", false)
+                    val forceLock = isHardBlocked || (isBlocked && blockMode == "hard") || mandatory
+
+                    if (remoteCode > BuildConfig.VERSION_CODE || forceLock) {
                         val resolvedUrl = if (apkUrl.startsWith("http")) apkUrl else "$baseUrl$apkUrl"
-                        val msg = StringBuilder("Доступна новая версия PQTV $remoteName (текущая ${BuildConfig.VERSION_NAME})")
+                        val msg = StringBuilder()
+                        if (forceLock && blockReason.isNotBlank()) {
+                            msg.append(blockReason).append("\n\n")
+                        }
+                        msg.append("Текущая версия: ${BuildConfig.VERSION_NAME} (code ${BuildConfig.VERSION_CODE})\n")
+                        msg.append("Доступна версия: PQTV $remoteName (code $remoteCode)")
                         if (changelog.isNotBlank()) msg.append("\n\nЧто нового:\n").append(changelog)
+
                         val builder = AlertDialog.Builder(this)
-                            .setTitle("Обновление PQTV")
+                            .setTitle(if (forceLock) "Требуется обновление PQTV" else "Обновление PQTV")
                             .setMessage(msg.toString())
-                            .setPositiveButton("Установить сейчас") { _, _ ->
+                            .setPositiveButton("Установить обновление") { _, _ ->
                                 downloadAndInstallApk(resolvedUrl, remoteName)
                             }
-                        if (!mandatory) {
+                        if (!forceLock) {
                             builder.setNegativeButton("Позже", null)
                         } else {
                             builder.setCancelable(false)
@@ -338,7 +362,7 @@ class MainActivity : AppCompatActivity() {
     private fun installApkFile(file: File) {
         pendingApkFile = file
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !packageManager.canRequestPackageInstalls()) {
-            AlertDialog.Builder(this)
+            val builder = AlertDialog.Builder(this)
                 .setTitle("Разрешение на обновление")
                 .setMessage("Разрешите PQTV устанавливать обновления приложений на этом телевизоре.")
                 .setPositiveButton("Открыть настройки") { _, _ ->
@@ -349,8 +373,12 @@ class MainActivity : AppCompatActivity() {
                     @Suppress("DEPRECATION")
                     startActivityForResult(intent, REQ_UNKNOWN_SOURCES)
                 }
-                .setNegativeButton("Отмена", null)
-                .show()
+            if (!isHardBlocked) {
+                builder.setNegativeButton("Отмена", null)
+            } else {
+                builder.setCancelable(false)
+            }
+            builder.show()
             return
         }
         launchApkInstaller(file)

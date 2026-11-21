@@ -450,6 +450,61 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidIntList(list, maxLen) {
+      return list is list
+        && list.size() <= maxLen
+        && (list.size() == 0 || (list[0] is int && list[0] >= 1 && list[0] <= 1000000));
+    }
+
+    function isValidApkReleasesList(items) {
+      return items is list
+        && items.size() <= 15
+        && (items.size() == 0 || (
+          items[0] is map
+          && items[0].keys().hasAll(['id', 'versionCode', 'versionName', 'filename', 'size', 'sha256', 'changelog', 'mandatory', 'blocked', 'uploadedAt'])
+          && items[0].keys().hasOnly(['id', 'versionCode', 'versionName', 'filename', 'size', 'sha256', 'changelog', 'mandatory', 'blocked', 'blockReason', 'source', 'githubRunId', 'externalApkUrl', 'uploadedAt'])
+          && items[0].id is string && items[0].id.size() >= 1 && items[0].id.size() <= 80
+          && items[0].versionCode is int && items[0].versionCode >= 1 && items[0].versionCode <= 1000000
+          && items[0].versionName is string && items[0].versionName.size() >= 1 && items[0].versionName.size() <= 32
+          && items[0].filename is string && items[0].filename.size() >= 1 && items[0].filename.size() <= 160
+          && items[0].size is int && items[0].size >= 0
+          && items[0].sha256 is string && items[0].sha256.size() <= 128
+          && items[0].changelog is string && items[0].changelog.size() <= 1000
+          && items[0].mandatory is bool
+          && items[0].blocked is bool
+          && (!('blockReason' in items[0]) || (items[0].blockReason is string && items[0].blockReason.size() <= 300))
+          && (!('source' in items[0]) || (items[0].source is string && items[0].source in ['github', 'upload']))
+          && (!('githubRunId' in items[0]) || (items[0].githubRunId is int && items[0].githubRunId >= 0))
+          && (!('externalApkUrl' in items[0]) || (items[0].externalApkUrl is string && items[0].externalApkUrl.size() <= 500))
+          && items[0].uploadedAt is int && items[0].uploadedAt >= 0
+        ));
+    }
+
+    function isValidApkSetting(data) {
+      return data.keys().hasAll([
+          'settingId', 'lastVersionCode', 'lastVersionName',
+          'minSupportedVersionCode', 'blockedVersionCodes',
+          'blockMode', 'blockMessage', 'releases',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'settingId', 'lastVersionCode', 'lastVersionName',
+          'minSupportedVersionCode', 'blockedVersionCodes',
+          'blockMode', 'blockMessage', 'releases',
+          'createdAt', 'updatedAt'
+        ])
+        && data.settingId is string && data.settingId == 'apk'
+        && data.lastVersionCode is int && data.lastVersionCode >= 0 && data.lastVersionCode <= 1000000
+        && data.lastVersionName is string && data.lastVersionName.size() <= 32
+        && data.minSupportedVersionCode is int && data.minSupportedVersionCode >= 0 && data.minSupportedVersionCode <= 1000000
+        && isValidIntList(data.blockedVersionCodes, 100)
+        && data.blockMode is string && data.blockMode in ['hard', 'soft']
+        && data.blockMessage is string && data.blockMessage.size() <= 300
+        && isValidApkReleasesList(data.releases)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     function isValidAdminSetting(data) {
       return data.keys().hasAll(['settingId', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['settingId', 'githubRepo', 'githubBranch', 'adminPasswordHash', 'createdAt', 'updatedAt'])
@@ -901,15 +956,16 @@ service cloud.firestore {
       allow delete: if isAdmin() && isValidId(chunkId);
     }
 
-    // ===== STREAMING & UI SETTINGS (Verified users & Admins read; Admins write) =====
+    // ===== STREAMING, UI & APK SETTINGS (Verified users & Admins read; Admins write) =====
     match /app_settings/{settingId} {
-      allow get: if isValidId(settingId) && settingId in ['streaming', 'ui'] && isVerifiedEmail();
+      allow get: if isValidId(settingId) && settingId in ['streaming', 'ui', 'apk'] && isVerifiedEmail();
       allow list: if false;
       allow create: if isAdmin()
         && isValidId(settingId)
         && (
           (settingId == 'streaming' && isValidStreamingSetting(incoming())) ||
-          (settingId == 'ui' && isValidUiSetting(incoming()))
+          (settingId == 'ui' && isValidUiSetting(incoming())) ||
+          (settingId == 'apk' && isValidApkSetting(incoming()))
         )
         && incoming().settingId == settingId
         && incoming().createdAt == request.time
@@ -933,7 +989,13 @@ service cloud.firestore {
             ])) ||
           (settingId == 'ui'
             && isValidUiSetting(incoming())
-            && incoming().diff(existing()).affectedKeys().hasOnly(['logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec', 'updatedAt']))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec', 'updatedAt'])) ||
+          (settingId == 'apk'
+            && isValidApkSetting(incoming())
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'lastVersionCode', 'lastVersionName', 'minSupportedVersionCode',
+              'blockedVersionCodes', 'blockMode', 'blockMessage', 'releases', 'updatedAt'
+            ]))
         )
         && incoming().settingId == existing().settingId
         && incoming().createdAt == existing().createdAt

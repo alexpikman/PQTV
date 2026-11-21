@@ -732,6 +732,57 @@
       },
       "required": ["settingId", "logoEnabled", "logoOpacity", "logoPulseEnabled", "logoPulseSpeedSec", "createdAt", "updatedAt"]
     },
+    "ApkSetting": {
+      "title": "ApkSetting",
+      "description": "Global Android TV APK versioning high-water mark, blocking policy for outdated APKs, and release metadata persisted across server restarts.",
+      "type": "object",
+      "properties": {
+        "settingId": {
+          "type": "string",
+          "enum": ["apk"]
+        },
+        "lastVersionCode": {
+          "type": "integer"
+        },
+        "lastVersionName": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "minSupportedVersionCode": {
+          "type": "integer"
+        },
+        "blockedVersionCodes": {
+          "type": "array",
+          "description": "Explicitly blocked integer versionCodes (max 100)."
+        },
+        "blockMode": {
+          "type": "string",
+          "enum": ["hard", "soft"]
+        },
+        "blockMessage": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "releases": {
+          "type": "array",
+          "description": "Recent APK releases metadata including externalApkUrl and blocked flags (max 15)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "settingId", "lastVersionCode", "lastVersionName",
+        "minSupportedVersionCode", "blockedVersionCodes",
+        "blockMode", "blockMessage", "releases",
+        "createdAt", "updatedAt"
+      ]
+    },
     "AdminSetting": {
       "title": "AdminSetting",
       "description": "Admin-only application settings (GitHub repo/branch metadata, admin password hash override, etc.).",
@@ -871,7 +922,7 @@
     },
     "/app_settings/{settingId}": {
       "schema": { "$ref": "#/entities/StreamingSetting" },
-      "description": "Global application settings (streaming delivery mode and viewer UI watermark); readable by verified viewers and admins."
+      "description": "Global application settings (streaming, ui, apk); readable by verified viewers and admins."
     },
     "/admin_settings/{settingId}": {
       "schema": { "$ref": "#/entities/AdminSetting" },

@@ -93,4 +93,12 @@ export const dirtyDozenCases = [
     payload: { createdAt: '2020-01-01T00:00:00Z' },
     expect: 'PERMISSION_DENIED',
   },
+  {
+    name: '13. Non-admin attempt or invalid blockMode on /app_settings/apk',
+    auth: { uid: 'user1', email: 'u1@example.com', email_verified: true },
+    op: 'update',
+    path: 'app_settings/apk',
+    payload: { blockMode: 'soft', minSupportedVersionCode: 0 },
+    expect: 'PERMISSION_DENIED',
+  },
 ];

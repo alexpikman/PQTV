@@ -584,6 +584,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     const isCloudAdmin = await window.PQTVFirebase.isSignedInAdmin().catch(() => false);
                     if (isCloudAdmin) {
                         await window.PQTVFirebase.saveStreamingSettingsToCloud(serverStreamingSettings).catch(() => {});
+                        if (typeof saved.revision === 'number' && typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
+                            await window.PQTVFirebase.bumpCloudManifestRevision(saved.revision).catch(() => {});
+                        }
                     }
                 }
             } catch {}
@@ -2024,11 +2027,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const inv = tvInvites[+btn.dataset.tvDelInvite];
             if (!inv) return;
             armDelete(btn, async () => {
+                let delRes = null;
                 try {
-                    await apiAdmin('/watch/api/admin/invites/delete', 'POST', { id: inv.id, email: inv.email });
+                    delRes = await apiAdmin('/watch/api/admin/invites/delete', 'POST', { id: inv.id, email: inv.email });
                 } catch {}
                 if (window.PQTVFirebase && typeof window.PQTVFirebase.deleteInviteAdmin === 'function' && inv.id && /^[a-f0-9]{64}$/i.test(inv.id)) {
                     await window.PQTVFirebase.deleteInviteAdmin(inv.id).catch(() => {});
+                    if (delRes && typeof delRes.revision === 'number' && typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
+                        await window.PQTVFirebase.bumpCloudManifestRevision(delRes.revision).catch(() => {});
+                    }
                 }
                 await loadTvAdminUsers();
             });
@@ -2038,11 +2045,15 @@ document.addEventListener('DOMContentLoaded', () => {
             const u = tvUsers[+btn.dataset.tvDelUser];
             if (!u) return;
             armDelete(btn, async () => {
+                let delRes = null;
                 try {
-                    await apiAdmin('/watch/api/admin/users/delete', 'POST', { id: u.id });
+                    delRes = await apiAdmin('/watch/api/admin/users/delete', 'POST', { id: u.id });
                 } catch {}
                 if (window.PQTVFirebase && typeof window.PQTVFirebase.deleteUserAdmin === 'function' && u.inCloud) {
                     await window.PQTVFirebase.deleteUserAdmin(u.id).catch(() => {});
+                    if (delRes && typeof delRes.revision === 'number' && typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
+                        await window.PQTVFirebase.bumpCloudManifestRevision(delRes.revision, { removeLocalUserId: u.id }).catch(() => {});
+                    }
                 }
                 await loadTvAdminUsers();
             });
@@ -2159,7 +2170,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     showTvPopupError('Введите корректный Google Email');
                     return;
                 }
-                await apiAdmin('/watch/api/admin/invites/save', 'POST', {
+                const savedInv = await apiAdmin('/watch/api/admin/invites/save', 'POST', {
                     email,
                     name: name || email.split('@')[0],
                     playlists,
@@ -2174,6 +2185,9 @@ document.addEventListener('DOMContentLoaded', () => {
                             playlists,
                             enabled: tvPopupEnabled
                         });
+                        if (savedInv && typeof savedInv.revision === 'number' && typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
+                            await window.PQTVFirebase.bumpCloudManifestRevision(savedInv.revision).catch(() => {});
+                        }
                     }
                 }
             } else {
@@ -2209,7 +2223,13 @@ document.addEventListener('DOMContentLoaded', () => {
                             role: 'user'
                         });
                         if (saved.cloudCred && typeof window.PQTVFirebase.saveLocalUserCredentialsToCloud === 'function') {
-                            await window.PQTVFirebase.saveLocalUserCredentialsToCloud([saved.cloudCred], true).catch(() => {});
+                            await window.PQTVFirebase.saveLocalUserCredentialsToCloud([saved.cloudCred], false).catch(() => {});
+                        }
+                        if (typeof saved.revision === 'number' && typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
+                            await window.PQTVFirebase.bumpCloudManifestRevision(
+                                saved.revision,
+                                saved.cloudCred ? { addLocalUserId: saved.cloudCred.id } : undefined
+                            ).catch(() => {});
                         }
                     }
                 }

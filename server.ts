@@ -21,7 +21,12 @@ import {
   classifyNetworkError,
   isBlockedHostname,
 } from './src/streamChecker.js';
-import { apkManager, buildAndroidTvProjectZip, isValidApkBuffer } from './src/apkManager.js';
+import {
+  apkManager,
+  buildAndroidTvProjectZip,
+  isValidApkBuffer,
+  type VersionBumpType,
+} from './src/apkManager.js';
 import {
   getPublicGithubConfig,
   saveAndVerifyGithubConfig,
@@ -31,6 +36,7 @@ import {
   refreshGithubBuildStatus,
   listGithubWorkflowRuns,
   importApkFromGithubRun,
+  restoreApkReleaseFromGithub,
   GithubWorkflowScopeError,
   getWorkflowManualSetupInfo,
 } from './src/githubApkBuilder.js';
@@ -587,20 +593,51 @@ app.get('/favicon.ico', (_req, res) => {
   res.status(204).end();
 });
 
+function detectApkClientCode(req: Request): number {
+  const qCode = Number(req.query.apk_code ?? req.query.currentCode ?? 0);
+  if (Number.isFinite(qCode) && qCode > 0) return Math.floor(qCode);
+  const hdrCode = Number(req.headers['x-pqtv-version-code'] || 0);
+  if (Number.isFinite(hdrCode) && hdrCode > 0) return Math.floor(hdrCode);
+  const ua = String(req.headers['user-agent'] || '');
+  const m = ua.match(/PQTV-Code\/(\d+)/i);
+  if (m) {
+    const uaCode = Number(m[1]);
+    if (Number.isFinite(uaCode) && uaCode > 0) return Math.floor(uaCode);
+  }
+  return 0;
+}
+
+function isSafeExternalApkUrl(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    if (u.protocol !== 'https:') return false;
+    const h = u.hostname.toLowerCase();
+    return h === 'github.com' || h.endsWith('.github.com') || h.endsWith('.githubusercontent.com');
+  } catch {
+    return false;
+  }
+}
+
 // ============ PUBLIC APK OTA UPDATE & DOWNLOAD ROUTES ============
 app.get('/api/app/version', (req, res) => {
-  const currentCode = Number(req.query.currentCode) || 0;
-  const latest = apkManager.getLatest();
+  const currentCode = detectApkClientCode(req);
+  const check = apkManager.checkClientVersion(currentCode);
   const origin = getRequestOrigin(req);
-  const updateAvailable = Boolean(latest && currentCode > 0 && latest.versionCode > currentCode);
 
   noCacheJson(res, {
     ok: true,
-    hasApk: Boolean(latest),
-    updateAvailable,
-    latest: latest
+    hasApk: check.hasApk,
+    currentCode,
+    updateAvailable: check.updateAvailable,
+    isBlocked: check.isBlocked,
+    mustUpdate: check.mustUpdate,
+    blockMode: check.blockMode,
+    blockReason: check.blockReason,
+    minSupportedVersionCode: check.policy.minSupportedVersionCode,
+    blockedVersionCodes: check.policy.blockedVersionCodes,
+    latest: check.latest
       ? {
-          ...latest,
+          ...check.latest,
           apkUrl: '/apk/latest.apk',
           fullApkUrl: `${origin}/apk/latest.apk`,
         }
@@ -644,22 +681,50 @@ function serveApkFile(req: Request, res: Response, filePath: string, downloadNam
   }
 }
 
-app.get('/apk/latest.apk', (req, res) => {
+app.get('/apk/latest.apk', async (req, res) => {
   const latest = apkManager.getLatestFilePath();
   if (!latest) {
     res.status(404).send('No APK release published yet');
     return;
   }
-  serveApkFile(req, res, latest.path, latest.release.filename);
-});
-
-app.get('/apk/:filename', (req, res) => {
-  const found = apkManager.getApkFilePath(String(req.params.filename || ''));
-  if (!found) {
-    res.status(404).send('APK not found');
+  if (latest.path && fs.existsSync(latest.path)) {
+    serveApkFile(req, res, latest.path, latest.release.filename);
     return;
   }
-  serveApkFile(req, res, found, path.basename(found));
+  const restored = await restoreApkReleaseFromGithub(latest.release).catch(() => null);
+  const restoredPath = restored ? apkManager.getApkFilePath(restored.filename) : null;
+  if (restoredPath) {
+    serveApkFile(req, res, restoredPath, latest.release.filename);
+    return;
+  }
+  if (latest.release.externalApkUrl && isSafeExternalApkUrl(latest.release.externalApkUrl)) {
+    res.redirect(302, latest.release.externalApkUrl);
+    return;
+  }
+  res.status(404).send('APK binary not found on server or GitHub');
+});
+
+app.get('/apk/:filename', async (req, res) => {
+  const rawFilename = String(req.params.filename || '');
+  const found = apkManager.getApkFilePath(rawFilename);
+  if (found) {
+    serveApkFile(req, res, found, path.basename(found));
+    return;
+  }
+  const rel = apkManager.getReleaseByFilename(rawFilename);
+  if (rel) {
+    const restored = await restoreApkReleaseFromGithub(rel).catch(() => null);
+    const restoredPath = restored ? apkManager.getApkFilePath(restored.filename) : null;
+    if (restoredPath) {
+      serveApkFile(req, res, restoredPath, path.basename(restoredPath));
+      return;
+    }
+    if (rel.externalApkUrl && isSafeExternalApkUrl(rel.externalApkUrl)) {
+      res.redirect(302, rel.externalApkUrl);
+      return;
+    }
+  }
+  res.status(404).send('APK not found');
 });
 
 // CI / Admin APK Upload Endpoint (supports both APK_UPLOAD_TOKEN bearer & Admin UI auth)
@@ -695,6 +760,9 @@ app.post('/api/admin/apk-upload', (req, res) => {
   let versionName = String(req.headers['x-version-name'] || req.query.versionName || '').trim();
   let changelog = String(req.headers['x-changelog'] || req.query.changelog || '').trim();
   let mandatory = String(req.headers['x-mandatory'] || req.query.mandatory || '') === 'true';
+  let bumpRaw = String(req.headers['x-bump-type'] || req.query.bumpType || 'patch').trim();
+  let manualOverride = String(req.headers['x-manual-override'] || req.query.manualOverride || '') === 'true';
+  let autoBlockOlder = String(req.headers['x-auto-block-older'] || req.query.autoBlockOlder || '') === 'true';
 
   if (Buffer.isBuffer(req.body)) {
     apkBuffer = req.body;
@@ -705,6 +773,9 @@ app.post('/api/admin/apk-upload', (req, res) => {
     versionName = String(req.body.versionName || versionName).trim();
     changelog = String(req.body.changelog || changelog).trim();
     mandatory = Boolean(req.body.mandatory ?? mandatory);
+    bumpRaw = String(req.body.bumpType || bumpRaw).trim();
+    manualOverride = Boolean(req.body.manualOverride ?? manualOverride);
+    autoBlockOlder = Boolean(req.body.autoBlockOlder ?? autoBlockOlder);
   }
 
   if (!apkBuffer || !isValidApkBuffer(apkBuffer)) {
@@ -716,23 +787,33 @@ app.post('/api/admin/apk-upload', (req, res) => {
     return;
   }
 
-  const latest = apkManager.getLatest();
-  if (!versionCode || versionCode < 1) {
-    versionCode = latest ? latest.versionCode + 1 : 1;
-  }
-  if (!versionName) {
-    versionName = `1.0.${versionCode}`;
-  }
+  const bumpType: VersionBumpType =
+    bumpRaw === 'major' || bumpRaw === 'minor' ? bumpRaw : 'patch';
 
   const release = apkManager.publishApk({
     buffer: apkBuffer,
-    versionCode,
-    versionName,
+    versionCode: versionCode > 0 ? versionCode : undefined,
+    versionName: versionName || undefined,
+    bumpType,
+    manualOverride: manualOverride || (versionCode > 0 && Boolean(versionName)),
     changelog,
     mandatory,
+    autoBlockOlder,
+    source: 'upload',
   });
 
-  noCacheJson(res, { ok: true, release });
+  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_upload', {
+    versionCode: release.versionCode,
+    versionName: release.versionName,
+  });
+
+  noCacheJson(res, {
+    ok: true,
+    release,
+    policy: apkManager.getPolicy(),
+    suggestions: apkManager.getAllVersionSuggestions(),
+    revision: meta.revision,
+  });
 });
 
 // ============ UNIFIED AUTH (ADMINS -> /editor, VIEWERS -> /watch) ============
@@ -1235,6 +1316,9 @@ app.get('/watch/api/channels', (req, res) => {
   const all = Array.from(availableMap.values());
   const unavailable = [...playlistErrors, ...Array.from(excludedMap.values())];
   const totalCount = all.length + excludedMap.size;
+  const clientApkCode = detectApkClientCode(req);
+  const apkCheck = apkManager.checkClientVersion(clientApkCode);
+  const origin = getRequestOrigin(req);
 
   noCacheJson(res, {
     channels: all,
@@ -1247,6 +1331,23 @@ app.get('/watch/api/channels', (req, res) => {
     playlists,
     streaming: getStreamingSettings(),
     uiSettings: getUiSettings(),
+    apkStatus: {
+      currentCode: clientApkCode,
+      hasApk: apkCheck.hasApk,
+      updateAvailable: apkCheck.updateAvailable,
+      isBlocked: apkCheck.isBlocked,
+      mustUpdate: apkCheck.mustUpdate,
+      blockMode: apkCheck.blockMode,
+      blockReason: apkCheck.blockReason,
+      minSupportedVersionCode: apkCheck.policy.minSupportedVersionCode,
+      latest: apkCheck.latest
+        ? {
+            ...apkCheck.latest,
+            apkUrl: '/apk/latest.apk',
+            fullApkUrl: `${origin}/apk/latest.apk`,
+          }
+        : null,
+    },
     user: {
       name: viewer.name,
       login: viewer.login,
@@ -1282,6 +1383,10 @@ app.post('/watch/api/cloud/hydrate-playlists', (req, res) => {
       noCacheJson(res, { ok: false, error: uiRes.error || 'Не удалось сохранить настройки интерфейса' }, 500);
       return;
     }
+  }
+
+  if (req.body?.apkState && typeof req.body.apkState === 'object') {
+    apkManager.hydrateState(req.body.apkState);
   }
 
   const incomingPlaylists = Array.isArray(req.body?.playlists) ? req.body.playlists : [];
@@ -1416,9 +1521,11 @@ app.post('/watch/api/admin/users/save', (req, res) => {
       return;
     }
     const createdFull = created.user ? userAuth.find(created.user.id) : null;
+    const meta = stateLifecycle.bumpRevision('users_update', created.user!.id, { action: 'create' });
     noCacheJson(res, {
       ok: true,
       user: created.user,
+      revision: meta.revision,
       cloudCred: createdFull
         ? { id: createdFull.id, password_hash: createdFull.password_hash }
         : null,
@@ -1443,9 +1550,11 @@ app.post('/watch/api/admin/users/save', (req, res) => {
       }
     }
     const syncedFull = userAuth.find(synced.id);
+    const meta = stateLifecycle.bumpRevision('users_update', synced.id, { action: 'upsert' });
     noCacheJson(res, {
       ok: true,
       user: synced,
+      revision: meta.revision,
       cloudCred: syncedFull && syncedFull.password_hash
         ? { id: syncedFull.id, password_hash: syncedFull.password_hash }
         : null,
@@ -1459,8 +1568,10 @@ app.post('/watch/api/admin/users/save', (req, res) => {
     return;
   }
   const updatedFull = userAuth.find(id);
+  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'update' });
   noCacheJson(res, {
     ok: true,
+    revision: meta.revision,
     cloudCred: updatedFull && updatedFull.password_hash
       ? { id: updatedFull.id, password_hash: updatedFull.password_hash }
       : null,
@@ -1474,7 +1585,8 @@ app.post('/watch/api/admin/users/delete', (req, res) => {
     return;
   }
   if (userAuth.delete(id)) {
-    noCacheJson(res, { ok: true });
+    const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'delete' });
+    noCacheJson(res, { ok: true, revision: meta.revision });
     return;
   }
   noCacheJson(res, { error: 'Пользователь не найден' }, 404);
@@ -1490,7 +1602,8 @@ app.post('/watch/api/admin/invites/save', (req, res) => {
     noCacheJson(res, { error: saved.error || 'Ошибка сохранения приглашения' }, 400);
     return;
   }
-  noCacheJson(res, { ok: true, invite: saved.invite });
+  const meta = stateLifecycle.bumpRevision('users_update', saved.invite!.id, { action: 'invite_save' });
+  noCacheJson(res, { ok: true, invite: saved.invite, revision: meta.revision });
 });
 
 app.post('/watch/api/admin/invites/delete', (req, res) => {
@@ -1499,7 +1612,8 @@ app.post('/watch/api/admin/invites/delete', (req, res) => {
     noCacheJson(res, { error: 'Приглашение не найдено' }, 404);
     return;
   }
-  noCacheJson(res, { ok: true });
+  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'invite_delete' });
+  noCacheJson(res, { ok: true, revision: meta.revision });
 });
 
 app.get('/watch/api/admin/alerts', (_req, res) => {
@@ -2379,6 +2493,7 @@ app.get('/api/cloud/export', (_req, res) => {
     catalog: catalogStore.exportRawState(),
     streamingSettings: getStreamingSettings(),
     uiSettings: getUiSettings(),
+    apkState: apkManager.exportState(),
     users: userAuth.all().map((u) => ({
       id: u.id,
       login: u.login,
@@ -2455,17 +2570,21 @@ app.get('/api/source/rebuild', async (_req, res) => {
 });
 
 app.get('/api/admin/apk/releases', (req, res) => {
-  const releases = apkManager.getReleases();
-  const latest = releases[0] || null;
+  const releases = apkManager.getReleaseWithLocalStatus();
+  const latest = apkManager.getLatest();
+  const policy = apkManager.getPolicy();
+  const suggestions = apkManager.getAllVersionSuggestions();
   const origin = getRequestOrigin(req);
   noCacheJson(res, {
     ok: true,
     releases,
     latest,
+    policy,
+    suggestions,
     serverOrigin: origin,
     uploadToken: config.apkUploadToken,
-    suggestedVersionCode: latest ? latest.versionCode + 1 : 1,
-    suggestedVersionName: latest ? `1.0.${latest.versionCode + 1}` : '1.0.0',
+    suggestedVersionCode: suggestions.patch.versionCode,
+    suggestedVersionName: suggestions.patch.versionName,
   });
 });
 
@@ -2475,14 +2594,103 @@ app.post('/api/admin/apk/delete', (req, res) => {
     noCacheJson(res, { error: 'Релиз не найден' }, 404);
     return;
   }
-  noCacheJson(res, { ok: true });
+  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_delete', { id });
+  noCacheJson(res, {
+    ok: true,
+    policy: apkManager.getPolicy(),
+    suggestions: apkManager.getAllVersionSuggestions(),
+    revision: meta.revision,
+  });
+});
+
+app.post('/api/admin/apk/policy', (req, res) => {
+  const out = apkManager.updatePolicy({
+    minSupportedVersionCode:
+      req.body?.minSupportedVersionCode !== undefined
+        ? Number(req.body.minSupportedVersionCode)
+        : undefined,
+    blockedVersionCodes: Array.isArray(req.body?.blockedVersionCodes)
+      ? req.body.blockedVersionCodes
+      : undefined,
+    blockMode:
+      req.body?.blockMode === 'hard' || req.body?.blockMode === 'soft'
+        ? req.body.blockMode
+        : undefined,
+    blockMessage:
+      typeof req.body?.blockMessage === 'string' ? req.body.blockMessage : undefined,
+    blockOlderThanLatest: Boolean(req.body?.blockOlderThanLatest),
+  });
+  if (!out.ok) {
+    noCacheJson(res, { ok: false, error: out.error || 'Ошибка обновления политики версий' }, 400);
+    return;
+  }
+  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_policy', {
+    minSupportedVersionCode: out.policy.minSupportedVersionCode,
+    blockMode: out.policy.blockMode,
+  });
+  noCacheJson(res, {
+    ok: true,
+    policy: out.policy,
+    releases: apkManager.getReleaseWithLocalStatus(),
+    suggestions: apkManager.getAllVersionSuggestions(),
+    revision: meta.revision,
+  });
+});
+
+app.post('/api/admin/apk/toggle-block', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const blocked = Boolean(req.body?.blocked);
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason : undefined;
+  const out = apkManager.setReleaseBlocked(id, blocked, reason);
+  if (!out.ok) {
+    noCacheJson(
+      res,
+      { ok: false, error: out.error || 'Не удалось изменить статус блокировки релиза' },
+      out.error === 'Релиз не найден' ? 404 : 400
+    );
+    return;
+  }
+  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_toggle_block', {
+    id,
+    blocked,
+    versionCode: out.release?.versionCode,
+  });
+  noCacheJson(res, {
+    ok: true,
+    release: out.release,
+    policy: out.policy,
+    releases: apkManager.getReleaseWithLocalStatus(),
+    revision: meta.revision,
+  });
+});
+
+app.post('/api/admin/apk/restore', async (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const rel = apkManager.getReleases().find((r) => r.id === id);
+  if (!rel) {
+    noCacheJson(res, { ok: false, error: 'Релиз не найден' }, 404);
+    return;
+  }
+  const restored = await restoreApkReleaseFromGithub(rel);
+  if (!restored) {
+    noCacheJson(
+      res,
+      { ok: false, error: 'Не удалось скачать APK-файл из GitHub Actions или GitHub Release (артефакт мог истечь).' },
+      502
+    );
+    return;
+  }
+  noCacheJson(res, {
+    ok: true,
+    release: restored,
+    releases: apkManager.getReleaseWithLocalStatus(),
+  });
 });
 
 app.get('/api/admin/apk/project.zip', (req, res) => {
-  const latest = apkManager.getLatest();
-  const nextCode = Number(req.query.versionCode) || (latest ? latest.versionCode + 1 : 1);
-  const nextName =
-    String(req.query.versionName || '').trim() || (latest ? `1.0.${nextCode}` : '1.0.0');
+  const sug = apkManager.getNextVersionSuggestion('patch');
+  const nextCode = Number(req.query.versionCode) || sug.versionCode;
+  const nextName = String(req.query.versionName || '').trim() || sug.versionName;
   const origin = getRequestOrigin(req);
   const zipBuf = buildAndroidTvProjectZip(origin, nextCode, nextName);
 
@@ -2547,11 +2755,13 @@ app.post('/api/admin/github/sync', async (_req, res) => {
 
 app.post('/api/admin/github/build', async (req, res) => {
   try {
-    const latest = apkManager.getLatest();
-    const defaultCode = latest ? latest.versionCode + 1 : 1;
-    const defaultName = latest ? `1.0.${defaultCode}` : '1.0.0';
-    const versionCode = Number(req.body?.versionCode) || defaultCode;
-    const versionName = String(req.body?.versionName || '').trim() || defaultName;
+    const bumpRaw = String(req.body?.bumpType || 'patch').trim();
+    const bumpType: VersionBumpType =
+      bumpRaw === 'major' || bumpRaw === 'minor' ? bumpRaw : 'patch';
+    const manualOverride = Boolean(req.body?.manualOverride);
+    const autoBlockOlder = Boolean(req.body?.autoBlockOlder);
+    const versionCode = req.body?.versionCode ? Number(req.body.versionCode) : undefined;
+    const versionName = req.body?.versionName ? String(req.body.versionName).trim() : undefined;
     const serverUrl = String(req.body?.serverUrl || '').trim() || getRequestOrigin(req);
     const changelog = String(req.body?.changelog || '').trim();
     const mandatory = Boolean(req.body?.mandatory);
@@ -2560,12 +2770,20 @@ app.post('/api/admin/github/build', async (req, res) => {
     const build = await triggerGithubApkBuild({
       versionName,
       versionCode,
+      bumpType,
+      manualOverride,
       serverUrl,
       changelog,
       mandatory,
+      autoBlockOlder,
       syncProject,
     });
-    noCacheJson(res, { ok: true, build });
+    noCacheJson(res, {
+      ok: true,
+      build,
+      policy: apkManager.getPolicy(),
+      suggestions: apkManager.getAllVersionSuggestions(),
+    });
   } catch (err) {
     if (err instanceof GithubWorkflowScopeError) {
       noCacheJson(
@@ -2587,7 +2805,12 @@ app.post('/api/admin/github/build', async (req, res) => {
 app.get('/api/admin/github/status', async (_req, res) => {
   try {
     const build = await refreshGithubBuildStatus();
-    noCacheJson(res, { ok: true, build });
+    noCacheJson(res, {
+      ok: true,
+      build,
+      policy: apkManager.getPolicy(),
+      suggestions: apkManager.getAllVersionSuggestions(),
+    });
   } catch (err) {
     noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 500);
   }
@@ -2609,21 +2832,36 @@ app.post('/api/admin/github/import', async (req, res) => {
       noCacheJson(res, { error: 'Укажите корректный ID запуска GitHub Actions' }, 400);
       return;
     }
-    const latest = apkManager.getLatest();
-    const versionCode = Number(req.body?.versionCode) || (latest ? latest.versionCode + 1 : 1);
-    const versionName =
-      String(req.body?.versionName || '').trim() || `1.0.${versionCode}`;
+    const bumpRaw = String(req.body?.bumpType || 'patch').trim();
+    const bumpType: VersionBumpType =
+      bumpRaw === 'major' || bumpRaw === 'minor' ? bumpRaw : 'patch';
+    const manualOverride = Boolean(req.body?.manualOverride);
+    const resolved = apkManager.resolveAutoVersion({
+      versionCode: req.body?.versionCode ? Number(req.body.versionCode) : undefined,
+      versionName: req.body?.versionName ? String(req.body.versionName).trim() : undefined,
+      bumpType,
+      manualOverride,
+    });
     const changelog = String(req.body?.changelog || '').trim() || 'Импортировано из GitHub Actions';
     const mandatory = Boolean(req.body?.mandatory);
+    const autoBlockOlder = Boolean(req.body?.autoBlockOlder);
 
     const release = await importApkFromGithubRun({
       runId,
-      versionName,
-      versionCode,
+      versionName: resolved.versionName,
+      versionCode: resolved.versionCode,
       changelog,
       mandatory,
+      autoBlockOlder,
+      manualOverride,
     });
-    noCacheJson(res, { ok: true, release });
+    noCacheJson(res, {
+      ok: true,
+      release,
+      policy: apkManager.getPolicy(),
+      suggestions: apkManager.getAllVersionSuggestions(),
+      revision: stateLifecycle.getStateMeta().revision,
+    });
   } catch (err) {
     noCacheJson(res, { error: err instanceof Error ? err.message : String(err) }, 400);
   }
@@ -2979,8 +3217,16 @@ app.post('/api/users/save', (req, res) => {
       noCacheJson(res, { error: created.error || 'Ошибка' }, code);
       return;
     }
+    const createdFull = created.user ? userAuth.find(created.user.id) : null;
     const meta = stateLifecycle.bumpRevision('users_update', created.user!.id, { action: 'create' });
-    noCacheJson(res, { ok: true, user: created.user, revision: meta.revision });
+    noCacheJson(res, {
+      ok: true,
+      user: created.user,
+      revision: meta.revision,
+      cloudCred: createdFull && createdFull.password_hash
+        ? { id: createdFull.id, password_hash: createdFull.password_hash }
+        : null,
+    });
     return;
   }
 
@@ -3005,8 +3251,16 @@ app.post('/api/users/save', (req, res) => {
         return;
       }
     }
+    const syncedFull = userAuth.find(synced.id);
     const meta = stateLifecycle.bumpRevision('users_update', synced.id, { action: 'upsert' });
-    noCacheJson(res, { ok: true, user: synced, revision: meta.revision });
+    noCacheJson(res, {
+      ok: true,
+      user: synced,
+      revision: meta.revision,
+      cloudCred: syncedFull && syncedFull.password_hash
+        ? { id: syncedFull.id, password_hash: syncedFull.password_hash }
+        : null,
+    });
     return;
   }
 
@@ -3016,8 +3270,15 @@ app.post('/api/users/save', (req, res) => {
     noCacheJson(res, { error: updated.error || 'Ошибка' }, code);
     return;
   }
+  const updatedFull = userAuth.find(id);
   const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'update' });
-  noCacheJson(res, { ok: true, revision: meta.revision });
+  noCacheJson(res, {
+    ok: true,
+    revision: meta.revision,
+    cloudCred: updatedFull && updatedFull.password_hash
+      ? { id: updatedFull.id, password_hash: updatedFull.password_hash }
+      : null,
+  });
 });
 
 app.post('/api/users/sync-from-firebase', (req, res) => {
