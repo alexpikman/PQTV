@@ -2,6 +2,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentPlaylist = null;
     let channelsData = [];
     let sourcesData = [];
+    const selectedChannelUrls = new Set();
+    let cloudCategories = [];
     let playlistsList = [];
     const streamStatusCache = {};
 
@@ -736,7 +738,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!currentPlaylist) return;
         const res = await apiRequest(`/api/channels?playlist=${encodeURIComponent(currentPlaylist)}`);
         channelsData = Array.isArray(res.channels) ? res.channels : [];
+        selectedChannelUrls.clear();
+        await refreshCloudCategories();
         renderChannels();
+    }
+
+    async function refreshCloudCategories() {
+        if (!window.PQTVFirebase || typeof window.PQTVFirebase.listCategoriesFromCloud !== 'function') return;
+        try { cloudCategories = await window.PQTVFirebase.listCategoriesFromCloud(); }
+        catch (err) { console.error('Failed to load channel categories:', err); cloudCategories = []; }
     }
 
     // ===== RENDER CHANNELS =====
@@ -750,7 +760,17 @@ document.addEventListener('DOMContentLoaded', () => {
             channelsContainer.innerHTML = '<p class="placeholder-text">В этом плейлисте нет каналов</p>';
             return;
         }
-        let html = `<table class="ch-table"><thead><tr>
+        const categoryOptions = cloudCategories.map((category) =>
+            `<option value="${escapeHtml(category.name)}">${escapeHtml(category.name)}</option>`
+        ).join('');
+        let html = `<div class="header-actions playlist-bulk-toolbar">
+            <label><input type="checkbox" id="playlist-select-all"> Выбрать все</label>
+            <select id="playlist-bulk-category"><option value="">Категория...</option>${categoryOptions}</select>
+            <button type="button" class="btn btn-secondary" id="btn-apply-bulk-category">Применить</button>
+            <button type="button" class="btn btn-secondary" id="btn-open-categories">Управление категориями</button>
+        </div>
+        <table class="ch-table"><thead><tr>
+            <th style="width:38px;"><input type="checkbox" id="playlist-select-all-header" aria-label="Выбрать все каналы"></th>
             <th style="width:44px;"></th>
             <th>Канал</th>
             <th style="width:110px;">Статус</th>
@@ -779,6 +799,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             html += `
                 <tr data-idx="${idx}">
+                    <td><input type="checkbox" data-select-channel data-url="${escapeHtml(ch.url || '')}" ${selectedChannelUrls.has(ch.url) ? 'checked' : ''} aria-label="Выбрать ${escapeHtml(ch.name)}"></td>
                     <td>${logoHtml}</td>
                     <td>
                         <div class="ch-title">${escapeHtml(ch.name)}${pausedTag}</div>
@@ -798,7 +819,50 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         html += '</tbody></table>';
         channelsContainer.innerHTML = html;
-
+        const selectAll = channelsContainer.querySelector('#playlist-select-all');
+        const selectAllHeader = channelsContainer.querySelector('#playlist-select-all-header');
+        const allSelected = channelsData.length > 0 && channelsData.every((channel) => selectedChannelUrls.has(channel.url));
+        if (selectAll) selectAll.checked = allSelected;
+        if (selectAllHeader) selectAllHeader.checked = allSelected;
+        [selectAll, selectAllHeader].filter(Boolean).forEach((checkbox) => {
+            checkbox.addEventListener('change', () => {
+                if (checkbox.checked) channelsData.forEach((channel) => { if (channel.url) selectedChannelUrls.add(channel.url); });
+                else selectedChannelUrls.clear();
+                renderChannels();
+            });
+        });
+        channelsContainer.querySelectorAll('[data-select-channel]').forEach((checkbox) => {
+            checkbox.addEventListener('change', () => {
+                const url = checkbox.dataset.url || '';
+                if (checkbox.checked && url) selectedChannelUrls.add(url);
+                else selectedChannelUrls.delete(url);
+                renderChannels();
+            });
+        });
+        const openCategories = channelsContainer.querySelector('#btn-open-categories');
+        if (openCategories) openCategories.addEventListener('click', () => {
+            const modal = document.getElementById('categories-modal');
+            if (modal) modal.classList.remove('hidden');
+            void loadCategoryManager();
+        });
+        const applyCategory = channelsContainer.querySelector('#btn-apply-bulk-category');
+        if (applyCategory) applyCategory.addEventListener('click', async () => {
+            const select = channelsContainer.querySelector('#playlist-bulk-category');
+            const group = select ? select.value : '';
+            const urls = Array.from(selectedChannelUrls);
+            if (!fbAdminConnected) { showToast('Подключите Firestore под учётной записью администратора', 'err'); return; }
+            if (!group) { showToast('Выберите категорию', 'err'); return; }
+            if (!urls.length) { showToast('Выберите каналы', 'err'); return; }
+            applyCategory.disabled = true;
+            try {
+                const result = await apiRequest('/api/playlists/categories/bulk', 'POST', { playlist: currentPlaylist, urls, group });
+                if (!result || !result.ok) { showToast((result && result.error) || 'Не удалось назначить категорию', 'err'); return; }
+                selectedChannelUrls.clear();
+                await loadChannels();
+                loadCatalog().catch(() => {});
+                showToast(`Категория «${group}» назначена. Изменено каналов: ${result.updatedChannels || 0}; плейлистов: ${(result.updatedPlaylists || []).length}`, 'ok');
+            } finally { applyCategory.disabled = false; }
+        });
         channelsContainer.querySelectorAll('[data-logo]').forEach(img => {
             img.onerror = () => {
                 const wrap = img.parentNode;
@@ -4690,6 +4754,48 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 }
             };
         }
+    })();
+
+    async function loadCategoryManager() {
+        const list = document.getElementById('categories-list');
+        if (!list) return;
+        await refreshCloudCategories();
+        list.innerHTML = cloudCategories.length
+            ? cloudCategories.map((category) => `<div class="category-manager-row"><span>${escapeHtml(category.name)}</span><button type="button" class="icon-btn danger" data-delete-category="${escapeHtml(category.id)}" title="Удалить">${I.trash}</button></div>`).join('')
+            : '<p class="placeholder-text">Категорий пока нет</p>';
+        list.querySelectorAll('[data-delete-category]').forEach((button) => {
+            button.addEventListener('click', async () => {
+                if (!window.PQTVFirebase || !(await uiConfirm('Удалить категорию из справочника? Названия групп у каналов останутся без изменений.'))) return;
+                try {
+                    await window.PQTVFirebase.deleteCategoryFromCloud(button.dataset.deleteCategory);
+                    await loadCategoryManager(); renderChannels();
+                } catch (err) { showToast(err && err.message ? err.message : 'Не удалось удалить категорию', 'err'); }
+            });
+        });
+        renderChannels();
+    }
+
+    (function initCategoryManagerModal() {
+        const modal = document.getElementById('categories-modal');
+        const close = document.getElementById('categories-modal-close');
+        const backdrop = document.getElementById('categories-modal-backdrop');
+        const input = document.getElementById('category-name-input');
+        const add = document.getElementById('btn-category-add');
+        const openGlobal = document.getElementById('btn-open-categories-global');
+        const openModal = async () => { if (modal) { modal.classList.remove('hidden'); await loadCategoryManager(); } };
+        const closeModal = () => { if (modal) modal.classList.add('hidden'); };
+        if (openGlobal) openGlobal.addEventListener('click', openModal);
+        if (close) close.addEventListener('click', closeModal);
+        if (backdrop) backdrop.addEventListener('click', closeModal);
+        if (add && input) add.addEventListener('click', async () => {
+            if (!window.PQTVFirebase || typeof window.PQTVFirebase.createCategoryInCloud !== 'function') { showToast('Firebase не подключён', 'err'); return; }
+            add.disabled = true;
+            try {
+                await window.PQTVFirebase.createCategoryInCloud(input.value.trim());
+                input.value = ''; await loadCategoryManager(); renderChannels(); showToast('Категория добавлена', 'ok');
+            } catch (err) { showToast(err && err.message ? err.message : 'Не удалось добавить категорию', 'err'); }
+            finally { add.disabled = false; }
+        });
     })();
 
     (function initUiSettingsScreen() {

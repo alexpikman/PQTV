@@ -269,6 +269,20 @@
       },
       "required": ["uid", "userLogin", "userName", "totalChannels", "unavailableCount", "items", "resolved", "createdAt", "updatedAt"]
     },
+    "Category": {
+      "title": "Category",
+      "description": "Global channel category name used by playlist group and viewer grouping.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\\\-]+$" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+        "createdByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "updatedByUid": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "name", "createdByUid", "updatedByUid", "createdAt", "updatedAt"]
+    },
     "CloudManifest": {
       "title": "CloudManifest",
       "description": "Master index of persisted playlists, sources, source indexes, EPGs, catalog chunks, and local users.",
@@ -879,6 +893,10 @@
     "/channel_alerts/{alertId}": {
       "schema": { "$ref": "#/entities/ChannelAlert" },
       "description": "Admin alerts showing users who opened the app and discovered unavailable channels."
+    },
+    "/categories/{categoryId}": {
+      "schema": { "$ref": "#/entities/Category" },
+      "description": "Global category dictionary. Admins manage category names; verified viewers can read them for channel grouping."
     },
     "/cloud_meta/{docId}": {
       "schema": { "$ref": "#/entities/CloudManifest" },

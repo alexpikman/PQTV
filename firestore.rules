@@ -168,6 +168,16 @@ service cloud.firestore {
         && data.updatedAt is timestamp;
     }
 
+    function isValidCategory(data) {
+      return data.keys().hasAll(['id', 'name', 'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'createdByUid', 'updatedByUid', 'createdAt', 'updatedAt'])
+        && isValidId(data.id)
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.createdByUid is string && data.createdByUid.size() >= 1 && data.createdByUid.size() <= 128
+        && data.updatedByUid is string && data.updatedByUid.size() >= 1 && data.updatedByUid.size() <= 128
+        && data.createdAt is timestamp && data.updatedAt is timestamp;
+    }
+
     function isValidCloudManifest(data) {
       return data.keys().hasAll(['docId', 'playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'updatedByUid', 'createdAt', 'updatedAt'])
         && data.keys().hasOnly(['docId', 'playlists', 'sourceIds', 'sourceIndexIds', 'epgIds', 'localUserIds', 'catalogChannelChunks', 'catalogStreamChunks', 'revision', 'updatedByUid', 'createdAt', 'updatedAt'])
@@ -753,6 +763,26 @@ service cloud.firestore {
         );
 
       allow delete: if isAdmin() && isValidId(alertId);
+    }
+
+    // ===== GLOBAL CHANNEL CATEGORIES =====
+    match /categories/{categoryId} {
+      allow get, list: if isVerifiedEmail();
+      allow create: if isAdmin()
+        && isValidId(categoryId) && isValidCategory(incoming())
+        && incoming().id == categoryId
+        && incoming().createdByUid == request.auth.uid
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().createdAt == request.time && incoming().updatedAt == request.time;
+      allow update: if isAdmin()
+        && isValidId(categoryId) && isValidCategory(incoming())
+        && incoming().id == existing().id
+        && incoming().createdByUid == existing().createdByUid
+        && incoming().updatedByUid == request.auth.uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'updatedByUid', 'updatedAt']);
+      allow delete: if isAdmin() && isValidId(categoryId);
     }
 
     // ===== CLOUD META MANIFEST (Admin-only) =====

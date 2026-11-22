@@ -484,6 +484,11 @@ a:hover { text-decoration: underline; }
 .logo-preview img { max-height: 60px; max-width: 100%; }
 .divider { height: 1px; background: var(--border); margin: 14px 0; }
 
+.category-modal-window { max-width: 520px; width: 100%; max-height: 86vh; display: flex; flex-direction: column; }
+.category-modal-body { padding: 18px 20px; overflow-y: auto; }
+.playlist-bulk-toolbar { flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+.category-manager-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border); }
+
 /* ========== PLAYER MODAL ========== */
 .player-modal {
     position: fixed; inset: 0; z-index: 9999;

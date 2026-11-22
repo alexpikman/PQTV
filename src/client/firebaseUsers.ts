@@ -24,6 +24,9 @@ import blueprint from '../../firebase-blueprint.json' with { type: 'json' };
 import {
   bumpCloudManifestRevision,
   clearSourceIndexInCloud,
+  createCategoryInCloud,
+  deleteCategoryFromCloud,
+  listCategoriesFromCloud,
   CloudApkState,
   CloudExportPayload,
   CloudStreamingSettings,
@@ -860,6 +863,10 @@ export const PQTVFirebase = {
       // Ignore heartbeat failures silently when viewer is using password-only session
     }
   },
+
+  listCategoriesFromCloud,
+  createCategoryInCloud,
+  deleteCategoryFromCloud,
 
   // ===== FULL DATABASE CLOUD PERSISTENCE =====
   getCloudManifestStatus,

@@ -6,6 +6,7 @@ import {
   getDoc,
   getDocs,
   serverTimestamp,
+  runTransaction,
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
@@ -282,62 +283,38 @@ async function readManifest(): Promise<{
 }
 
 async function writeManifestPatch(patch: Partial<{
-  playlists: string[];
-  sourceIds: string[];
-  sourceIndexIds: string[];
-  epgIds: string[];
-  localUserIds: string[];
-  catalogChannelChunks: number;
-  catalogStreamChunks: number;
-  revision: number;
+  playlists: string[]; sourceIds: string[]; sourceIndexIds: string[]; epgIds: string[];
+  localUserIds: string[]; catalogChannelChunks: number; catalogStreamChunks: number; revision: number;
 }>): Promise<void> {
   const uid = auth.currentUser?.uid;
-  if (!uid) return;
-  const cur = (await readManifest()) || {
-    playlists: [],
-    sourceIds: [],
-    sourceIndexIds: [],
-    epgIds: [],
-    localUserIds: [],
-    catalogChannelChunks: 0,
-    catalogStreamChunks: 0,
-  };
-  const nextRevision =
-    patch.revision !== undefined
-      ? Math.max(0, Math.floor(Number(patch.revision) || 0))
-      : cur.revision !== undefined
-        ? cur.revision
-        : undefined;
-
-  const merged: Record<string, unknown> = {
-    docId: 'manifest',
-    playlists: (patch.playlists ?? cur.playlists).slice(0, 100),
-    sourceIds: (patch.sourceIds ?? cur.sourceIds).slice(0, 100),
-    sourceIndexIds: (patch.sourceIndexIds ?? cur.sourceIndexIds).slice(0, 100),
-    epgIds: (patch.epgIds ?? cur.epgIds).slice(0, 50),
-    localUserIds: (patch.localUserIds ?? cur.localUserIds).slice(0, 500),
-    catalogChannelChunks: patch.catalogChannelChunks ?? cur.catalogChannelChunks,
-    catalogStreamChunks: patch.catalogStreamChunks ?? cur.catalogStreamChunks,
-    updatedByUid: uid,
-  };
-  if (nextRevision !== undefined) {
-    merged.revision = nextRevision;
+  if (!uid) throw new Error('Для записи cloud_meta/manifest требуется авторизация администратора');
+  const ref = doc(db, 'cloud_meta', 'manifest');
+  try {
+    await runTransaction(db, async (transaction) => {
+      const snap = await transaction.get(ref);
+      const current = snap.exists() ? snap.data() : {};
+      const nextRevision = patch.revision !== undefined
+        ? Math.max(0, Math.floor(Number(patch.revision) || 0))
+        : typeof current.revision === 'number' ? current.revision : undefined;
+      const merged: Record<string, unknown> = {
+        docId: 'manifest',
+        playlists: (patch.playlists ?? (Array.isArray(current.playlists) ? current.playlists as string[] : [])).slice(0, 100),
+        sourceIds: (patch.sourceIds ?? (Array.isArray(current.sourceIds) ? current.sourceIds as string[] : [])).slice(0, 100),
+        sourceIndexIds: (patch.sourceIndexIds ?? (Array.isArray(current.sourceIndexIds) ? current.sourceIndexIds as string[] : [])).slice(0, 100),
+        epgIds: (patch.epgIds ?? (Array.isArray(current.epgIds) ? current.epgIds as string[] : [])).slice(0, 50),
+        localUserIds: (patch.localUserIds ?? (Array.isArray(current.localUserIds) ? current.localUserIds as string[] : [])).slice(0, 500),
+        catalogChannelChunks: patch.catalogChannelChunks ?? (Number(current.catalogChannelChunks) || 0),
+        catalogStreamChunks: patch.catalogStreamChunks ?? (Number(current.catalogStreamChunks) || 0),
+        updatedByUid: uid,
+        createdAt: snap.exists() ? current.createdAt : serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      };
+      if (nextRevision !== undefined) merged.revision = nextRevision;
+      transaction.set(ref, merged);
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, 'cloud_meta/manifest');
   }
-  await upsertDoc(
-    doc(db, 'cloud_meta', 'manifest'),
-    merged,
-    [
-      'playlists',
-      'sourceIds',
-      'sourceIndexIds',
-      'epgIds',
-      'localUserIds',
-      'catalogChannelChunks',
-      'catalogStreamChunks',
-      'revision',
-      'updatedByUid',
-    ]
-  );
 }
 
 export async function getCloudManifestStatus(): Promise<{
@@ -970,6 +947,50 @@ export async function fetchUiSettingsFromCloud(): Promise<CloudUiSettings | null
     };
   } catch {
     return null;
+  }
+}
+
+export interface CloudCategory { id: string; name: string; }
+
+export async function listCategoriesFromCloud(): Promise<CloudCategory[]> {
+  try {
+    const snapshot = await getDocs(collection(db, 'categories'));
+    return snapshot.docs.map((item) => ({ id: item.id, name: String(item.data().name || '').trim() }))
+      .filter((item) => item.id.length > 0 && item.name.length > 0)
+      .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'categories');
+  }
+}
+
+export async function createCategoryInCloud(rawName: string): Promise<CloudCategory> {
+  const uid = auth.currentUser?.uid;
+  const name = String(rawName || '').trim();
+  if (!uid) throw new Error('Для управления категориями требуется авторизация администратора');
+  if (!name || name.length > 80) throw new Error('Название категории должно содержать от 1 до 80 символов');
+  const categories = await listCategoriesFromCloud();
+  if (categories.some((item) => item.name.toLocaleLowerCase('ru') === name.toLocaleLowerCase('ru'))) {
+    throw new Error('Категория с таким названием уже существует');
+  }
+  const id = safeId(`cat_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`);
+  try {
+    await setDoc(doc(db, 'categories', id), {
+      id, name, createdByUid: uid, updatedByUid: uid,
+      createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
+    });
+    return { id, name };
+  } catch (err) {
+    handleFirestoreError(err, OperationType.CREATE, `categories/${id}`);
+  }
+}
+
+export async function deleteCategoryFromCloud(categoryId: string): Promise<void> {
+  const id = safeId(categoryId);
+  if (!auth.currentUser?.uid || !id.startsWith('cat_')) throw new Error('Некорректная категория или отсутствует авторизация администратора');
+  try {
+    await deleteDoc(doc(db, 'categories', id));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `categories/${id}`);
   }
 }
 

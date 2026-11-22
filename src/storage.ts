@@ -61,6 +61,18 @@ export class Storage {
       .sort();
   }
 
+  getChannels(name: string): Channel[] {
+    if (!this.isValidFilename(name)) return [];
+    const filePath = this.getPlaylistPath(name);
+    if (!fs.existsSync(filePath)) return [];
+    try {
+      return parseM3uContent(fs.readFileSync(filePath, 'utf-8'));
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
+      return [];
+    }
+  }
+
   createPlaylist(name: string): boolean {
     this.lastError = '';
     if (!this.isValidFilename(name)) {

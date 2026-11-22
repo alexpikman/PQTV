@@ -46,6 +46,7 @@ import { stateLifecycle } from './src/stateLifecycle.js';
 import {
   createPlaylistUnified,
   savePlaylistChannelsUnified,
+  applyCategoryToPlaylistUrlsUnified,
   deletePlaylistUnified,
   restoreBackupUnified,
   deleteBackupUnified,
@@ -2934,6 +2935,14 @@ app.post('/api/channels/save', async (req, res) => {
   const playlist = String(req.body?.playlist || '').trim();
   const channels = Array.isArray(req.body?.channels) ? req.body.channels : [];
   const out = await savePlaylistChannelsUnified(playlist, channels);
+  noCacheJson(res, out, out.status);
+});
+
+app.post('/api/playlists/categories/bulk', async (req, res) => {
+  const playlist = String(req.body?.playlist || '').trim();
+  const urls = Array.isArray(req.body?.urls) ? req.body.urls : [];
+  const group = String(req.body?.group || '').trim();
+  const out = await applyCategoryToPlaylistUrlsUnified(playlist, urls, group);
   noCacheJson(res, out, out.status);
 });
 

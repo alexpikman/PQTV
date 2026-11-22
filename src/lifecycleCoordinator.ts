@@ -87,6 +87,53 @@ export async function savePlaylistChannelsUnified(
   });
 }
 
+export async function applyCategoryToPlaylistUrlsUnified(
+  name: string, rawUrls: string[], rawGroup: string
+): Promise<UnifiedOpResult> {
+  return withAsyncWriteLock(lockKey(), async () => {
+    const clean = name.replace(/\.m3u$/i, '').trim();
+    const group = String(rawGroup || '').trim();
+    const urls = new Set((Array.isArray(rawUrls) ? rawUrls : [])
+      .filter((url): url is string => typeof url === 'string' && url.length > 0 && url.length <= 1500));
+    if (!storage.isValidFilename(clean)) return { ok: false, status: 400, error: 'Некорректное имя плейлиста' };
+    if (!group || group.length > 120) return { ok: false, status: 400, error: 'Некорректное название категории' };
+    if (!urls.size || urls.size > 50000) return { ok: false, status: 400, error: 'Выберите каналы для изменения категории' };
+    const playlistNames = storage.getPlaylists();
+    if (!playlistNames.includes(clean)) return { ok: false, status: 404, error: 'Плейлист не найден' };
+    const pending: Array<{ name: string; before: Channel[]; after: Channel[] }> = [];
+    let matchedCurrent = false, updatedChannels = 0;
+    for (const playlistName of playlistNames) {
+      const before = storage.getChannels(playlistName);
+      const after = before.map((channel) => {
+        if (!urls.has(channel.url)) return channel;
+        if (playlistName === clean) matchedCurrent = true;
+        if (channel.group === group) return channel;
+        updatedChannels++;
+        return { ...channel, group };
+      });
+      if (after.some((channel, index) => channel !== before[index])) pending.push({ name: playlistName, before, after });
+    }
+    if (!matchedCurrent) return { ok: false, status: 404, error: 'Выбранные URL не найдены в текущем плейлисте' };
+    if (!pending.length) return { ok: true, status: 200, updatedChannels: 0, updatedPlaylists: [], revision: stateLifecycle.getStateMeta().revision };
+    const saved: typeof pending = [];
+    for (const item of pending) {
+      if (!storage.saveChannels(item.name, item.after)) {
+        for (const rollback of saved.reverse()) storage.saveChannels(rollback.name, rollback.before);
+        return { ok: false, status: 500, error: storage.getLastError() || `Не удалось сохранить плейлист ${item.name}` };
+      }
+      saved.push(item);
+    }
+    const rec = catalogStore.reconcile({ save: true });
+    if (!rec.persisted) {
+      for (const rollback of saved.reverse()) storage.saveChannels(rollback.name, rollback.before);
+      return { ok: false, status: 500, error: rec.error || 'Каталог не обновлён' };
+    }
+    const updatedPlaylists = pending.map((item) => item.name);
+    const meta = stateLifecycle.bumpRevision('category_bulk_update', clean, { category: group, selectedUrls: urls.size, updatedChannels, updatedPlaylists });
+    return { ok: true, status: 200, updatedChannels, updatedPlaylists, revision: meta.revision };
+  });
+}
+
 export async function deletePlaylistUnified(name: string): Promise<UnifiedOpResult> {
   return withAsyncWriteLock(lockKey(), async () => {
     const clean = name.replace(/\.m3u$/i, '').trim();

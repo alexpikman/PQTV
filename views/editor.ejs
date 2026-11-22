@@ -226,6 +226,7 @@
                                 </svg>
                                 Проверить всё
                             </button>
+                            <button id="btn-open-categories-global" type="button" class="btn btn-secondary">Категории</button>
                             <button id="btn-add-channel" class="btn btn-primary hidden">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                                     <line x1="12" y1="5" x2="12" y2="19"/>
@@ -1635,6 +1636,29 @@
                     <h4 style="font-size:13px; color:#fff; margin-bottom:10px;">Журнал операций жизненного цикла</h4>
                     <div id="lifecycle-logs-container"><p class="placeholder-text">Загрузка...</p></div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- GLOBAL CHANNEL CATEGORIES MODAL -->
+    <div id="categories-modal" class="player-modal hidden" style="z-index:12800;">
+        <div class="player-backdrop" id="categories-modal-backdrop"></div>
+        <div class="player-window category-modal-window">
+            <div class="player-head">
+                <div class="player-meta"><div class="player-title">Глобальные категории</div></div>
+                <div class="player-actions">
+                    <button type="button" id="categories-modal-close" class="btn-icon" title="Закрыть">×</button>
+                </div>
+            </div>
+            <div class="category-modal-body">
+                <div class="form-group">
+                    <label for="category-name-input">Название категории</label>
+                    <div class="header-actions">
+                        <input type="text" id="category-name-input" maxlength="80" placeholder="Например: Спорт">
+                        <button type="button" id="btn-category-add" class="btn btn-primary">Добавить</button>
+                    </div>
+                </div>
+                <div id="categories-list"></div>
             </div>
         </div>
     </div>

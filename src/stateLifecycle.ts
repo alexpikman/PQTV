@@ -7,6 +7,7 @@ import { atomicWriteJsonSync } from './persistence.js';
 export type LifecycleAction =
   | 'playlist_create'
   | 'playlist_save'
+  | 'category_bulk_update'
   | 'playlist_delete'
   | 'backup_restore'
   | 'backup_delete'
@@ -114,13 +115,13 @@ class StateLifecycleManager {
       lastAction: action,
       lastTarget: target,
     };
-    this.saveStateMeta(next);
-    this.appendLog({
+    if (!this.saveStateMeta(next)) throw new Error(this.lastError || 'Не удалось сохранить ревизию состояния');
+    if (!this.appendLog({
       revision: next.revision,
       action,
       target,
       details,
-    });
+    })) throw new Error(this.lastError || 'Не удалось записать журнал ревизий');
     return next;
   }
 
@@ -140,13 +141,13 @@ class StateLifecycleManager {
       lastAction: action,
       lastTarget: target,
     };
-    this.saveStateMeta(next);
-    this.appendLog({
+    if (!this.saveStateMeta(next)) throw new Error(this.lastError || 'Не удалось сохранить ревизию состояния');
+    if (!this.appendLog({
       revision: next.revision,
       action,
       target,
       details,
-    });
+    })) throw new Error(this.lastError || 'Не удалось записать журнал ревизий');
     return next;
   }
 
