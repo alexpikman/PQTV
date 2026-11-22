@@ -76,7 +76,6 @@ export async function savePlaylistChannelsUnified(
       removedChannels: rec.removedChannels,
       removedStreams: rec.removedStreams,
       prunedHealthIssues: healthPrune.removed,
-      alertsHydrated,
     });
     return {
       ok: true,
@@ -724,6 +723,7 @@ export async function hydrateStateUnified(body: {
       prunedUsers: userPrune.cleanedUsers,
       prunedInvites: userPrune.cleanedInvites,
       prunedHealthIssues: healthPrune.removed,
+      alertsHydrated,
     });
 
     return {
