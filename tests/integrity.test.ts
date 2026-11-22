@@ -395,6 +395,7 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
       playlist: 'category_b',
       channels: [
         { name: 'Shared B', group: 'Old', logo: '', url: 'https://example.com/shared.m3u8' },
+        { name: 'Near match', group: 'Keep', logo: '', url: 'https://example.com/shared.m3u8?token=other' },
         { name: 'Only B', group: 'Keep', logo: '', url: 'https://example.com/only-b.m3u8' },
       ],
     });
@@ -417,7 +418,8 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     const a = (await api<{ channels: Array<{ url: string; group: string }> }>('/api/channels?playlist=category_a')).data.channels;
     const b = (await api<{ channels: Array<{ url: string; group: string }> }>('/api/channels?playlist=category_b')).data.channels;
     assert.equal(a.find((channel) => channel.url.endsWith('/shared.m3u8'))?.group, 'Спорт');
-    assert.equal(b.find((channel) => channel.url.endsWith('/shared.m3u8'))?.group, 'Спорт');
+    assert.equal(b.find((channel) => channel.url === 'https://example.com/shared.m3u8')?.group, 'Спорт');
+    assert.equal(b.find((channel) => channel.url === 'https://example.com/shared.m3u8?token=other')?.group, 'Keep');
     assert.equal(a.find((channel) => channel.url.endsWith('/only-a.m3u8'))?.group, 'Old');
     assert.equal(b.find((channel) => channel.url.endsWith('/only-b.m3u8'))?.group, 'Keep');
   });
