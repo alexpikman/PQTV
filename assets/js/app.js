@@ -831,7 +831,11 @@ document.addEventListener('DOMContentLoaded', () => {
             logo: String(raw.logo || ''),
             url: String(raw.url || raw.primaryUrl || ''),
             tvgId: String(raw.tvg_id || raw.tvgId || ''),
-            altNames: Array.isArray(raw.alt_names) ? raw.alt_names.join(' ') : String(raw.altNames || ''),
+            altNames: Array.isArray(raw.alt_names)
+                ? raw.alt_names.join(' ')
+                : typeof raw.alt_names === 'string'
+                    ? raw.alt_names.replace(/[\[\]"]/g, '').replace(/,/g, ' ')
+                    : String(raw.altNames || ''),
             createdAt: Number(raw.created_at || raw.createdAt || 0),
             updatedAt: Number(raw.updated_at || raw.updatedAt || 0),
             status: String(raw.status || raw.overallStatus || 'unknown'),
@@ -2762,11 +2766,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadCatalogChannels() {
+        const tableState = getSharedChannelTableState('catalog', 'name');
         const params = new URLSearchParams({
             limit: '200',
             offset: catalogOffset,
             search: catalogSearch,
             filter: catalogFilter,
+            sortBy: tableState.sortKey || 'name',
+            sortDir: tableState.sortDirection || 'asc',
+            tableFilters: JSON.stringify(tableState.filters || {}),
         });
         if (catalogActivePL.length > 0) {
             params.set('playlists', catalogActivePL.join(','));
@@ -2833,7 +2841,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 key: 'name', label: 'Название', filterType: 'text',
                 render: (row) => `<div class="ch-title">${escapeHtml(row.name)}</div>${row.tvgId ? `<div class="ch-group">${escapeHtml(row.tvgId)}</div>` : ''}`,
             },
-            { key: 'group', label: 'Категория', filterType: 'text', render: (row) => escapeHtml(row.group || '—') },
             { key: 'logo', label: 'Логотип URL', filterType: 'text', render: (row) => escapeHtml(row.logo || '—') },
             { key: 'url', label: 'Основной URL', filterType: 'text', render: (row) => '<code class="shared-table-url">' + escapeHtml(row.url || '—') + '</code>' },
             { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
@@ -3088,6 +3095,7 @@ document.addEventListener('DOMContentLoaded', () => {
             catalogActivePL = [];
             catalogOffset = 0;
             resetSharedChannelTableOffset('catalog');
+            if (sharedChannelTableStates.catalog) sharedChannelTableStates.catalog.filters = {};
             const s = document.getElementById('catalog-search');
             if (s) s.value = '';
             const f = document.getElementById('catalog-filter');
