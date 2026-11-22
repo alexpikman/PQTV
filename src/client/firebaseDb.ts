@@ -822,7 +822,8 @@ export async function saveCatalogToCloud(
     payload: { index, items },
     mutableKeys: ['index', 'items'],
   }));
-  streamWrites.push({
+  await batchUpsertDocs(streamWrites, 'catalog_stream_chunks');
+  await batchUpsertDocs([{
     ref: sumRef,
     payload: {
       docId: 'main',
@@ -841,8 +842,7 @@ export async function saveCatalogToCloud(
       'streamChunkCount',
       'sources',
     ],
-  });
-  await batchUpsertDocs(streamWrites, 'catalog_stream_chunks + catalog_summary');
+  }], 'catalog_summary/main');
 
   if (prevChChunks > chChunks.length) {
     await Promise.all(
