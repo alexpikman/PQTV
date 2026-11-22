@@ -2325,7 +2325,7 @@ app.use('/api', (req: Request, res: Response, next: NextFunction) => {
     noCacheJson(res, { error: 'Unauthorized' }, 401);
     return;
   }
-  if (['POST', 'PUT', 'DELETE'].includes(req.method)) {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
     const csrfOk =
       (Boolean(admin.csrf) && verifyAdminCsrf(req, admin.csrf)) ||
       (Boolean(req.session.authenticated && req.session.csrfToken) &&
