@@ -791,6 +791,136 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ===== RENDER CHANNELS =====
+    const sharedChannelTableStates = Object.create(null);
+
+    function normalizeChannelRow(raw, source, originalIndex) {
+        const playlists = Array.isArray(raw.playlists)
+            ? raw.playlists
+            : Array.isArray(raw.used_in_list)
+                ? raw.used_in_list
+                : [];
+        return {
+            source,
+            originalIndex,
+            id: raw.id ?? raw.code ?? raw.url ?? '',
+            order: Number(raw.order ?? originalIndex),
+            code: String(raw.code || ''),
+            name: String(raw.name || raw.title || ''),
+            group: String(raw.group || raw.groupTitle || ''),
+            logo: String(raw.logo || ''),
+            url: String(raw.url || raw.primaryUrl || ''),
+            tvgId: String(raw.tvg_id || raw.tvgId || ''),
+            status: String(raw.status || raw.overallStatus || 'unknown'),
+            playlists: playlists.map((item) => String(item).replace(/\\.m3u$/i, '').trim()).filter(Boolean).join(', '),
+            streamCount: Number(raw.streams_count ?? raw.streamCount ?? 0),
+            onlineCount: Number(raw.streams_online ?? raw.online ?? 0),
+            offlineCount: Number(raw.streams_offline ?? raw.offline ?? 0),
+            unknownCount: Number(raw.streams_unknown ?? raw.unknown ?? 0),
+            reason: String(raw.reason || ''),
+            paused: Boolean(raw.paused),
+            sourceName: String(raw.source || raw.sourceName || ''),
+            raw,
+        };
+    }
+
+    function getSharedChannelTableState(key, defaultSort) {
+        if (!sharedChannelTableStates[key]) {
+            sharedChannelTableStates[key] = { sortKey: defaultSort || 'name', sortDirection: 'asc', filters: {} };
+        }
+        return sharedChannelTableStates[key];
+    }
+
+    function renderSharedChannelTable(container, rows, columns, options = {}) {
+        const state = getSharedChannelTableState(options.key || 'default', options.defaultSort || 'name');
+        const filteredRows = rows.filter((row) => columns.every((column) => {
+            const filter = String(state.filters[column.key] || '').trim().toLowerCase();
+            if (!filter || column.filterType === 'none') return true;
+            const value = String(row[column.key] ?? '').toLowerCase();
+            return column.filterType === 'select' ? value === filter : value.includes(filter);
+        }));
+        const sortColumn = columns.find((column) => column.key === state.sortKey);
+        const sortedRows = [...filteredRows];
+        if (sortColumn && sortColumn.sortable !== false) {
+            sortedRows.sort((left, right) => {
+                const a = left[state.sortKey];
+                const b = right[state.sortKey];
+                const result = typeof a === 'number' && typeof b === 'number'
+                    ? a - b
+                    : String(a ?? '').localeCompare(String(b ?? ''), 'ru', { numeric: true, sensitivity: 'base' });
+                return state.sortDirection === 'desc' ? -result : result;
+            });
+        }
+
+        const header = columns.map((column) => {
+            if (column.sortable === false) return '<th>' + escapeHtml(column.label || '') + '</th>';
+            const direction = state.sortKey === column.key ? state.sortDirection : '';
+            const marker = direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : '';
+            return '<th><button type="button" class="shared-table-sort" data-shared-sort="' +
+                escapeHtml(column.key) + '">' + escapeHtml(column.label || '') + marker + '</button></th>';
+        }).join('');
+        const filters = columns.map((column) => {
+            if (!column.filterType || column.filterType === 'none') return '<th></th>';
+            const value = escapeHtml(state.filters[column.key] || '');
+            if (column.filterType === 'select') {
+                const values = [...new Set(rows.map((row) => String(row[column.key] ?? '')).filter(Boolean))]
+                    .sort((a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' }));
+                return '<th><select class="shared-table-filter" data-shared-filter="' + escapeHtml(column.key) +
+                    '"><option value="">Все</option>' + values.map((item) =>
+                        '<option value="' + escapeHtml(item) + '"' + (item.toLowerCase() === value.toLowerCase() ? ' selected' : '') +
+                        '>' + escapeHtml(item) + '</option>'
+                    ).join('') + '</select></th>';
+            }
+            return '<th><input class="shared-table-filter" type="search" data-shared-filter="' +
+                escapeHtml(column.key) + '" value="' + value + '" placeholder="Фильтр"></th>';
+        }).join('');
+
+        const body = sortedRows.length
+            ? sortedRows.map((row, index) => {
+                const cells = columns.map((column) => '<td>' +
+                    (typeof column.render === 'function' ? column.render(row, index) : escapeHtml(String(row[column.key] ?? '—'))) +
+                    '</td>').join('');
+                const rowClass = typeof options.rowClass === 'function' ? options.rowClass(row) : '';
+                const rowAttrs = typeof options.rowAttributes === 'function' ? options.rowAttributes(row) : '';
+                return '<tr data-idx="' + row.originalIndex + '"' + (rowClass ? ' class="' + escapeHtml(rowClass) + '"' : '') +
+                    (rowAttrs ? ' ' + rowAttrs : '') + '>' + cells + '</tr>';
+            }).join('')
+            : '<tr><td class="shared-table-empty" colspan="' + columns.length + '">' +
+                escapeHtml(options.emptyText || 'Каналов по выбранному фильтру не найдено') + '</td></tr>';
+
+        container.innerHTML = (options.beforeHtml || '') +
+            '<table class="ch-table shared-channel-table"><thead><tr>' + header +
+            '</tr><tr class="shared-table-filters">' + filters +
+            '</tr></thead><tbody>' + body + '</tbody></table>';
+
+        container.querySelectorAll('[data-shared-sort]').forEach((button) => {
+            button.addEventListener('click', () => {
+                const key = button.dataset.sharedSort;
+                if (state.sortKey === key) state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
+                else { state.sortKey = key; state.sortDirection = 'asc'; }
+                if (typeof options.onChange === 'function') options.onChange();
+            });
+        });
+        container.querySelectorAll('[data-shared-filter]').forEach((control) => {
+            const update = () => {
+                state.filters[control.dataset.sharedFilter] = control.value || '';
+                if (typeof options.onChange === 'function') options.onChange();
+            };
+            control.addEventListener('change', update);
+            if (control.tagName === 'INPUT') control.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter') update();
+            });
+        });
+        if (typeof options.onRowClick === 'function') {
+            container.querySelectorAll('tbody tr[data-idx]').forEach((rowEl) => {
+                rowEl.addEventListener('click', (event) => {
+                    if (event.target.closest('button,input,select,a')) return;
+                    options.onRowClick(sortedRows[Number(rowEl.dataset.idxInView)] || sortedRows.find((row) => row.originalIndex === Number(rowEl.dataset.idx)), event);
+                });
+            });
+        }
+        return sortedRows;
+    }
+
     function renderChannels() {
         if (!channelsContainer) return;
         if (!currentPlaylist) {
@@ -801,74 +931,87 @@ document.addEventListener('DOMContentLoaded', () => {
             channelsContainer.innerHTML = '<p class="placeholder-text">В этом плейлисте нет каналов</p>';
             return;
         }
+
         const categoryOptions = cloudCategories.map((category) =>
             `<option value="${escapeHtml(category.name)}">${escapeHtml(category.name)}</option>`
         ).join('');
-        let html = `<div class="header-actions playlist-bulk-toolbar">
+        const toolbar = `<div class="header-actions playlist-bulk-toolbar">
             <label><input type="checkbox" id="playlist-select-all"> Выбрать все</label>
             <select id="playlist-bulk-category"><option value="">Категория...</option>${categoryOptions}</select>
             <button type="button" class="btn btn-secondary" id="btn-apply-bulk-category">Применить</button>
             <button type="button" class="btn btn-secondary" id="btn-open-categories">Управление категориями</button>
-        </div>
-        <table class="ch-table"><thead><tr>
-            <th style="width:38px;"><input type="checkbox" id="playlist-select-all-header" aria-label="Выбрать все каналы"></th>
-            <th style="width:44px;"></th>
-            <th>Канал</th>
-            <th style="width:110px;">Статус</th>
-            <th style="width:200px; text-align:right;">Действия</th>
-        </tr></thead><tbody>`;
-
-        channelsData.forEach((ch, idx) => {
-            const logoHtml = ch.logo
-                ? `<div class="ch-logo-wrap" style="border:none;background:transparent;padding:0;"><img src="${escapeHtml(ch.logo)}" class="ch-logo" data-logo></div>`
-                : `<div class="ch-logo-wrap">${I.tv}</div>`;
-
-            const isFirst = idx === 0 ? 'disabled' : '';
-            const isLast = idx === channelsData.length - 1 ? 'disabled' : '';
-
-            const stRaw = streamStatusCache[ch.url];
-            const st = typeof stRaw === 'string' ? stRaw : (stRaw && stRaw.status);
-            const stReason = (stRaw && stRaw.reason) ? stRaw.reason : '';
-            const stDiag = (stRaw && stRaw.diagCode && stRaw.diagCode !== 'ok') ? stRaw.diagCode : '';
-            let badge = `<button class="badge-status badge-unknown" data-action="check" data-idx="${idx}">Проверить</button>`;
-            if (st === 'checking') badge = `<span class="badge-status badge-checking">…</span>`;
-            else if (st === 'online') badge = `<span class="badge-status badge-online" data-action="check" data-idx="${idx}" title="${escapeHtml(stReason || 'Перепроверить')}">online</span>`;
-            else if (st === 'offline') badge = `<span class="badge-status badge-offline" data-action="check" data-idx="${idx}" title="${escapeHtml(stReason || 'Перепроверить')}">${escapeHtml(stDiag ? 'off:' + stDiag : 'offline')}</span>`;
-            else if (st === 'unknown') badge = `<span class="badge-status badge-unknown" data-action="check" data-idx="${idx}" title="${escapeHtml(stReason || 'Не удалось подтвердить статус')}">неизвестно</span>`;
-
-            const pausedTag = ch.paused ? ' <span class="health-badge warn" style="margin-left:6px;">Приостановлен</span>' : '';
-
-            html += `
-                <tr data-idx="${idx}">
-                    <td><input type="checkbox" data-select-channel data-url="${escapeHtml(ch.url || '')}" ${selectedChannelUrls.has(ch.url) ? 'checked' : ''} aria-label="Выбрать ${escapeHtml(ch.name)}"></td>
-                    <td>${logoHtml}</td>
-                    <td>
-                        <div class="ch-title">${escapeHtml(ch.name)}${pausedTag}</div>
-                        <div class="ch-group">${escapeHtml(ch.group || '—')}</div>
-                    </td>
-                    <td>${badge}</td>
-                    <td>
-                        <div class="actions-cell">
-                            <button class="icon-btn accent" data-action="parse" data-idx="${idx}" title="Искать рабочий поток">${I.search}</button>
-                            <button class="icon-btn" data-action="up" data-idx="${idx}" ${isFirst} title="Выше">${I.up}</button>
-                            <button class="icon-btn" data-action="down" data-idx="${idx}" ${isLast} title="Ниже">${I.down}</button>
-                            <button class="icon-btn" data-action="edit" data-idx="${idx}" title="Изменить">${I.edit}</button>
-                            <button class="icon-btn danger" data-action="delete" data-idx="${idx}" title="Удалить">${I.trash}</button>
-                        </div>
-                    </td>
-                </tr>`;
+        </div>`;
+        const rows = channelsData.map((channel, index) => normalizeChannelRow(channel, 'playlist', index));
+        const sortState = getSharedChannelTableState('playlist', 'order');
+        const visibleRows = renderSharedChannelTable(channelsContainer, rows, [
+            {
+                key: 'select', label: '', sortable: false, filterType: 'none',
+                render: (row) => `<input type="checkbox" data-select-channel data-url="${escapeHtml(row.url)}" ${selectedChannelUrls.has(row.url) ? 'checked' : ''} aria-label="Выбрать ${escapeHtml(row.name)}">`,
+            },
+            {
+                key: 'logo', label: '', sortable: false, filterType: 'none',
+                render: (row) => row.logo
+                    ? `<div class="ch-logo-wrap"><img src="${escapeHtml(row.logo)}" class="ch-logo" data-logo></div>`
+                    : `<div class="ch-logo-wrap">${I.tv}</div>`,
+            },
+            {
+                key: 'name', label: 'Канал', filterType: 'text',
+                render: (row) => `<div class="ch-title">${escapeHtml(row.name)}${row.paused ? ' <span class="health-badge warn">Приостановлен</span>' : ''}</div>`,
+            },
+            { key: 'group', label: 'Категория', filterType: 'text', render: (row) => `<div class="ch-group">${escapeHtml(row.group || '—')}</div>` },
+            { key: 'url', label: 'URL потока', filterType: 'text', render: (row) => `<span class="shared-table-url">${escapeHtml(row.url || '—')}</span>` },
+            { key: 'tvgId', label: 'TVG ID', filterType: 'text', render: (row) => escapeHtml(row.tvgId || '—') },
+            {
+                key: 'status', label: 'Статус', filterType: 'select',
+                render: (row) => {
+                    const stRaw = streamStatusCache[row.url];
+                    const st = typeof stRaw === 'string' ? stRaw : (stRaw && stRaw.status);
+                    const stReason = (stRaw && stRaw.reason) ? stRaw.reason : '';
+                    const stDiag = (stRaw && stRaw.diagCode && stRaw.diagCode !== 'ok') ? stRaw.diagCode : '';
+                    if (st === 'checking') return '<span class="badge-status badge-checking">…</span>';
+                    if (st === 'online') return `<span class="badge-status badge-online" data-action="check" data-idx="${row.originalIndex}" title="${escapeHtml(stReason || 'Перепроверить')}">online</span>`;
+                    if (st === 'offline') return `<span class="badge-status badge-offline" data-action="check" data-idx="${row.originalIndex}" title="${escapeHtml(stReason || 'Перепроверить')}">${escapeHtml(stDiag ? 'off:' + stDiag : 'offline')}</span>`;
+                    if (st === 'unknown') return `<span class="badge-status badge-unknown" data-action="check" data-idx="${row.originalIndex}" title="${escapeHtml(stReason || 'Не удалось подтвердить статус')}">неизвестно</span>`;
+                    return `<button class="badge-status badge-unknown" data-action="check" data-idx="${row.originalIndex}">Проверить</button>`;
+                },
+            },
+            {
+                key: 'order', label: 'Порядок', filterType: 'none', type: 'number',
+                render: (row) => String(row.originalIndex + 1),
+            },
+            {
+                key: 'actions', label: 'Действия', sortable: false, filterType: 'none',
+                render: (row) => {
+                    const idx = row.originalIndex;
+                    const canReorder = sortState.sortKey === 'order';
+                    return `<div class="actions-cell">
+                        <button class="icon-btn accent" data-action="parse" data-idx="${idx}" title="Искать рабочий поток">${I.search}</button>
+                        <button class="icon-btn" data-action="up" data-idx="${idx}" ${idx === 0 || !canReorder ? 'disabled' : ''} title="Выше">${I.up}</button>
+                        <button class="icon-btn" data-action="down" data-idx="${idx}" ${idx === channelsData.length - 1 || !canReorder ? 'disabled' : ''} title="Ниже">${I.down}</button>
+                        <button class="icon-btn" data-action="edit" data-idx="${idx}" title="Изменить">${I.edit}</button>
+                        <button class="icon-btn danger" data-action="delete" data-idx="${idx}" title="Удалить">${I.trash}</button>
+                    </div>`;
+                },
+            },
+        ], {
+            key: 'playlist',
+            defaultSort: 'order',
+            beforeHtml: toolbar,
+            onChange: renderChannels,
+            emptyText: 'Каналов по выбранным фильтрам не найдено',
         });
-        html += '</tbody></table>';
-        channelsContainer.innerHTML = html;
+
         const selectAll = channelsContainer.querySelector('#playlist-select-all');
-        const selectAllHeader = channelsContainer.querySelector('#playlist-select-all-header');
-        const allSelected = channelsData.length > 0 && channelsData.every((channel) => selectedChannelUrls.has(channel.url));
+        const allSelected = visibleRows.length > 0 && visibleRows.every((row) => selectedChannelUrls.has(row.url));
         if (selectAll) selectAll.checked = allSelected;
+        const selectAllHeader = channelsContainer.querySelector('#playlist-select-all-header');
         if (selectAllHeader) selectAllHeader.checked = allSelected;
         [selectAll, selectAllHeader].filter(Boolean).forEach((checkbox) => {
             checkbox.addEventListener('change', () => {
-                if (checkbox.checked) channelsData.forEach((channel) => { if (channel.url) selectedChannelUrls.add(channel.url); });
-                else selectedChannelUrls.clear();
+                visibleRows.forEach((row) => {
+                    if (checkbox.checked && row.url) selectedChannelUrls.add(row.url);
+                    else selectedChannelUrls.delete(row.url);
+                });
                 renderChannels();
             });
         });
@@ -904,7 +1047,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showToast(`Категория «${group}» назначена. Изменено каналов: ${result.updatedChannels || 0}; плейлистов: ${(result.updatedPlaylists || []).length}`, 'ok');
             } finally { applyCategory.disabled = false; }
         });
-        channelsContainer.querySelectorAll('[data-logo]').forEach(img => {
+        channelsContainer.querySelectorAll('[data-logo]').forEach((img) => {
             img.onerror = () => {
                 const wrap = img.parentNode;
                 wrap.style.border = '';
@@ -913,18 +1056,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 wrap.innerHTML = I.tv;
             };
         });
-
-        channelsContainer.querySelectorAll('[data-action]').forEach(el => {
-            el.onclick = (e) => {
-                e.stopPropagation();
+        channelsContainer.querySelectorAll('[data-action]').forEach((el) => {
+            el.onclick = (event) => {
+                event.stopPropagation();
                 const idx = parseInt(el.dataset.idx);
-                const act = el.dataset.action;
-                if (act === 'check') checkStream(idx);
-                else if (act === 'parse') startParsingForChannel(idx);
-                else if (act === 'up') moveChannel(idx, -1);
-                else if (act === 'down') moveChannel(idx, 1);
-                else if (act === 'edit') editChannel(idx);
-                else if (act === 'delete') deleteChannel(idx);
+                const action = el.dataset.action;
+                if (action === 'check') checkStream(idx);
+                else if (action === 'parse') startParsingForChannel(idx);
+                else if (action === 'up') moveChannel(idx, -1);
+                else if (action === 'down') moveChannel(idx, 1);
+                else if (action === 'edit') editChannel(idx);
+                else if (action === 'delete') deleteChannel(idx);
             };
         });
     }
@@ -2593,69 +2735,67 @@ document.addEventListener('DOMContentLoaded', () => {
             el.innerHTML = '<p class="placeholder-text">Каталог пуст. Нажмите «Импорт из плейлистов» чтобы загрузить ваши каналы.</p>';
             return;
         }
-        let html = `<table class="ch-table"><thead><tr>
-            <th style="width:100px;">Код</th>
-            <th>Название</th>
-            <th style="min-width:180px;">Собственные плейлисты</th>
-            <th style="width:120px;">Потоков</th>
-            <th style="width:100px;">Online</th>
-            <th style="width:100px; text-align:right;">Действия</th>
-        </tr></thead><tbody>`;
-        catalogData.forEach((ch, i) => {
-            const usedIn = Array.isArray(ch.used_in_list)
-                ? ch.used_in_list.map(name => String(name).replace(/\.m3u$/i, '').trim()).filter(Boolean)
-                : [];
-            const inMy = usedIn.length
-                ? `<div class="catalog-playlist-list">${usedIn.map(name => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join(' ')}</div>`
-                : '<span class="cat-badge grey">нет</span>';
-            const total = ch.streams_count || 0;
-            const online = ch.streams_online || 0;
-            const offline = ch.streams_offline || 0;
-            const unknown = ch.streams_unknown || 0;
-            html += `<tr data-idx="${i}">
-                <td><span style="color:var(--muted); font-family:monospace; font-size:11px;">${escapeHtml(ch.code || '')}</span></td>
-                <td>
-                    <div class="ch-title">${escapeHtml(ch.name)}</div>
-                    ${ch.tvg_id ? `<div class="ch-group">${escapeHtml(ch.tvg_id)}</div>` : ''}
-                </td>
-                <td>${inMy}</td>
-                <td><b style="color:#fff;">${total}</b></td>
-                <td>${renderStatusBadge(online, total, offline, unknown)}</td>
-                <td style="text-align:right;">
-                    <button class="icon-btn accent" data-cat-view="${ch.id}" title="Потоки">${I.search}</button>
-                </td>
-            </tr>`;
-        });
-        html += '</tbody></table>';
-        el.innerHTML = html;
 
-        el.querySelectorAll('[data-cat-view]').forEach(b => {
-            b.onclick = (e) => { e.stopPropagation(); viewCatalogChannel(parseInt(b.dataset.catView)); };
+        const rows = catalogData.map((channel, index) => normalizeChannelRow(channel, 'catalog', index));
+        renderSharedChannelTable(el, rows, [
+            { key: 'code', label: 'Код', filterType: 'text', render: (row) => `<span class="shared-table-code">${escapeHtml(row.code)}</span>` },
+            {
+                key: 'name', label: 'Название', filterType: 'text',
+                render: (row) => `<div class="ch-title">${escapeHtml(row.name)}</div>${row.tvgId ? `<div class="ch-group">${escapeHtml(row.tvgId)}</div>` : ''}`,
+            },
+            {
+                key: 'playlists', label: 'Собственные плейлисты', filterType: 'text',
+                render: (row) => row.playlists
+                    ? `<div class="catalog-playlist-list">${row.playlists.split(', ').map((name) => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join(' ')}</div>`
+                    : '<span class="cat-badge grey">нет</span>',
+            },
+            { key: 'streamCount', label: 'Потоков', filterType: 'text', render: (row) => `<b class="shared-table-number">${row.streamCount}</b>` },
+            {
+                key: 'onlineCount', label: 'Online', filterType: 'text',
+                render: (row) => renderStatusBadge(row.onlineCount, row.streamCount, row.offlineCount, row.unknownCount),
+            },
+            {
+                key: 'actions', label: 'Действия', sortable: false, filterType: 'none',
+                render: (row) => `<button class="icon-btn accent" data-cat-view="${row.id}" title="Потоки">${I.search}</button>`,
+            },
+        ], {
+            key: 'catalog',
+            defaultSort: 'name',
+            onChange: renderCatalogChannels,
+            emptyText: 'Каналов по выбранным фильтрам не найдено',
         });
 
-        // === Делегирование: клик по строке → плеер (как в плейлистах) ===
+        el.querySelectorAll('[data-cat-view]').forEach((button) => {
+            button.onclick = (event) => {
+                event.stopPropagation();
+                viewCatalogChannel(parseInt(button.dataset.catView));
+            };
+        });
+
         if (!el.__clickBound) {
             el.__clickBound = true;
-            el.addEventListener('click', (e) => {
-                if (e.target.closest('button')) return;
-                const tr = e.target.closest('tr[data-idx]');
+            el.addEventListener('click', (event) => {
+                if (event.target.closest('button,input,select')) return;
+                const tr = event.target.closest('tr[data-idx]');
                 if (!tr) return;
-                const i = parseInt(tr.dataset.idx);
-                const ch = catalogData[i];
-                if (!ch) return;
-                const t = getAdminToken();
-                fetch('/api/catalog/channel?id=' + ch.id, {
+                const index = parseInt(tr.dataset.idx);
+                const channel = catalogData[index];
+                if (!channel) return;
+                const token = getAdminToken();
+                fetch('/api/catalog/channel?id=' + channel.id, {
                     credentials: 'same-origin',
-                    headers: t ? { 'X-Admin-Token': t } : {}
+                    headers: token ? { 'X-Admin-Token': token } : {},
                 })
-                    .then(r => r.json())
-                    .then(d => {
-                        if (!d || d.error) { showToast('Ошибка загрузки канала', 'err'); return; }
+                    .then((response) => response.json())
+                    .then((data) => {
+                        if (!data || data.error) { showToast('Ошибка загрузки канала', 'err'); return; }
                         let url = '';
-                        for (const s of (d.streams || [])) { if (s.status === 'online') { url = s.url; break; } }
-                        if (!url && d.streams && d.streams.length) url = d.streams[0].url;
+                        for (const stream of (data.streams || [])) {
+                            if (stream.status === 'online') { url = stream.url; break; }
+                        }
+                        if (!url && data.streams && data.streams.length) url = data.streams[0].url;
                         if (!url) { showToast('Нет потоков для этого канала', 'err'); return; }
-                        openPlayerByUrl(url, d.name, d.logo || '', d.tvg_id || '');
+                        openPlayerByUrl(url, data.name, data.logo || '', data.tvg_id || '');
                     });
             });
         }
