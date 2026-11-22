@@ -970,6 +970,10 @@ document.addEventListener('DOMContentLoaded', () => {
             { key: 'url', label: 'URL потока', filterType: 'text', render: (row) => `<span class="shared-table-url">${escapeHtml(row.url || '—')}</span>` },
             { key: 'tvgId', label: 'TVG ID', filterType: 'text', render: (row) => escapeHtml(row.tvgId || '—') },
             {
+                key: 'paused', label: 'Пауза', filterType: 'select',
+                render: (row) => row.paused ? '<span class="health-badge warn">Приостановлен</span>' : '<span class="health-badge muted">Активен</span>',
+            },
+            {
                 key: 'status', label: 'Статус', filterType: 'select',
                 render: (row) => {
                     const stRaw = streamStatusCache[row.url];
@@ -1184,7 +1188,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 url: item.url,
                 status: checks.get(item.url) || 'unknown',
             }, 'parser', index));
-            renderSharedChannelTable(parseResultsContainer, rows, [
+            const renderParserTable = () => renderSharedChannelTable(parseResultsContainer, rows, [
                 { key: 'sourceName', label: 'Источник', filterType: 'text' },
                 { key: 'name', label: 'Канал', filterType: 'text' },
                 {
@@ -1214,16 +1218,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 defaultSort: 'sourceName',
                 rowClass: () => 'parse-row',
                 rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(query)}"`,
-                onChange: () => renderSharedChannelTable(parseResultsContainer, rows, [
-                    { key: 'sourceName', label: 'Источник', filterType: 'text' },
-                    { key: 'name', label: 'Канал', filterType: 'text' },
-                    { key: 'url', label: 'Ссылка потока', filterType: 'text', render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>` },
-                    { key: 'status', label: 'Статус', filterType: 'select', render: (row) => row.status === 'online' ? '<span class="badge-status badge-online">online</span>' : row.status === 'offline' ? '<span class="badge-status badge-offline">offline</span>' : '<span class="badge-status badge-unknown">неизвестно</span>' },
-                    { key: 'actions', label: 'Действие', sortable: false, filterType: 'none', render: (row) => { const url = encodeURIComponent(row.url); const name = encodeURIComponent(query); return parseContext.channelIndex >= 0 ? `<button class="btn btn-primary" data-apply="${url}">${I.check} Заменить</button>` : `<button class="btn btn-primary" data-add="${url}" data-name="${name}">${I.plus} Добавить</button>`; } },
-                ], { key: 'parser', defaultSort: 'sourceName', rowClass: () => 'parse-row', rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(query)}"`, onChange: () => runParsing(query) }),
+                onChange: renderParserTable,
                 emptyText: 'Потоков по выбранным фильтрам не найдено',
             });
-
+            renderParserTable();
 
             parseResultsContainer.querySelectorAll('.parse-row').forEach(tr => {
                 tr.onclick = (e) => {
@@ -2783,7 +2781,7 @@ document.addEventListener('DOMContentLoaded', () => {
         ], {
             key: 'catalog',
             defaultSort: 'name',
-            onChange: renderCatalogChannels,
+            onChange: () => { catalogOffset = 0; void loadCatalogChannels(); },
             emptyText: 'Каналов по выбранным фильтрам не найдено',
         });
 
