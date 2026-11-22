@@ -819,6 +819,10 @@ document.addEventListener('DOMContentLoaded', () => {
             reason: String(raw.reason || ''),
             paused: Boolean(raw.paused),
             sourceName: String(raw.source || raw.sourceName || ''),
+            diagCode: String(raw.diagCode || ''),
+            viewerErrors: Array.isArray(raw.viewerErrors) ? raw.viewerErrors.map((item) => String(item.reason || item.userName || item.userLogin || '')).join(' ') : String(raw.viewerErrors || ''),
+            hiddenForViewers: Boolean(raw.hiddenForViewers),
+            stillBrokenAfterResolve: Boolean(raw.stillBrokenAfterResolve),
             raw,
         };
     }
@@ -881,7 +885,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     '</td>').join('');
                 const rowClass = typeof options.rowClass === 'function' ? options.rowClass(row) : '';
                 const rowAttrs = typeof options.rowAttributes === 'function' ? options.rowAttributes(row) : '';
-                return '<tr data-idx="' + row.originalIndex + '"' + (rowClass ? ' class="' + escapeHtml(rowClass) + '"' : '') +
+                return '<tr data-idx="' + row.originalIndex + '" data-shared-index="' + index + '"' + (rowClass ? ' class="' + escapeHtml(rowClass) + '"' : '') +
                     (rowAttrs ? ' ' + rowAttrs : '') + '>' + cells + '</tr>';
             }).join('')
             : '<tr><td class="shared-table-empty" colspan="' + columns.length + '">' +
@@ -914,7 +918,7 @@ document.addEventListener('DOMContentLoaded', () => {
             container.querySelectorAll('tbody tr[data-idx]').forEach((rowEl) => {
                 rowEl.addEventListener('click', (event) => {
                     if (event.target.closest('button,input,select,a')) return;
-                    options.onRowClick(sortedRows[Number(rowEl.dataset.idxInView)] || sortedRows.find((row) => row.originalIndex === Number(rowEl.dataset.idx)), event);
+                    options.onRowClick(sortedRows[Number(rowEl.dataset.sharedIndex)], event);
                 });
             });
         }
@@ -941,7 +945,11 @@ document.addEventListener('DOMContentLoaded', () => {
             <button type="button" class="btn btn-secondary" id="btn-apply-bulk-category">Применить</button>
             <button type="button" class="btn btn-secondary" id="btn-open-categories">Управление категориями</button>
         </div>`;
-        const rows = channelsData.map((channel, index) => normalizeChannelRow(channel, 'playlist', index));
+        const rows = channelsData.map((channel, index) => {
+            const statusRaw = streamStatusCache[channel.url];
+            const status = typeof statusRaw === 'string' ? statusRaw : (statusRaw && statusRaw.status) || 'unknown';
+            return normalizeChannelRow(Object.assign({}, channel, { status }), 'playlist', index);
+        });
         const sortState = getSharedChannelTableState('playlist', 'order');
         const visibleRows = renderSharedChannelTable(channelsContainer, rows, [
             {
@@ -1004,9 +1012,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const selectAll = channelsContainer.querySelector('#playlist-select-all');
         const allSelected = visibleRows.length > 0 && visibleRows.every((row) => selectedChannelUrls.has(row.url));
         if (selectAll) selectAll.checked = allSelected;
-        const selectAllHeader = channelsContainer.querySelector('#playlist-select-all-header');
-        if (selectAllHeader) selectAllHeader.checked = allSelected;
-        [selectAll, selectAllHeader].filter(Boolean).forEach((checkbox) => {
+        [selectAll].filter(Boolean).forEach((checkbox) => {
             checkbox.addEventListener('change', () => {
                 visibleRows.forEach((row) => {
                     if (checkbox.checked && row.url) selectedChannelUrls.add(row.url);
@@ -1171,37 +1177,53 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }));
 
-            let html = `<table class="ch-table"><thead><tr>
-                <th style="width:170px;">Источник</th>
-                <th>Ссылка потока</th>
-                <th style="width:100px;">Статус</th>
-                <th style="width:170px; text-align:right;">Действие</th>
-            </tr></thead><tbody>`;
-
-            items.forEach((item, i) => {
-                const status = checks.get(item.url) || 'unknown';
-                const badge = status === 'online'
-                    ? `<span class="badge-status badge-online">online</span>`
-                    : status === 'offline'
-                        ? `<span class="badge-status badge-offline">offline</span>`
-                        : `<span class="badge-status badge-unknown" title="Проверка не дала достоверного результата">неизвестно</span>`;
-
-                const enc = encodeURIComponent(item.url);
-                const encName = encodeURIComponent(query);
-                const btn = parseContext.channelIndex >= 0
-                    ? `<button class="btn btn-primary" data-apply="${enc}" style="padding:6px 12px; font-size:12px;">${I.check} Заменить</button>`
-                    : `<button class="btn btn-primary" data-add="${enc}" data-name="${encName}" style="padding:6px 12px; font-size:12px;">${I.plus} Добавить</button>`;
-
-                html += `<tr class="parse-row" data-purl="${encodeURIComponent(item.url)}" data-pname="${escapeHtml(item.title || query)}" style="cursor:pointer;">
-                    <td><span style="color:var(--muted); font-size:12px; font-weight:600;">${escapeHtml(item.source)}</span></td>
-                    <td style="word-break:break-all; font-family:'SF Mono',Consolas,monospace; font-size:11.5px; color:var(--text-dim);">${escapeHtml(item.url)}</td>
-                    <td>${badge}</td>
-                    <td style="text-align:right;">${btn}</td>
-                </tr>`;
-            });
-            html += '</tbody></table>';
             if (parseProgressBox) parseProgressBox.classList.add('hidden');
-            parseResultsContainer.innerHTML = html;
+            const rows = items.map((item, index) => normalizeChannelRow({
+                name: item.title || query,
+                source: item.source,
+                url: item.url,
+                status: checks.get(item.url) || 'unknown',
+            }, 'parser', index));
+            renderSharedChannelTable(parseResultsContainer, rows, [
+                { key: 'sourceName', label: 'Источник', filterType: 'text' },
+                { key: 'name', label: 'Канал', filterType: 'text' },
+                {
+                    key: 'url', label: 'Ссылка потока', filterType: 'text',
+                    render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>`,
+                },
+                {
+                    key: 'status', label: 'Статус', filterType: 'select',
+                    render: (row) => row.status === 'online'
+                        ? '<span class="badge-status badge-online">online</span>'
+                        : row.status === 'offline'
+                            ? '<span class="badge-status badge-offline">offline</span>'
+                            : '<span class="badge-status badge-unknown">неизвестно</span>',
+                },
+                {
+                    key: 'actions', label: 'Действие', sortable: false, filterType: 'none',
+                    render: (row) => {
+                        const url = encodeURIComponent(row.url);
+                        const name = encodeURIComponent(query);
+                        return parseContext.channelIndex >= 0
+                            ? `<button class="btn btn-primary" data-apply="${url}">${I.check} Заменить</button>`
+                            : `<button class="btn btn-primary" data-add="${url}" data-name="${name}">${I.plus} Добавить</button>`;
+                    },
+                },
+            ], {
+                key: 'parser',
+                defaultSort: 'sourceName',
+                rowClass: () => 'parse-row',
+                rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(query)}"`,
+                onChange: () => renderSharedChannelTable(parseResultsContainer, rows, [
+                    { key: 'sourceName', label: 'Источник', filterType: 'text' },
+                    { key: 'name', label: 'Канал', filterType: 'text' },
+                    { key: 'url', label: 'Ссылка потока', filterType: 'text', render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>` },
+                    { key: 'status', label: 'Статус', filterType: 'select', render: (row) => row.status === 'online' ? '<span class="badge-status badge-online">online</span>' : row.status === 'offline' ? '<span class="badge-status badge-offline">offline</span>' : '<span class="badge-status badge-unknown">неизвестно</span>' },
+                    { key: 'actions', label: 'Действие', sortable: false, filterType: 'none', render: (row) => { const url = encodeURIComponent(row.url); const name = encodeURIComponent(query); return parseContext.channelIndex >= 0 ? `<button class="btn btn-primary" data-apply="${url}">${I.check} Заменить</button>` : `<button class="btn btn-primary" data-add="${url}" data-name="${name}">${I.plus} Добавить</button>`; } },
+                ], { key: 'parser', defaultSort: 'sourceName', rowClass: () => 'parse-row', rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(query)}"`, onChange: () => runParsing(query) }),
+                emptyText: 'Потоков по выбранным фильтрам не найдено',
+            });
+
 
             parseResultsContainer.querySelectorAll('.parse-row').forEach(tr => {
                 tr.onclick = (e) => {
@@ -4503,64 +4525,70 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             return true;
         });
 
-        if (rows.length === 0) {
-            listEl.innerHTML = '<p class="placeholder-text">Каналов по выбранному фильтру не найдено</p>';
-            return;
-        }
+        const normalizedRows = rows.map((channel) => normalizeChannelRow({
+            ...channel,
+            status: channel.overallStatus,
+            playlists: channel.playlists,
+            diagCode: channel.diagCode,
+            viewerErrors: channel.viewerErrors,
+        }, 'health', (data.channels || []).indexOf(channel)));
 
-        listEl.innerHTML = rows.map((ch) => {
-            const badges = [];
-            if (ch.stillBrokenAfterResolve) {
-                badges.push('<span class="health-badge danger">Не работает после «Решено»</span>');
-            }
-            if (ch.paused) {
-                badges.push('<span class="health-badge warn">Приостановлен</span>');
-            }
-            if (ch.hiddenForViewers) {
-                badges.push('<span class="health-badge muted">Скрыт у зрителей</span>');
-            }
-            if (ch.overallStatus === 'online') {
-                badges.push(`<span class="health-badge ok">Online${ch.ms ? ' · ' + ch.ms + 'ms' : ''}</span>`);
-            } else if (ch.overallStatus === 'offline' || ch.overallStatus === 'still_broken') {
-                badges.push(`<span class="health-badge danger">${escapeHtml(ch.diagCode || 'offline')}${ch.code ? ' · HTTP ' + ch.code : ''}</span>`);
-            } else if (ch.overallStatus === 'viewer_reported') {
-                badges.push(`<span class="health-badge warn">Жалобы: ${ch.viewerErrorCount}</span>`);
-            } else if (ch.overallStatus === 'codec_warn') {
-                badges.push('<span class="health-badge warn">Кодек HEVC/AC-3</span>');
-            } else if (!ch.paused) {
-                badges.push('<span class="health-badge muted">Не проверялся</span>');
-            }
-
-            const plsBadges = (ch.playlists || []).map(p => `<span class="cat-badge violet">${escapeHtml(p)}</span>`).join(' ');
-            const viewerErrsHtml = (ch.viewerErrors && ch.viewerErrors.length > 0)
-                ? `<div style="font-size:11.5px; color:#fcd34d; margin-top:4px;">Зрители: ${ch.viewerErrors.slice(0, 3).map(ve => `${escapeHtml(ve.userName || ve.userLogin)} (${escapeHtml(ve.reason)})`).join('; ')}</div>`
-                : '';
-
-            const encodedName = escapeHtml(ch.name);
-            return `<div class="health-card ${ch.stillBrokenAfterResolve ? 'still-broken' : (ch.paused ? 'paused-card' : '')}">
-                <div style="flex:1; min-width:260px;">
-                    <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:4px;">
-                        <b style="color:#fff; font-size:14px;">${encodedName}</b>
-                        ${badges.join(' ')}
-                        ${plsBadges}
-                    </div>
-                    <div style="font-size:12px; color:${ch.overallStatus === 'online' ? '#6ee7b7' : '#fca5a5'}; margin-bottom:4px;">
-                        ${escapeHtml(ch.reason)}
-                    </div>
-                    <div style="font-size:11.5px; color:var(--muted); word-break:break-all;">
-                        <code>${escapeHtml(ch.primaryUrl)}</code>
-                    </div>
-                    ${viewerErrsHtml}
-                </div>
-                <div class="health-actions-col">
-                    <button type="button" class="btn btn-secondary" data-h-act="check" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Проверить</button>
-                    <button type="button" class="btn btn-primary" data-h-act="replace" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Заменить URL</button>
-                    <button type="button" class="btn btn-secondary" data-h-act="pause" data-h-paused="${ch.paused ? '0' : '1'}" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">${ch.paused ? 'Возобновить' : 'Пауза'}</button>
-                    <button type="button" class="btn btn-secondary" data-h-act="resolve" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Решено</button>
-                    <button type="button" class="btn btn-danger" data-h-act="delete" data-h-ch="${encodedName}" style="padding:6px 10px; font-size:11.5px;">Удалить</button>
-                </div>
-            </div>`;
-        }).join('');
+        renderSharedChannelTable(listEl, normalizedRows, [
+            {
+                key: 'name', label: 'Канал', filterType: 'text',
+                render: (row) => {
+                    const ch = row.raw;
+                    const badges = [];
+                    if (ch.stillBrokenAfterResolve) badges.push('<span class="health-badge danger">Не работает после «Решено»</span>');
+                    if (ch.paused) badges.push('<span class="health-badge warn">Приостановлен</span>');
+                    if (ch.hiddenForViewers) badges.push('<span class="health-badge muted">Скрыт у зрителей</span>');
+                    return `<div class="ch-title">${escapeHtml(ch.name)}</div><div class="health-table-badges">${badges.join(' ')}</div>`;
+                },
+            },
+            {
+                key: 'playlists', label: 'Плейлисты', filterType: 'text',
+                render: (row) => (row.raw.playlists || []).map((playlist) => `<span class="cat-badge violet">${escapeHtml(playlist)}</span>`).join(' '),
+            },
+            {
+                key: 'status', label: 'Статус', filterType: 'select',
+                render: (row) => {
+                    const ch = row.raw;
+                    if (ch.overallStatus === 'online') return `<span class="health-badge ok">Online${ch.ms ? ' · ' + ch.ms + 'ms' : ''}</span>`;
+                    if (ch.overallStatus === 'offline' || ch.overallStatus === 'still_broken') return `<span class="health-badge danger">${escapeHtml(ch.diagCode || 'offline')}${ch.code ? ' · HTTP ' + ch.code : ''}</span>`;
+                    if (ch.overallStatus === 'viewer_reported') return `<span class="health-badge warn">Жалобы: ${ch.viewerErrorCount}</span>`;
+                    if (ch.overallStatus === 'codec_warn') return '<span class="health-badge warn">Кодек HEVC/AC-3</span>';
+                    return '<span class="health-badge muted">Не проверялся</span>';
+                },
+            },
+            { key: 'diagCode', label: 'Диагностика', filterType: 'select', render: (row) => escapeHtml(row.diagCode || '—') },
+            { key: 'reason', label: 'Причина', filterType: 'text', render: (row) => escapeHtml(row.reason || '—') },
+            { key: 'url', label: 'URL потока', filterType: 'text', render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>` },
+            {
+                key: 'viewerErrors', label: 'Жалобы зрителей', filterType: 'text',
+                render: (row) => (row.raw.viewerErrors || []).slice(0, 3).map((issue) =>
+                    `${escapeHtml(issue.userName || issue.userLogin)} (${escapeHtml(issue.reason)})`
+                ).join('; ') || '—',
+            },
+            {
+                key: 'actions', label: 'Действия', sortable: false, filterType: 'none',
+                render: (row) => {
+                    const encodedName = escapeHtml(row.name);
+                    const ch = row.raw;
+                    return `<div class="health-actions-col">
+                        <button type="button" class="btn btn-secondary health-action-button" data-h-act="check" data-h-ch="${encodedName}">Проверить</button>
+                        <button type="button" class="btn btn-primary health-action-button" data-h-act="replace" data-h-ch="${encodedName}">Заменить URL</button>
+                        <button type="button" class="btn btn-secondary health-action-button" data-h-act="pause" data-h-paused="${ch.paused ? '0' : '1'}" data-h-ch="${encodedName}">${ch.paused ? 'Возобновить' : 'Пауза'}</button>
+                        <button type="button" class="btn btn-secondary health-action-button" data-h-act="resolve" data-h-ch="${encodedName}">Решено</button>
+                        <button type="button" class="btn btn-danger health-action-button" data-h-act="delete" data-h-ch="${encodedName}">Удалить</button>
+                    </div>`;
+                },
+            },
+        ], {
+            key: 'health',
+            defaultSort: 'name',
+            onChange: renderHealthView,
+            emptyText: 'Каналов по выбранным фильтрам не найдено',
+        });
 
         listEl.querySelectorAll('[data-h-act]').forEach((btn) => {
             btn.onclick = async () => {
