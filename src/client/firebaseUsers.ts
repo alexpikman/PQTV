@@ -314,6 +314,12 @@ export const PQTVFirebase = {
     }
   },
 
+  async getAdminIdToken(): Promise<string | null> {
+    const user = auth.currentUser;
+    if (!user || !(await isCurrentUserAdmin(user))) return null;
+    return user.getIdToken();
+  },
+
   async signInWithGoogle() {
     const cred = await signInWithPopup(auth, googleProvider);
     const admin = await isCurrentUserAdmin(cred.user);

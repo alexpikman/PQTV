@@ -386,7 +386,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const opts = { method: methodUpper, credentials: 'same-origin', headers: {} };
         const adminToken = getAdminToken();
         if (adminToken) opts.headers['X-Admin-Token'] = adminToken;
-        if (isMutation) opts.headers['X-CSRF-Token'] = window.CSRF_TOKEN || '';
+        if (isMutation) {
+            if (!window.PQTVFirebase || typeof window.PQTVFirebase.getAdminIdToken !== 'function') {
+                return { ok: false, _httpStatus: 503, error: 'Firebase admin authentication is unavailable' };
+            }
+            const firebaseIdToken = await window.PQTVFirebase.getAdminIdToken();
+            if (!firebaseIdToken) {
+                return { ok: false, _httpStatus: 401, error: 'Требуется авторизация администратора Firebase' };
+            }
+            opts.headers['X-Firebase-ID-Token'] = firebaseIdToken;
+            opts.headers['X-CSRF-Token'] = window.CSRF_TOKEN || '';
+        }
         if (body) {
             opts.headers['Content-Type'] = 'application/json';
             opts.body = JSON.stringify(body);
