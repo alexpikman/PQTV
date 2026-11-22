@@ -8,7 +8,8 @@
     "build": "tsc && node scripts/build-client.mjs",
     "start": "node dist/server.js",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts"
+    "test": "node --import tsx --test tests/integrity.test.ts",
+    "test:rules": "node --import tsx --test tests/firestore.rules.test.ts"
   },
   "dependencies": {
     "@firebase/eslint-plugin-security-rules": "^0.0.2",
