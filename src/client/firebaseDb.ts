@@ -1455,7 +1455,7 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
     for (const invite of data.invites.slice(0, 500)) {
       const id = String(invite.id || '').trim().toLowerCase();
       const email = String(invite.email || '').trim().toLowerCase().slice(0, 160);
-      if (!/^[a-f0-9]{64}$/.test(id) || !email) continue;
+      if (!/^[a-f0-9]{64}$/.test(id) || !email || nextInviteIds.has(id)) continue;
       nextInviteIds.add(id);
       const inviteRef = doc(db, 'invites', id);
       let invitedByUid = currentUid;
@@ -1523,14 +1523,16 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
               reason: sReq(item.reason, 200, 'Неизвестная ошибка'),
             }))
         : [];
+      const totalChannels = Math.max(0, Math.min(50000, Math.floor(Number(alert.totalChannels) || 0)));
+      const unavailableCount = Math.max(0, Math.min(totalChannels, Math.floor(Number(alert.unavailableCount) || items.length)));
       alertWrites.push({
         ref: doc(db, 'channel_alerts', rawUid),
         payload: {
           uid: rawUid,
           userLogin: sReq(alert.userLogin, 64, rawUid),
           userName: sReq(alert.userName, 80, alert.userLogin || rawUid),
-          totalChannels: Math.max(0, Math.min(50000, Math.floor(Number(alert.totalChannels) || 0))),
-          unavailableCount: Math.max(0, Math.min(50000, Math.floor(Number(alert.unavailableCount) || items.length))),
+          totalChannels,
+          unavailableCount,
           items,
           resolved: Boolean(alert.resolved),
         },
@@ -1785,10 +1787,12 @@ export async function loadFullCloudSnapshot(): Promise<{
           if (piiSnap.exists()) {
             email = String(piiSnap.data().email || '');
           }
-        } catch {
-          // Optional private info
+        } catch (err) {
+          handleFirestoreError(err, OperationType.GET, `invites/${invDoc.id}/private/info`);
         }
-        if (!email) return;
+        if (!email) {
+          throw new Error(`Invite ${invDoc.id} has no private email record`);
+        }
         invites.push({
           id: invDoc.id,
           email,
@@ -1799,8 +1803,8 @@ export async function loadFullCloudSnapshot(): Promise<{
         });
       })
     );
-  } catch {
-    // Best-effort invites hydration
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'invites');
   }
 
   const alerts: Array<Record<string, unknown>> = [];
