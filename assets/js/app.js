@@ -154,7 +154,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let cloudSyncTimer = null;
     let cloudSyncRunning = false;
-    let cloudSyncQueued = false;
     let cloudBootstrapPromise = null;
 
     const NON_SYNC_POST_PREFIXES = [
@@ -169,39 +168,40 @@ document.addEventListener('DOMContentLoaded', () => {
         '/api/github/token/test',
     ];
 
+    let cloudSyncQueue = Promise.resolve(true);
+
     async function syncCloudDatabase() {
-        if (!fbAdminConnected || !window.PQTVFirebase) return;
+        if (!fbAdminConnected || !window.PQTVFirebase) return false;
         if (cloudSyncTimer) {
             clearTimeout(cloudSyncTimer);
             cloudSyncTimer = null;
         }
-        if (cloudSyncRunning) {
-            cloudSyncQueued = true;
-            return;
-        }
-        cloudSyncRunning = true;
-        const statusEl = document.getElementById('fb-status-text');
-        if (statusEl) statusEl.textContent = 'Firestore: сохранение в облако...';
-        try {
-            const localSnapshot = await apiRequest('/api/cloud/export');
-            if (!localSnapshot || !localSnapshot.ok) {
-                throw new Error(localSnapshot && localSnapshot.error ? localSnapshot.error : 'Не удалось экспортировать локальную базу');
+
+        const task = cloudSyncQueue.catch(() => false).then(async () => {
+            cloudSyncRunning = true;
+            const statusEl = document.getElementById('fb-status-text');
+            if (statusEl) statusEl.textContent = 'Firestore: сохранение в облако...';
+            try {
+                const localSnapshot = await apiRequest('/api/cloud/export');
+                if (!localSnapshot || !localSnapshot.ok) {
+                    throw new Error(localSnapshot && localSnapshot.error ? localSnapshot.error : 'Не удалось экспортировать локальную базу');
+                }
+                await window.PQTVFirebase.pushFullLocalToCloud(localSnapshot);
+                if (statusEl) statusEl.textContent = `Firestore: база синхронизирована (rev ${localSnapshot.revision || 0})`;
+                return true;
+            } catch (err) {
+                console.error('Firestore database sync failed:', err);
+                if (statusEl) statusEl.textContent = 'Firestore: ошибка синхронизации';
+                const msg = (err && err.message) ? err.message : 'Ошибка синхронизации базы с Firestore';
+                showUsersError(msg);
+                showToast(msg, 'err');
+                return false;
+            } finally {
+                cloudSyncRunning = false;
             }
-            await window.PQTVFirebase.pushFullLocalToCloud(localSnapshot);
-            if (statusEl) statusEl.textContent = `Firestore: база синхронизирована (rev ${localSnapshot.revision || 0})`;
-        } catch (err) {
-            console.error('Firestore database sync failed:', err);
-            if (statusEl) statusEl.textContent = 'Firestore: ошибка синхронизации';
-            const msg = (err && err.message) ? err.message : 'Ошибка синхронизации базы с Firestore';
-            showUsersError(msg);
-            showToast(msg, 'err');
-        } finally {
-            cloudSyncRunning = false;
-            if (cloudSyncQueued) {
-                cloudSyncQueued = false;
-                scheduleCloudSync();
-            }
-        }
+        });
+        cloudSyncQueue = task;
+        return task;
     }
 
     async function syncTargetedCloudUpdate(revision, cloudFn, manifestExtra) {
@@ -213,8 +213,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (typeof revision === 'number' && typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
                 const patched = await window.PQTVFirebase.bumpCloudManifestRevision(revision, manifestExtra);
                 if (!patched) {
-                    await syncCloudDatabase();
-                    return true;
+                    return await syncCloudDatabase();
                 }
             }
             if (statusEl) {
@@ -298,53 +297,33 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusEl = document.getElementById('fb-status-text');
         try {
             if (statusEl) statusEl.textContent = 'Firestore: проверка облачной базы...';
-            const [localMeta, cloudMeta] = await Promise.all([
-                apiRequest('/api/state/revision'),
-                typeof window.PQTVFirebase.getCloudManifestStatus === 'function'
-                    ? window.PQTVFirebase.getCloudManifestStatus()
-                    : Promise.resolve(null),
-            ]);
+            const cloudMeta = typeof window.PQTVFirebase.getCloudManifestStatus === 'function'
+                ? await window.PQTVFirebase.getCloudManifestStatus()
+                : null;
 
-            const localRev = (localMeta && localMeta.ok && typeof localMeta.revision === 'number')
-                ? localMeta.revision
-                : 0;
-
-            if (cloudMeta && !cloudMeta.exists) {
-                await syncCloudDatabase();
+            if (!cloudMeta || !cloudMeta.exists) {
+                const seeded = await syncCloudDatabase();
+                if (!seeded) throw new Error('Не удалось создать первичный снимок Firestore');
                 return;
-            }
-
-            if (cloudMeta && cloudMeta.exists && localRev > 0) {
-                const cloudRev = typeof cloudMeta.revision === 'number' ? cloudMeta.revision : null;
-                if (cloudRev !== null && cloudRev === localRev) {
-                    if (statusEl) statusEl.textContent = `Firestore: синхронизировано (rev ${localRev})`;
-                    return;
-                }
-                if (cloudRev === null || localRev > cloudRev) {
-                    // Server has newer local mutations that didn't reach Firestore yet — push automatically
-                    await syncCloudDatabase();
-                    showToast(`Локальные изменения (rev ${localRev}) сохранены в Firestore`, 'ok');
-                    return;
-                }
             }
 
             const cloud = await window.PQTVFirebase.loadFullCloudSnapshot();
-            if (cloud.hasCloud && cloud.snapshot) {
-                const restored = await apiRequest('/api/cloud/hydrate', 'POST', cloud.snapshot);
-                if (!restored || !restored.ok) {
-                    if (restored && (restored._httpStatus === 409 || restored.stale)) {
-                        const newerLocalRev = restored.localRevision ?? localRev;
-                        await syncCloudDatabase();
-                        showToast(`Локальные изменения (rev ${newerLocalRev}) сохранены в Firestore`, 'ok');
-                        return;
-                    }
-                    throw new Error(restored && restored.error ? restored.error : 'Не удалось восстановить базу из Firestore');
-                }
-                await refreshAdminAfterCloudHydrate();
-                if (statusEl) statusEl.textContent = `Firestore: база восстановлена (rev ${restored.revision || 0})`;
-                return;
+            if (!cloud.hasCloud || !cloud.snapshot) {
+                throw new Error('Манифест Firestore существует, но облачный снимок не удалось прочитать');
             }
-            await syncCloudDatabase();
+
+            const restored = await apiRequest(
+                '/api/cloud/hydrate',
+                'POST',
+                Object.assign({}, cloud.snapshot, { force: true }),
+                { skipCloudSync: true }
+            );
+            if (!restored || !restored.ok) {
+                throw new Error(restored && restored.error ? restored.error : 'Не удалось восстановить локальный кеш из Firestore');
+            }
+
+            await refreshAdminAfterCloudHydrate();
+            if (statusEl) statusEl.textContent = `Firestore: источник данных загружен (rev ${restored.revision || 0})`;
         } catch (err) {
             console.error('Firestore bootstrap failed:', err);
             if (statusEl) statusEl.textContent = 'Firestore: ошибка синхронизации';
@@ -352,11 +331,47 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function restoreCloudSnapshotAfterFailedWrite() {
+        if (!window.PQTVFirebase) return false;
+        try {
+            const cloud = await window.PQTVFirebase.loadFullCloudSnapshot();
+            if (!cloud.hasCloud || !cloud.snapshot) return false;
+            const restored = await apiRequest(
+                '/api/cloud/hydrate',
+                'POST',
+                Object.assign({}, cloud.snapshot, { force: true }),
+                { skipCloudSync: true }
+            );
+            if (!restored || !restored.ok) return false;
+            await refreshAdminAfterCloudHydrate();
+            return true;
+        } catch (err) {
+            console.error('Firestore rollback hydrate failed:', err);
+            return false;
+        }
+    }
+
     async function apiRequest(url, method = 'GET', body = null, reqOpts = null) {
-        const opts = { method, credentials: 'same-origin', headers: {} };
+        const methodUpper = String(method || 'GET').toUpperCase();
+        const isMutation = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(methodUpper);
+        const skipSync = Boolean(reqOpts && reqOpts.skipCloudSync) ||
+            NON_SYNC_POST_PREFIXES.some(prefix => url.startsWith(prefix));
+        const requiresCloudWrite = !skipSync && (
+            isMutation || (methodUpper === 'GET' && url.startsWith('/api/source/rebuild'))
+        );
+
+        if (requiresCloudWrite && !fbAdminConnected) {
+            return {
+                ok: false,
+                _httpStatus: 503,
+                error: 'Изменения заблокированы: сначала подключите Firestore под учётной записью администратора',
+            };
+        }
+
+        const opts = { method: methodUpper, credentials: 'same-origin', headers: {} };
         const adminToken = getAdminToken();
         if (adminToken) opts.headers['X-Admin-Token'] = adminToken;
-        if (['POST', 'PUT', 'DELETE'].includes(method)) opts.headers['X-CSRF-Token'] = window.CSRF_TOKEN || '';
+        if (isMutation) opts.headers['X-CSRF-Token'] = window.CSRF_TOKEN || '';
         if (body) {
             opts.headers['Content-Type'] = 'application/json';
             opts.body = JSON.stringify(body);
@@ -373,15 +388,21 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error(`API ${res.status} ${url}`, data);
                 return Object.assign({}, data, { ok: false, _httpStatus: res.status });
             }
-            const skipSync = Boolean(reqOpts && reqOpts.skipCloudSync) ||
-                NON_SYNC_POST_PREFIXES.some(prefix => url.startsWith(prefix));
-            if (
-                fbAdminConnected &&
-                !skipSync &&
-                (['POST', 'PUT', 'DELETE'].includes(method) ||
-                    (method === 'GET' && url.startsWith('/api/source/rebuild')))
-            ) {
-                scheduleCloudSync();
+
+            if (requiresCloudWrite) {
+                const persisted = await syncCloudDatabase();
+                if (!persisted) {
+                    const restored = await restoreCloudSnapshotAfterFailedWrite();
+                    return Object.assign({}, data, {
+                        ok: false,
+                        _httpStatus: 503,
+                        cloudSyncFailed: true,
+                        localCacheRestored: restored,
+                        error: restored
+                            ? 'Firestore не подтвердил сохранение. Локальный кеш восстановлен из последнего облачного снимка.'
+                            : 'Firestore не подтвердил сохранение. Локальный кеш мог остаться изменённым; требуется повторная синхронизация.',
+                    });
+                }
             }
             return data;
         } catch (e) {
