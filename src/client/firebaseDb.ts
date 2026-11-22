@@ -1525,18 +1525,30 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
         : [];
       const totalChannels = Math.max(0, Math.min(50000, Math.floor(Number(alert.totalChannels) || 0)));
       const unavailableCount = Math.max(0, Math.min(totalChannels, Math.floor(Number(alert.unavailableCount) || items.length)));
+      const alertRef = doc(db, 'channel_alerts', rawUid);
+      let userLogin = sReq(alert.userLogin, 64, rawUid);
+      let userName = sReq(alert.userName, 80, alert.userLogin || rawUid);
+      try {
+        const existing = await getDoc(alertRef);
+        if (existing.exists()) {
+          userLogin = String(existing.data().userLogin || userLogin);
+          userName = String(existing.data().userName || userName);
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.GET, alertRef.path);
+      }
       alertWrites.push({
-        ref: doc(db, 'channel_alerts', rawUid),
+        ref: alertRef,
         payload: {
           uid: rawUid,
-          userLogin: sReq(alert.userLogin, 64, rawUid),
-          userName: sReq(alert.userName, 80, alert.userLogin || rawUid),
+          userLogin,
+          userName,
           totalChannels,
           unavailableCount,
           items,
           resolved: Boolean(alert.resolved),
         },
-        mutableKeys: ['userLogin', 'userName', 'totalChannels', 'unavailableCount', 'items', 'resolved'],
+        mutableKeys: ['totalChannels', 'unavailableCount', 'items', 'resolved'],
       });
     }
     for (const writeChunk of chunkArray(alertWrites, 500)) {
