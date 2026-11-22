@@ -920,7 +920,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function filterChannels() {
         const q = searchQuery.trim().toLowerCase();
-        return channels.filter(ch => {
+        const filteredChannels = channels.filter(ch => {
             const k = keyOf(ch);
             const isHidden = hidden.has(k);
 
@@ -942,6 +942,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (!hay.includes(q)) return false;
             }
             return true;
+        });
+        return filteredChannels.sort((left, right) => {
+            const leftGroup = (left.group || '').trim() || 'Без категории';
+            const rightGroup = (right.group || '').trim() || 'Без категории';
+            const byGroup = leftGroup.localeCompare(rightGroup, 'ru', { numeric: true, sensitivity: 'base' });
+            return byGroup || String(left.name || '').localeCompare(String(right.name || ''), 'ru', { numeric: true, sensitivity: 'base' });
         });
     }
 
