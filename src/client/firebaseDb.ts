@@ -9,6 +9,7 @@ import {
   runTransaction,
   setDoc,
   updateDoc,
+  writeBatch,
 } from 'firebase/firestore';
 import { auth, db, handleFirestoreError, OperationType } from './firebaseApp.js';
 
@@ -251,6 +252,65 @@ async function upsertDoc(
   }
 }
 
+interface CloudBatchUpsertEntry {
+  ref: DocumentReference;
+  payload: Record<string, unknown>;
+  mutableKeys: string[];
+}
+
+async function batchUpsertDocs(
+  entries: CloudBatchUpsertEntry[],
+  operationPath: string
+): Promise<void> {
+  if (entries.length > 500) {
+    throw new Error(`Firestore batch limit exceeded for ${operationPath}: ${entries.length} writes`);
+  }
+  if (entries.length === 0) return;
+
+  const snapshots = await Promise.all(entries.map(async (entry) => {
+    try {
+      return await getDoc(entry.ref);
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, entry.ref.path);
+    }
+  }));
+
+  const batch = writeBatch(db);
+  let writeCount = 0;
+  entries.forEach((entry, index) => {
+    const snap = snapshots[index];
+    if (!snap.exists()) {
+      batch.set(entry.ref, {
+        ...entry.payload,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      writeCount++;
+      return;
+    }
+
+    const existing = snap.data();
+    const hasChanges = entry.mutableKeys.some((key) =>
+      key in entry.payload && JSON.stringify(existing[key]) !== JSON.stringify(entry.payload[key])
+    );
+    if (!hasChanges) return;
+
+    batch.set(entry.ref, {
+      ...entry.payload,
+      createdAt: existing.createdAt,
+      updatedAt: serverTimestamp(),
+    });
+    writeCount++;
+  });
+
+  if (writeCount === 0) return;
+  try {
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, operationPath);
+  }
+}
+
 async function readManifest(): Promise<{
   playlists: string[];
   sourceIds: string[];
@@ -402,51 +462,48 @@ export async function savePlaylistToCloud(
   updateManifest = true
 ): Promise<void> {
   const plId = cleanPlaylistName(rawName);
-  if (!isValidPlaylistName(plId)) return;
+  if (!isValidPlaylistName(plId)) throw new Error('Некорректное имя плейлиста');
 
   const cleanItems = (Array.isArray(channels) ? channels : [])
     .slice(0, 50000)
     .map(normalizeChannelItem);
-  const chunks = chunkArray(cleanItems, 150);
+  const chunks = chunkArray(cleanItems, 200);
+  if (chunks.length > 300) throw new Error(`Слишком много частей плейлиста ${plId}`);
 
   const metaRef = doc(db, 'playlists', plId);
   let prevChunks = 0;
   try {
     const prevSnap = await getDoc(metaRef);
-    if (prevSnap.exists()) {
-      prevChunks = Number(prevSnap.data().chunkCount) || 0;
-    }
-  } catch {
-    // ignore
+    if (prevSnap.exists()) prevChunks = Number(prevSnap.data().chunkCount) || 0;
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, metaRef.path);
   }
 
-  for (let i = 0; i < chunks.length; i++) {
-    const chunkId = `c_${i}`;
-    await upsertDoc(
-      doc(db, 'playlists', plId, 'chunks', chunkId),
-      { playlistId: plId, index: i, items: chunks[i] },
-      ['index', 'items']
-    );
-  }
-
-  for (let i = chunks.length; i < prevChunks; i++) {
-    try {
-      await deleteDoc(doc(db, 'playlists', plId, 'chunks', `c_${i}`));
-    } catch {
-      // ignore
-    }
-  }
-
-  await upsertDoc(
-    metaRef,
-    {
+  const writes: CloudBatchUpsertEntry[] = chunks.map((items, index) => ({
+    ref: doc(db, 'playlists', plId, 'chunks', `c_${index}`),
+    payload: { playlistId: plId, index, items },
+    mutableKeys: ['index', 'items'],
+  }));
+  writes.push({
+    ref: metaRef,
+    payload: {
       id: plId,
       name: plId,
       channelCount: cleanItems.length,
       chunkCount: chunks.length,
     },
-    ['name', 'channelCount', 'chunkCount']
-  );
+    mutableKeys: ['name', 'channelCount', 'chunkCount'],
+  });
+  await batchUpsertDocs(writes, `playlists/${plId}`);
+
+  if (prevChunks > chunks.length) {
+    await Promise.all(
+      Array.from({ length: prevChunks - chunks.length }, (_, index) =>
+        deleteDoc(doc(db, 'playlists', plId, 'chunks', `c_${chunks.length + index}`))
+          .catch((err) => console.warn('Obsolete playlist chunk cleanup failed:', err))
+      )
+    );
+  }
 
   if (updateManifest) {
     const cur = await readManifest();
@@ -490,14 +547,15 @@ export async function saveSourcesToCloud(
   const cur = await readManifest();
   const prevIds = cur?.sourceIds || [];
   const nextIds: string[] = [];
+  const writes: CloudBatchUpsertEntry[] = [];
 
   for (const src of (Array.isArray(sources) ? sources : []).slice(0, 100)) {
     const id = safeId(src.id);
     if (!nextIds.includes(id)) nextIds.push(id);
     const timeoutSec = Math.max(3, Math.min(60, Math.round(Number(src.timeoutSec) || 15)));
-    await upsertDoc(
-      doc(db, 'sources', id),
-      {
+    writes.push({
+      ref: doc(db, 'sources', id),
+      payload: {
         id,
         name: sReq(src.name, 120, id),
         type: sReq(src.type, 32, 'm3u'),
@@ -509,29 +567,23 @@ export async function saveSourcesToCloud(
         timeoutSec,
         ignoreTlsErrors: Boolean(src.ignoreTlsErrors),
       },
-      [
-        'name',
-        'type',
-        'url',
-        'enabled',
-        'userAgent',
-        'referer',
-        'origin',
-        'timeoutSec',
-        'ignoreTlsErrors',
-      ]
-    );
+      mutableKeys: [
+        'name', 'type', 'url', 'enabled', 'userAgent', 'referer', 'origin',
+        'timeoutSec', 'ignoreTlsErrors',
+      ],
+    });
   }
 
+  await batchUpsertDocs(writes, 'sources');
   for (const oldId of prevIds) {
     if (!nextIds.includes(oldId)) {
-      await deleteDoc(doc(db, 'sources', oldId)).catch(() => {});
+      await deleteDoc(doc(db, 'sources', oldId)).catch((err) => {
+        console.warn('Obsolete source cleanup failed:', err);
+      });
     }
   }
 
-  if (updateManifest) {
-    await writeManifestPatch({ sourceIds: nextIds });
-  }
+  if (updateManifest) await writeManifestPatch({ sourceIds: nextIds });
   return nextIds;
 }
 
@@ -564,59 +616,60 @@ export async function saveSourceIndexToCloud(
       if (orig) item.origin = orig;
       return item;
     });
-    const chunks = chunkArray(cleanItems, 200);
+    const chunks = chunkArray(cleanItems, 250);
     const metaRef = doc(db, 'source_index', sourceId);
     let prevChunks = 0;
     try {
       const snap = await getDoc(metaRef);
       if (snap.exists()) prevChunks = Number(snap.data().chunkCount) || 0;
-    } catch {
-      // ignore
+    } catch (err) {
+      handleFirestoreError(err, OperationType.GET, metaRef.path);
     }
 
-    for (let i = 0; i < chunks.length; i++) {
-      await upsertDoc(
-        doc(db, 'source_index', sourceId, 'chunks', `c_${i}`),
-        { sourceId, index: i, items: chunks[i] },
-        ['index', 'items']
-      );
-    }
-    for (let i = chunks.length; i < prevChunks; i++) {
-      await deleteDoc(doc(db, 'source_index', sourceId, 'chunks', `c_${i}`)).catch(() => {});
-    }
-
-    await upsertDoc(
-      metaRef,
-      {
+    const writes: CloudBatchUpsertEntry[] = chunks.map((items, index) => ({
+      ref: doc(db, 'source_index', sourceId, 'chunks', `c_${index}`),
+      payload: { sourceId, index, items },
+      mutableKeys: ['index', 'items'],
+    }));
+    writes.push({
+      ref: metaRef,
+      payload: {
         sourceId,
         count: cleanItems.length,
         chunkCount: chunks.length,
         indexedAt: Math.max(0, Math.floor(Number(entry.updatedAt) || 0)),
       },
-      ['count', 'chunkCount', 'indexedAt']
-    );
+      mutableKeys: ['count', 'chunkCount', 'indexedAt'],
+    });
+    await batchUpsertDocs(writes, `source_index/${sourceId}`);
+
+    if (prevChunks > chunks.length) {
+      await Promise.all(
+        Array.from({ length: prevChunks - chunks.length }, (_, index) =>
+          deleteDoc(doc(db, 'source_index', sourceId, 'chunks', `c_${chunks.length + index}`))
+            .catch((err) => console.warn('Obsolete source-index chunk cleanup failed:', err))
+        )
+      );
+    }
   }
 
   for (const oldId of prevIds) {
     if (!nextIds.includes(oldId)) {
-      try {
-        const snap = await getDoc(doc(db, 'source_index', oldId));
-        if (snap.exists()) {
-          const cc = Number(snap.data().chunkCount) || 0;
-          for (let i = 0; i < cc; i++) {
-            await deleteDoc(doc(db, 'source_index', oldId, 'chunks', `c_${i}`)).catch(() => {});
-          }
-          await deleteDoc(doc(db, 'source_index', oldId)).catch(() => {});
-        }
-      } catch {
-        // ignore
+      const metaRef = doc(db, 'source_index', oldId);
+      const snap = await getDoc(metaRef);
+      if (snap.exists()) {
+        const count = Number(snap.data().chunkCount) || 0;
+        await Promise.all(
+          Array.from({ length: count }, (_, index) =>
+            deleteDoc(doc(db, 'source_index', oldId, 'chunks', `c_${index}`))
+          )
+        );
+        await deleteDoc(metaRef);
       }
     }
   }
 
-  if (updateManifest) {
-    await writeManifestPatch({ sourceIndexIds: nextIds });
-  }
+  if (updateManifest) await writeManifestPatch({ sourceIndexIds: nextIds });
   return nextIds;
 }
 
@@ -652,31 +705,33 @@ export async function saveEpgToCloud(
   const cur = await readManifest();
   const prevIds = cur?.epgIds || [];
   const nextIds: string[] = [];
+  const writes: CloudBatchUpsertEntry[] = [];
 
   for (const item of (Array.isArray(epgList) ? epgList : []).slice(0, 50)) {
     const id = safeId(item.id);
     if (!nextIds.includes(id)) nextIds.push(id);
-    await upsertDoc(
-      doc(db, 'epg_sources', id),
-      {
+    writes.push({
+      ref: doc(db, 'epg_sources', id),
+      payload: {
         id,
         name: sReq(item.name, 120, id),
         url: sReq(item.url, 1000, 'https://example.com'),
         enabled: Boolean(item.enabled),
       },
-      ['name', 'url', 'enabled']
-    );
+      mutableKeys: ['name', 'url', 'enabled'],
+    });
   }
 
+  await batchUpsertDocs(writes, 'epg_sources');
   for (const oldId of prevIds) {
     if (!nextIds.includes(oldId)) {
-      await deleteDoc(doc(db, 'epg_sources', oldId)).catch(() => {});
+      await deleteDoc(doc(db, 'epg_sources', oldId)).catch((err) => {
+        console.warn('Obsolete EPG source cleanup failed:', err);
+      });
     }
   }
 
-  if (updateManifest) {
-    await writeManifestPatch({ epgIds: nextIds });
-  }
+  if (updateManifest) await writeManifestPatch({ epgIds: nextIds });
   return nextIds;
 }
 
@@ -693,8 +748,8 @@ export async function saveCatalogToCloud(
       prevChChunks = Number(prevSnap.data().channelChunkCount) || 0;
       prevStChunks = Number(prevSnap.data().streamChunkCount) || 0;
     }
-  } catch {
-    // ignore
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, sumRef.path);
   }
 
   const cleanChannels = (Array.isArray(catalog.channels) ? catalog.channels : []).map((c) => ({
@@ -749,34 +804,27 @@ export async function saveCatalogToCloud(
     return out;
   });
 
-  const chChunks = chunkArray(cleanChannels, 150);
-  const stChunks = chunkArray(cleanStreams, 200);
-
-  for (let i = 0; i < chChunks.length; i++) {
-    await upsertDoc(
-      doc(db, 'catalog_chunks', `ch_${i}`),
-      { index: i, items: chChunks[i] },
-      ['index', 'items']
-    );
-  }
-  for (let i = chChunks.length; i < prevChChunks; i++) {
-    await deleteDoc(doc(db, 'catalog_chunks', `ch_${i}`)).catch(() => {});
+  const chChunks = chunkArray(cleanChannels, 200);
+  const stChunks = chunkArray(cleanStreams, 250);
+  if (chChunks.length > 500 || stChunks.length > 500) {
+    throw new Error('Каталог превышает лимиты хранения Firestore');
   }
 
-  for (let i = 0; i < stChunks.length; i++) {
-    await upsertDoc(
-      doc(db, 'catalog_stream_chunks', `st_${i}`),
-      { index: i, items: stChunks[i] },
-      ['index', 'items']
-    );
-  }
-  for (let i = stChunks.length; i < prevStChunks; i++) {
-    await deleteDoc(doc(db, 'catalog_stream_chunks', `st_${i}`)).catch(() => {});
-  }
+  const channelWrites: CloudBatchUpsertEntry[] = chChunks.map((items, index) => ({
+    ref: doc(db, 'catalog_chunks', `ch_${index}`),
+    payload: { index, items },
+    mutableKeys: ['index', 'items'],
+  }));
+  await batchUpsertDocs(channelWrites, 'catalog_chunks');
 
-  await upsertDoc(
-    sumRef,
-    {
+  const streamWrites: CloudBatchUpsertEntry[] = stChunks.map((items, index) => ({
+    ref: doc(db, 'catalog_stream_chunks', `st_${index}`),
+    payload: { index, items },
+    mutableKeys: ['index', 'items'],
+  }));
+  streamWrites.push({
+    ref: sumRef,
+    payload: {
       docId: 'main',
       nextChannelId: Math.max(1, Number(catalog.nextChannelId) || 1),
       nextStreamId: Math.max(1, Number(catalog.nextStreamId) || 1),
@@ -785,15 +833,33 @@ export async function saveCatalogToCloud(
       streamChunkCount: stChunks.length,
       sources: cleanSources,
     },
-    [
+    mutableKeys: [
       'nextChannelId',
       'nextStreamId',
       'nextSourceId',
       'channelChunkCount',
       'streamChunkCount',
       'sources',
-    ]
-  );
+    ],
+  });
+  await batchUpsertDocs(streamWrites, 'catalog_stream_chunks + catalog_summary');
+
+  if (prevChChunks > chChunks.length) {
+    await Promise.all(
+      Array.from({ length: prevChChunks - chChunks.length }, (_, index) =>
+        deleteDoc(doc(db, 'catalog_chunks', `ch_${chChunks.length + index}`))
+          .catch((err) => console.warn('Obsolete catalog channel chunk cleanup failed:', err))
+      )
+    );
+  }
+  if (prevStChunks > stChunks.length) {
+    await Promise.all(
+      Array.from({ length: prevStChunks - stChunks.length }, (_, index) =>
+        deleteDoc(doc(db, 'catalog_stream_chunks', `st_${stChunks.length + index}`))
+          .catch((err) => console.warn('Obsolete catalog stream chunk cleanup failed:', err))
+      )
+    );
+  }
 
   if (updateManifest) {
     await writeManifestPatch({
