@@ -1463,3 +1463,27 @@ a:hover { text-decoration: underline; }
     cursor: not-allowed;
     background: rgba(15, 23, 42, 0.6);
 }
+
+
+/* Settings dashboard */
+.settings-dashboard-card {
+  display: block;
+  width: 100%;
+  min-height: 132px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px;
+  background: var(--surface);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--t), background var(--t), transform var(--t);
+}
+.settings-dashboard-card h3 { margin: 0 0 8px; color: var(--text); }
+.settings-dashboard-card p { color: var(--muted); line-height: 1.5; }
+.settings-dashboard-card:hover { border-color: var(--primary-hi); transform: translateY(-1px); }
+@media (prefers-color-scheme: light) {
+  .settings-dashboard-card { background: #ffffff; border-color: #d7deea; color: #182235; }
+  .settings-dashboard-card h3 { color: #182235; }
+  .settings-dashboard-card p { color: #526078; }
+}

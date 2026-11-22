@@ -628,20 +628,34 @@ document.addEventListener('DOMContentLoaded', () => {
     const navBtnCatalog = document.getElementById('nav-btn-catalog');
     if (navBtnCatalog) navBtnCatalog.onclick = () => { showScreen('catalog'); setNavActive('catalog'); loadCatalog(); };
     if (navBtnHealth) navBtnHealth.onclick = () => { showScreen('health'); setNavActive('health'); loadHealthOverview(); };
-    const navBtnStreaming = document.getElementById('nav-btn-streaming');
-    if (navBtnStreaming) navBtnStreaming.onclick = () => {
-        showScreen('streaming');
-        setNavActive('streaming');
-        if (typeof window.__refreshStreamingControls === 'function') void window.__refreshStreamingControls();
+    const navBtnSettings = document.getElementById('nav-btn-settings');
+    if (navBtnSettings) navBtnSettings.onclick = () => {
+        showScreen('settings');
+        setNavActive('settings');
     };
-    const navBtnUiSettings = document.getElementById('nav-btn-ui-settings');
-    if (navBtnUiSettings) navBtnUiSettings.onclick = () => {
-        showScreen('ui-settings');
-        setNavActive('ui-settings');
-        if (typeof window.__refreshUiSettings === 'function') window.__refreshUiSettings();
-    };
-    const navBtnApk = document.getElementById('nav-btn-apk');
-    if (navBtnApk) navBtnApk.onclick = () => { showScreen('apk'); setNavActive('apk'); loadApkReleases(); };
+
+    document.querySelectorAll('[data-settings-target]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const target = button.dataset.settingsTarget;
+            if (!['streaming', 'ui-settings', 'apk'].includes(target)) return;
+            showScreen(target);
+            setNavActive('settings');
+            if (target === 'streaming' && typeof window.__refreshStreamingControls === 'function') {
+                void window.__refreshStreamingControls();
+            }
+            if (target === 'ui-settings' && typeof window.__refreshUiSettings === 'function') {
+                void window.__refreshUiSettings();
+            }
+            if (target === 'apk') loadApkReleases();
+        });
+    });
+
+    document.querySelectorAll('[data-settings-back]').forEach((button) => {
+        button.addEventListener('click', () => {
+            showScreen('settings');
+            setNavActive('settings');
+        });
+    });
 
     function setNavActive(name) {
         document.querySelectorAll('.nav-item').forEach(b => {
@@ -654,10 +668,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const screenUsers = document.getElementById('screen-users');
         const screenCatalog = document.getElementById('screen-catalog');
         const screenHealth = document.getElementById('screen-health');
+        const screenSettings = document.getElementById('screen-settings');
         const screenStreaming = document.getElementById('screen-streaming');
         const screenUiSettings = document.getElementById('screen-ui-settings');
         const screenApk = document.getElementById('screen-apk');
-        [screenEditor, screenParser, screenSources, screenEpg, screenUsers, screenCatalog, screenHealth, screenStreaming, screenUiSettings, screenApk].forEach(s => s && s.classList.add('hidden'));
+        [screenEditor, screenParser, screenSources, screenEpg, screenUsers, screenCatalog, screenHealth, screenSettings, screenStreaming, screenUiSettings, screenApk].forEach(s => s && s.classList.add('hidden'));
         if (name === 'editor' && screenEditor) screenEditor.classList.remove('hidden');
         if (name === 'parser' && screenParser) screenParser.classList.remove('hidden');
         if (name === 'sources' && screenSources) screenSources.classList.remove('hidden');
@@ -665,6 +680,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (name === 'users' && screenUsers) screenUsers.classList.remove('hidden');
         if (name === 'catalog' && screenCatalog) screenCatalog.classList.remove('hidden');
         if (name === 'health' && screenHealth) screenHealth.classList.remove('hidden');
+        if (name === 'settings' && screenSettings) screenSettings.classList.remove('hidden');
         if (name === 'streaming' && screenStreaming) screenStreaming.classList.remove('hidden');
         if (name === 'ui-settings' && screenUiSettings) screenUiSettings.classList.remove('hidden');
         if (name === 'apk' && screenApk) screenApk.classList.remove('hidden');

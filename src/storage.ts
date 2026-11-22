@@ -62,7 +62,11 @@ export class Storage {
   }
 
   getChannels(name: string): Channel[] {
-    if (!this.isValidFilename(name)) return [];
+    this.lastError = '';
+    if (!this.isValidFilename(name)) {
+      this.lastError = 'Некорректное имя плейлиста';
+      return [];
+    }
     const filePath = this.getPlaylistPath(name);
     if (!fs.existsSync(filePath)) return [];
     try {

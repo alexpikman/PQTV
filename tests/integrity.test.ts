@@ -379,7 +379,50 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     );
   });
 
-  test('9. Write/save failure surfaces HTTP 500 error instead of returning fake ok:true', async () => {
+  test('9. Bulk category assignment updates exact URL matches across playlists and preserves unrelated channels', async () => {
+    resetTempWorkspace();
+
+    await api('/api/playlists', 'POST', { name: 'category_a' });
+    await api('/api/playlists', 'POST', { name: 'category_b' });
+    await api('/api/channels/save', 'POST', {
+      playlist: 'category_a',
+      channels: [
+        { name: 'Shared A', group: 'Old', logo: '', url: 'https://example.com/shared.m3u8' },
+        { name: 'Only A', group: 'Old', logo: '', url: 'https://example.com/only-a.m3u8' },
+      ],
+    });
+    await api('/api/channels/save', 'POST', {
+      playlist: 'category_b',
+      channels: [
+        { name: 'Shared B', group: 'Old', logo: '', url: 'https://example.com/shared.m3u8' },
+        { name: 'Only B', group: 'Keep', logo: '', url: 'https://example.com/only-b.m3u8' },
+      ],
+    });
+
+    const result = await api<{
+      ok: boolean;
+      updatedChannels: number;
+      updatedPlaylists: string[];
+    }>('/api/playlists/categories/bulk', 'POST', {
+      playlist: 'category_a',
+      urls: ['https://example.com/shared.m3u8'],
+      group: 'Спорт',
+    });
+
+    assert.equal(result.status, 200);
+    assert.equal(result.data.ok, true);
+    assert.equal(result.data.updatedChannels, 2);
+    assert.deepEqual(result.data.updatedPlaylists, ['category_a', 'category_b']);
+
+    const a = (await api<{ channels: Array<{ url: string; group: string }> }>('/api/channels?playlist=category_a')).data.channels;
+    const b = (await api<{ channels: Array<{ url: string; group: string }> }>('/api/channels?playlist=category_b')).data.channels;
+    assert.equal(a.find((channel) => channel.url.endsWith('/shared.m3u8'))?.group, 'Спорт');
+    assert.equal(b.find((channel) => channel.url.endsWith('/shared.m3u8'))?.group, 'Спорт');
+    assert.equal(a.find((channel) => channel.url.endsWith('/only-a.m3u8'))?.group, 'Old');
+    assert.equal(b.find((channel) => channel.url.endsWith('/only-b.m3u8'))?.group, 'Keep');
+  });
+
+  test('10. Write/save failure surfaces HTTP 500 error instead of returning fake ok:true', async () => {
     resetTempWorkspace();
 
     // Force atomic write failure on epg.json by turning target path into a directory
@@ -407,7 +450,7 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     assert.ok(failSources.data.error);
   });
 
-  test('10. Deleting nonexistent records returns HTTP 404 consistently', async () => {
+  test('11. Deleting nonexistent records returns HTTP 404 consistently', async () => {
     resetTempWorkspace();
 
     assert.equal((await api('/api/playlists/delete', 'POST', { name: 'does_not_exist' })).status, 404);
@@ -419,7 +462,7 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     assert.equal((await api('/api/invites/delete', 'POST', { id: 'missing_invite_id' })).status, 404);
   });
 
-  test('11. State remains consistent across simulated server restart (in-memory caches reset and reloaded from disk)', async () => {
+  test('12. State remains consistent across simulated server restart (in-memory caches reset and reloaded from disk)', async () => {
     resetTempWorkspace();
 
     await api('/api/playlists', 'POST', { name: 'persist_pl' });

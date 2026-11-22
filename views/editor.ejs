@@ -160,31 +160,12 @@
                         </svg>
                         Телепрограмма
                     </button>
-                    <button id="nav-btn-streaming" class="nav-item" data-screen="streaming">
+                    <button id="nav-btn-settings" class="nav-item" data-screen="settings">
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/>
-                            <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/>
-                            <line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/>
-                            <line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/>
+                            <circle cx="12" cy="12" r="3"/>
+                            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                         </svg>
-                        Настройки потока
-                    </button>
-                    <button id="nav-btn-ui-settings" class="nav-item" data-screen="ui-settings">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="2" y="4" width="20" height="14" rx="2"/>
-                            <path d="M8 21h8"/>
-                            <path d="M12 18v3"/>
-                            <path d="M7 13h4"/>
-                        </svg>
-                        Настройки интерфейса
-                    </button>
-                    <button id="nav-btn-apk" class="nav-item" data-screen="apk">
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <rect x="2" y="7" width="20" height="14" rx="2"/>
-                            <polyline points="17 2 12 7 7 2"/>
-                            <path d="M12 11v6"/><polyline points="9.5 14.5 12 17 14.5 14.5"/>
-                        </svg>
-                        Android TV APK
+                        Настройки
                     </button>
                 </div>
 
@@ -327,7 +308,7 @@
                             Добавить ссылку
                         </button>
                     </div>
-                    <p style="color:var(--muted); font-size:12.5px; margin-bottom:12px;">Источники телепрограммы в формате XMLTV (.xml / .xml.gz). Ссылки можно раздавать пользователям.</p>
+                    <p style="color:var(--muted); font-size:12.5px; margin-bottom:12px;">Источники телепрограммы в формате XMLTV (.xml / .xml.gz). Ссылки источников используются сервером для загрузки программы и не раздаются зрителям.</p>
                     <div id="epg-list-container"></div>
                 </div>
 
@@ -495,6 +476,7 @@
                     <div class="col-header">
                         <h2>Android TV APK и OTA-обновления</h2>
                         <div class="header-actions">
+                            <button type="button" class="btn btn-secondary" data-settings-back>К настройкам</button>
                             <button type="button" id="btn-download-android-project" class="btn btn-primary">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                     <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -771,11 +753,33 @@
                     </div>
                 </div>
 
+                <!-- SCREEN: ДАШБОРД НАСТРОЕК -->
+                <div id="screen-settings" class="hidden">
+                    <div class="col-header">
+                        <h2>Настройки</h2>
+                    </div>
+                    <div class="ui-settings-grid">
+                        <button type="button" class="apk-panel settings-dashboard-card" data-settings-target="streaming">
+                            <h3>Настройки потока</h3>
+                            <p>Протоколы, буферизация, прокси и параметры воспроизведения.</p>
+                        </button>
+                        <button type="button" class="apk-panel settings-dashboard-card" data-settings-target="ui-settings">
+                            <h3>Настройки интерфейса</h3>
+                            <p>Внешний вид и элементы пользовательского плеера.</p>
+                        </button>
+                        <button type="button" class="apk-panel settings-dashboard-card" data-settings-target="apk">
+                            <h3>Android TV APK</h3>
+                            <p>Сборка, релизы и обновление приложения на телевизорах.</p>
+                        </button>
+                    </div>
+                </div>
+
                 <!-- SCREEN: НАСТРОЙКИ ПОТОКА И БУФЕРИЗАЦИИ -->
                 <div id="screen-streaming" class="hidden">
                     <div class="col-header">
                         <h2>Настройки потока, буферизации и протоколов</h2>
                         <div class="header-actions">
+                            <button type="button" class="btn btn-secondary" data-settings-back>К настройкам</button>
                             <button type="button" id="btn-streaming-reset" class="btn btn-secondary">Сбросить (как VLC)</button>
                             <button type="button" id="btn-streaming-save" class="btn btn-primary">Сохранить настройки</button>
                         </div>
@@ -1019,6 +1023,7 @@
                 <div id="screen-ui-settings" class="hidden">
                     <div class="col-header">
                         <h2>Настройки интерфейса</h2>
+                        <button type="button" class="btn btn-secondary" data-settings-back>К настройкам</button>
                     </div>
                     <div id="ui-settings-scroll">
                         <div class="ui-settings-grid">

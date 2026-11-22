@@ -104,6 +104,10 @@ export async function applyCategoryToPlaylistUrlsUnified(
     let matchedCurrent = false, updatedChannels = 0;
     for (const playlistName of playlistNames) {
       const before = storage.getChannels(playlistName);
+      const readError = storage.getLastError();
+      if (readError) {
+        return { ok: false, status: 500, error: 'Не удалось прочитать плейлист ' + playlistName + ': ' + readError };
+      }
       const after = before.map((channel) => {
         if (!urls.has(channel.url)) return channel;
         if (playlistName === clean) matchedCurrent = true;
@@ -118,7 +122,7 @@ export async function applyCategoryToPlaylistUrlsUnified(
     const saved: typeof pending = [];
     for (const item of pending) {
       if (!storage.saveChannels(item.name, item.after)) {
-        for (const rollback of saved.reverse()) storage.saveChannels(rollback.name, rollback.before);
+        for (const rollback of saved.reverse()) storage.saveChannels(rollback.name, rollback.before, { skipBackup: true });
         return { ok: false, status: 500, error: storage.getLastError() || `Не удалось сохранить плейлист ${item.name}` };
       }
       saved.push(item);
@@ -132,7 +136,34 @@ export async function applyCategoryToPlaylistUrlsUnified(
     const meta = stateLifecycle.bumpRevision('category_bulk_update', clean, { category: group, selectedUrls: urls.size, updatedChannels, updatedPlaylists });
     const revisionError = stateLifecycle.getLastError();
     if (revisionError) {
-      return { ok: false, status: 500, error: revisionError, revision: meta.revision, updatedChannels, updatedPlaylists };
+      for (const rollback of saved.slice().reverse()) {
+        if (!storage.saveChannels(rollback.name, rollback.before, { skipBackup: true })) {
+          return {
+            ok: false,
+            status: 500,
+            error: revisionError + '. Дополнительно не удалось откатить плейлист ' + rollback.name + ': ' + storage.getLastError(),
+            revision: meta.revision,
+            updatedChannels,
+            updatedPlaylists,
+          };
+        }
+      }
+      const rollbackCatalog = catalogStore.reconcile({ save: true });
+      stateLifecycle.bumpRevision('reconcile', clean, {
+        categoryBulkRollback: true,
+        reason: revisionError,
+        restoredPlaylists: saved.map((item) => item.name),
+      });
+      return {
+        ok: false,
+        status: 500,
+        error: rollbackCatalog.persisted
+          ? revisionError
+          : revisionError + '. Не удалось восстановить каталог: ' + (rollbackCatalog.error || 'неизвестная ошибка'),
+        revision: stateLifecycle.getStateMeta().revision,
+        updatedChannels,
+        updatedPlaylists,
+      };
     }
     return { ok: true, status: 200, updatedChannels, updatedPlaylists, revision: meta.revision };
   });
