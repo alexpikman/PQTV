@@ -1463,7 +1463,7 @@ app.get('/watch/api/epg/now', async (req, res) => {
 });
 
 // ============ WATCH ADMIN ROUTES (ADMIN VIEWER ONLY — FOR TV UI) ============
-function requireAdminViewer(req: Request, res: Response, next: NextFunction): void {
+async function requireAdminViewer(req: Request, res: Response, next: NextFunction): Promise<void> {
   const viewer = (
     req as Request & { currentViewer?: NonNullable<ReturnType<typeof getViewerFromRequest>> }
   ).currentViewer;
@@ -1471,6 +1471,34 @@ function requireAdminViewer(req: Request, res: Response, next: NextFunction): vo
     noCacheJson(res, { error: 'Требуются права администратора' }, 403);
     return;
   }
+
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+    const firebaseIdToken = typeof req.headers['x-firebase-id-token'] === 'string'
+      ? req.headers['x-firebase-id-token']
+      : '';
+    if (!firebaseIdToken) {
+      noCacheJson(res, { error: 'Для изменения данных требуется Firebase ID token' }, 503);
+      return;
+    }
+    try {
+      const decoded = await verifyFirebaseIdToken(firebaseIdToken);
+      if (!decoded.email_verified || !decoded.email) {
+        noCacheJson(res, { error: 'Требуется подтверждённый Google Email' }, 403);
+        return;
+      }
+      const isAdmin =
+        isAllowedAdminEmail(decoded.email.toLowerCase()) ||
+        (await fetchFirestoreAdminFlag(decoded.uid, firebaseIdToken));
+      if (!isAdmin) {
+        noCacheJson(res, { error: 'У этого аккаунта Google нет прав администратора Firestore' }, 403);
+        return;
+      }
+    } catch {
+      noCacheJson(res, { error: 'Firebase ID token недействителен или истёк' }, 401);
+      return;
+    }
+  }
+
   next();
 }
 

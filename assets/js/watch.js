@@ -1812,11 +1812,20 @@ document.addEventListener('DOMContentLoaded', () => {
     let tvFirebaseSubscribed = false;
 
     async function apiAdmin(url, method, body) {
+        const methodUpper = String(method || 'GET').toUpperCase();
         const opts = {
-            method: method || 'GET',
+            method: methodUpper,
             credentials: 'same-origin',
             headers: Object.assign({}, authHeaders())
         };
+        if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(methodUpper)) {
+            if (!window.PQTVFirebase || typeof window.PQTVFirebase.getAdminIdToken !== 'function') {
+                throw new Error('Firebase admin authentication is unavailable');
+            }
+            const firebaseIdToken = await window.PQTVFirebase.getAdminIdToken();
+            if (!firebaseIdToken) throw new Error('Для изменения данных требуется администратор Firestore');
+            opts.headers['X-Firebase-ID-Token'] = firebaseIdToken;
+        }
         if (body !== undefined && body !== null) {
             opts.headers['Content-Type'] = 'application/json';
             opts.body = JSON.stringify(body);
