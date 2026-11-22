@@ -540,6 +540,44 @@ export class UserAuth {
     }
   }
 
+  hydrateAlerts(raw: unknown): { ok: boolean; count: number; error?: string } {
+    const normalized: ChannelAlertRecord[] = [];
+    const now = Math.floor(Date.now() / 1000);
+    for (const item of (Array.isArray(raw) ? raw : []) as Array<Record<string, unknown>>) {
+      const userId = String(item.userId || item.id || '').trim();
+      if (!/^[a-zA-Z0-9_-]{1,128}$/.test(userId)) continue;
+      const items = Array.isArray(item.items)
+        ? item.items.filter((entry) => entry && typeof entry === 'object')
+            .slice(0, 50)
+            .map((entry) => {
+              const issue = entry as Record<string, unknown>;
+              return {
+                name: String(issue.name || '').trim().slice(0, 120),
+                group: String(issue.group || '').trim().slice(0, 80),
+                reason: String(issue.reason || '').trim().slice(0, 200),
+              };
+            })
+            .filter((entry) => entry.name && entry.reason)
+        : [];
+      normalized.push({
+        id: userId,
+        userId,
+        userLogin: String(item.userLogin || userId).trim().slice(0, 64) || userId,
+        userName: String(item.userName || item.userLogin || userId).trim().slice(0, 80) || userId,
+        totalChannels: Math.max(0, Math.min(50000, Math.floor(Number(item.totalChannels) || 0))),
+        unavailableCount: Math.max(0, Math.min(50000, Math.floor(Number(item.unavailableCount) || items.length))),
+        items,
+        resolved: Boolean(item.resolved),
+        created_at: Math.max(0, Math.floor(Number(item.created_at) || now)),
+        updated_at: Math.max(0, Math.floor(Number(item.updated_at) || now)),
+      });
+    }
+    if (!this.saveAllAlerts(normalized)) {
+      return { ok: false, count: 0, error: this.lastError || 'Не удалось восстановить channel_alerts.json' };
+    }
+    return { ok: true, count: normalized.length };
+  }
+
   private saveAllAlerts(alerts: ChannelAlertRecord[]): boolean {
     this.lastError = '';
     const res = atomicWriteJsonSync(this.alertsFile, alerts, 2);

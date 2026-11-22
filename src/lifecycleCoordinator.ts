@@ -76,6 +76,7 @@ export async function savePlaylistChannelsUnified(
       removedChannels: rec.removedChannels,
       removedStreams: rec.removedStreams,
       prunedHealthIssues: healthPrune.removed,
+      alertsHydrated,
     });
     return {
       ok: true,
@@ -467,6 +468,7 @@ export async function hydrateStateUnified(body: {
   uiSettings?: Partial<UiSettings>;
   apkState?: ApkStateSnapshot;
   channelHealth?: { urlDiagnostics?: Record<string, never>; issues?: Record<string, never> };
+  alerts?: Array<Record<string, unknown>>;
   catalog?: {
     nextChannelId?: number;
     nextStreamId?: number;
@@ -700,6 +702,15 @@ export async function hydrateStateUnified(body: {
 
     const healthPrune = channelHealth.pruneOrphanedIssues();
 
+    let alertsHydrated = 0;
+    if (Array.isArray(body.alerts)) {
+      const alertsRes = userAuth.hydrateAlerts(body.alerts);
+      if (!alertsRes.ok) {
+        return { ok: false, status: 500, error: alertsRes.error || 'Не удалось восстановить channel alerts' };
+      }
+      alertsHydrated = alertsRes.count;
+    }
+
     // 9. Advance revision
     const targetRev = incomingRevision !== null ? Math.max(currentMeta.revision, incomingRevision) : Math.max(1, currentMeta.revision);
     const meta = stateLifecycle.setRevisionAtLeast(targetRev, 'cloud_hydrate', 'cloud_snapshot', {
@@ -731,6 +742,7 @@ export async function hydrateStateUnified(body: {
       apkHydrated,
       healthHydrated,
       usersHydrated,
+      alertsHydrated,
     };
   });
 }

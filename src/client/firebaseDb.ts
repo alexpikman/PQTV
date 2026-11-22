@@ -165,6 +165,26 @@ export interface CloudExportPayload {
     password_hash?: string;
     created_at?: number;
   }>;
+  invites?: Array<{
+    id: string;
+    email: string;
+    name: string;
+    playlists: string[];
+    enabled: boolean;
+    claimed_uid?: string;
+  }>;
+  alerts?: Array<{
+    id: string;
+    userId?: string;
+    userLogin: string;
+    userName: string;
+    totalChannels: number;
+    unavailableCount: number;
+    items: Array<{ name: string; group: string; reason: string }>;
+    resolved: boolean;
+    created_at?: number;
+    updated_at?: number;
+  }>;
   adminSettings?: {
     githubRepo?: string;
     githubBranch?: string;
@@ -1427,6 +1447,101 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
   }
   const localUserIds = await saveLocalUserCredentialsToCloud(data.users || [], false);
 
+  if (Array.isArray(data.invites)) {
+    const currentUid = auth.currentUser?.uid;
+    if (!currentUid) throw new Error('Для синхронизации приглашений требуется Firebase admin auth');
+    const nextInviteIds = new Set<string>();
+    const inviteWrites: CloudBatchUpsertEntry[] = [];
+    for (const invite of data.invites.slice(0, 500)) {
+      const id = String(invite.id || '').trim().toLowerCase();
+      const email = String(invite.email || '').trim().toLowerCase().slice(0, 160);
+      if (!/^[a-f0-9]{64}$/.test(id) || !email) continue;
+      nextInviteIds.add(id);
+      const inviteRef = doc(db, 'invites', id);
+      let invitedByUid = currentUid;
+      try {
+        const existing = await getDoc(inviteRef);
+        if (existing.exists() && typeof existing.data().invitedByUid === 'string') {
+          invitedByUid = existing.data().invitedByUid as string;
+        }
+      } catch (err) {
+        handleFirestoreError(err, OperationType.GET, inviteRef.path);
+      }
+      const playlists = Array.isArray(invite.playlists)
+        ? invite.playlists.map((item) => cleanPlaylistName(item)).filter(Boolean).slice(0, 50)
+        : [];
+      inviteWrites.push({
+        ref: inviteRef,
+        payload: {
+          emailHash: id,
+          name: sReq(invite.name, 80, email.split('@')[0] || 'Пользователь'),
+          playlists,
+          enabled: Boolean(invite.enabled),
+          invitedByUid,
+          claimedUid: String(invite.claimed_uid || '').slice(0, 128),
+        },
+        mutableKeys: ['name', 'playlists', 'enabled', 'claimedUid'],
+      });
+      inviteWrites.push({
+        ref: doc(db, 'invites', id, 'private', 'info'),
+        payload: { emailHash: id, email },
+        mutableKeys: ['email'],
+      });
+    }
+    for (const writeChunk of chunkArray(inviteWrites, 500)) {
+      await batchUpsertDocs(writeChunk, 'invites');
+    }
+
+    const cloudInvites = await getDocs(collection(db, 'invites'));
+    const obsoleteInvites = cloudInvites.docs.filter((item) => !nextInviteIds.has(item.id));
+    for (const obsoleteChunk of chunkArray(obsoleteInvites, 250)) {
+      if (obsoleteChunk.length === 0) continue;
+      const batch = writeBatch(db);
+      obsoleteChunk.forEach((item) => {
+        batch.delete(doc(db, 'invites', item.id, 'private', 'info'));
+        batch.delete(item.ref);
+      });
+      try {
+        await batch.commit();
+      } catch (err) {
+        handleFirestoreError(err, OperationType.DELETE, 'invites');
+      }
+    }
+  }
+
+  if (Array.isArray(data.alerts)) {
+    const alertWrites: CloudBatchUpsertEntry[] = [];
+    for (const alert of data.alerts.slice(0, 500)) {
+      const rawUid = String(alert.userId || alert.id || '').trim();
+      if (!rawUid || !/^[a-zA-Z0-9_-]{1,128}$/.test(rawUid)) continue;
+      const items = Array.isArray(alert.items)
+        ? alert.items.filter((item) => item && typeof item.name === 'string' && typeof item.reason === 'string')
+            .slice(0, 50)
+            .map((item) => ({
+              name: sReq(item.name, 120, 'Канал'),
+              group: s(item.group, 80),
+              reason: sReq(item.reason, 200, 'Неизвестная ошибка'),
+            }))
+        : [];
+      alertWrites.push({
+        ref: doc(db, 'channel_alerts', rawUid),
+        payload: {
+          uid: rawUid,
+          userLogin: sReq(alert.userLogin, 64, rawUid),
+          userName: sReq(alert.userName, 80, alert.userLogin || rawUid),
+          totalChannels: Math.max(0, Math.min(50000, Math.floor(Number(alert.totalChannels) || 0))),
+          unavailableCount: Math.max(0, Math.min(50000, Math.floor(Number(alert.unavailableCount) || items.length))),
+          items,
+          resolved: Boolean(alert.resolved),
+        },
+        mutableKeys: ['userLogin', 'userName', 'totalChannels', 'unavailableCount', 'items', 'resolved'],
+      });
+    }
+    for (const writeChunk of chunkArray(alertWrites, 500)) {
+      await batchUpsertDocs(writeChunk, 'channel_alerts');
+    }
+  }
+
   await writeManifestPatch({
     playlists: plNames,
     sourceIds,
@@ -1688,6 +1803,38 @@ export async function loadFullCloudSnapshot(): Promise<{
     // Best-effort invites hydration
   }
 
+  const alerts: Array<Record<string, unknown>> = [];
+  const toSeconds = (value: unknown): number => {
+    if (value && typeof value === 'object' && typeof (value as { toMillis?: unknown }).toMillis === 'function') {
+      return Math.floor(((value as { toMillis: () => number }).toMillis()) / 1000);
+    }
+    return 0;
+  };
+  try {
+    const alertSnapshot = await getDocs(collection(db, 'channel_alerts'));
+    for (const alertDoc of alertSnapshot.docs) {
+      const d = alertDoc.data();
+      alerts.push({
+        id: alertDoc.id,
+        userId: alertDoc.id,
+        userLogin: String(d.userLogin || alertDoc.id),
+        userName: String(d.userName || d.userLogin || alertDoc.id),
+        totalChannels: Number(d.totalChannels) || 0,
+        unavailableCount: Number(d.unavailableCount) || 0,
+        items: Array.isArray(d.items) ? d.items.map((item: Record<string, unknown>) => ({
+          name: String(item.name || ''),
+          group: String(item.group || ''),
+          reason: String(item.reason || ''),
+        })) : [],
+        resolved: Boolean(d.resolved),
+        created_at: toSeconds(d.createdAt),
+        updated_at: toSeconds(d.updatedAt),
+      });
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, 'channel_alerts');
+  }
+
   return {
     hasCloud: true,
     snapshot: {
@@ -1704,6 +1851,7 @@ export async function loadFullCloudSnapshot(): Promise<{
       channelHealth,
       users,
       invites,
+      alerts,
       adminSettings,
     },
   };
