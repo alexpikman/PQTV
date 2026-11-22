@@ -3017,7 +3017,12 @@ app.post('/api/stream/check', async (req, res) => {
     ignoreTlsErrors,
   });
   channelHealth.recordCheckResult(url, result);
-  noCacheJson(res, result);
+  const meta = bumpRevisionForResponse(res, 'health_update', url, {
+    action: 'stream_check',
+    status: result.status || 'unknown',
+  });
+  if (!meta) return;
+  noCacheJson(res, Object.assign({}, result, { revision: meta.revision }));
 });
 
 // Unified Channel Health, Viewer Exclusion & Global Remediation API
@@ -3031,7 +3036,9 @@ app.post('/api/health/check', async (req, res) => {
   const force = req.body?.force !== false;
   if (channelName) {
     const out = await channelHealth.checkChannel(channelName, force);
-    noCacheJson(res, out, out.ok ? 200 : 404);
+    const meta = bumpRevisionForResponse(res, 'health_update', channelName, { action: 'channel_check' });
+    if (!meta) return;
+    noCacheJson(res, Object.assign({}, out, { revision: meta.revision }), 200);
     return;
   }
   if (url) {
@@ -3045,7 +3052,9 @@ app.post('/api/health/check', async (req, res) => {
       force,
     });
     channelHealth.recordCheckResult(url, r);
-    noCacheJson(res, { ok: true, result: r });
+    const meta = bumpRevisionForResponse(res, 'health_update', url, { action: 'url_check' });
+    if (!meta) return;
+    noCacheJson(res, { ok: true, result: r, revision: meta.revision });
     return;
   }
   noCacheJson(res, { error: 'Укажите channelName или url' }, 400);
@@ -3056,7 +3065,15 @@ app.post('/api/health/check-all', async (req, res) => {
   const force = req.body?.force !== false;
   const limit = Number(req.body?.limit) || 800;
   const out = await channelHealth.checkAllPlaylistChannels({ playlist, force, limit });
-  noCacheJson(res, out);
+  const meta = bumpRevisionForResponse(res, 'health_update', playlist || 'all_channels', {
+    action: 'check_all',
+    checked: out.checked,
+    online: out.online,
+    offline: out.offline,
+    unknown: out.unknown,
+  });
+  if (!meta) return;
+  noCacheJson(res, Object.assign({}, out, { revision: meta.revision }));
 });
 
 app.get('/api/health/candidates', async (req, res) => {
@@ -3599,9 +3616,17 @@ app.post('/api/catalog/check', async (req, res) => {
     noCacheJson(res, { ok: false, error: result.error || 'Не удалось сохранить результаты проверки' }, 500);
     return;
   }
+  const meta = bumpRevisionForResponse(res, 'reconcile', 'catalog_check', {
+    checked: result.checked,
+    online: result.online,
+    offline: result.offline,
+    unknown: result.unknown,
+  });
+  if (!meta) return;
   noCacheJson(res, {
     ok: true,
     output: `Checked ${result.checked} streams: ${result.online} online, ${result.offline} offline, ${result.unknown} unknown`,
+    revision: meta.revision,
   });
 });
 

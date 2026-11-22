@@ -160,10 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
         '/api/cloud/hydrate',
         '/api/users/sync-from-firebase',
         '/api/invites/sync-from-firebase',
-        '/api/stream/check',
         '/api/stream/parse',
-        '/api/catalog/check',
-        '/api/health/check',
         '/api/health/probe-candidates',
         '/api/github/token/test',
     ];
