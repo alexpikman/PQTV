@@ -824,6 +824,8 @@ document.addEventListener('DOMContentLoaded', () => {
             id: raw.id ?? raw.code ?? raw.url ?? '',
             order: Number(raw.order ?? originalIndex),
             code: String(raw.code || ''),
+            type: String(raw.type || ''),
+            sourceId: String(raw.sourceId || raw.source_id || ''),
             name: String(raw.name || raw.title || ''),
             group: String(raw.group || raw.groupTitle || ''),
             logo: String(raw.logo || ''),
@@ -848,7 +850,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function getSharedChannelTableState(key, defaultSort) {
         if (!sharedChannelTableStates[key]) {
-            sharedChannelTableStates[key] = { sortKey: defaultSort || 'name', sortDirection: 'asc', filters: {} };
+            sharedChannelTableStates[key] = { sortKey: defaultSort || 'name', sortDirection: 'asc', filters: {}, offset: 0, pageSize: 100 };
         }
         return sharedChannelTableStates[key];
     }
@@ -897,40 +899,62 @@ document.addEventListener('DOMContentLoaded', () => {
                 escapeHtml(column.key) + '" value="' + value + '" placeholder="Фильтр"></th>';
         }).join('');
 
-        const body = sortedRows.length
-            ? sortedRows.map((row, index) => {
+        const pageSize = Math.max(10, Math.min(500, Number(options.pageSize) || state.pageSize || 100));
+        const pageCount = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+        state.pageSize = pageSize;
+        state.offset = Math.min(Math.max(0, Number(state.offset) || 0), (pageCount - 1) * pageSize);
+        const pageRows = sortedRows.slice(state.offset, state.offset + pageSize);
+        const body = pageRows.length
+            ? pageRows.map((row, index) => {
                 const cells = columns.map((column) => '<td>' +
-                    (typeof column.render === 'function' ? column.render(row, index) : escapeHtml(String(row[column.key] ?? '—'))) +
+                    (typeof column.render === 'function' ? column.render(row, state.offset + index) : escapeHtml(String(row[column.key] ?? '—'))) +
                     '</td>').join('');
                 const rowClass = typeof options.rowClass === 'function' ? options.rowClass(row) : '';
                 const rowAttrs = typeof options.rowAttributes === 'function' ? options.rowAttributes(row) : '';
-                return '<tr data-idx="' + row.originalIndex + '" data-shared-index="' + index + '"' + (rowClass ? ' class="' + escapeHtml(rowClass) + '"' : '') +
+                const sharedIndex = state.offset + index;
+                return '<tr data-idx="' + row.originalIndex + '" data-shared-index="' + sharedIndex + '"' + (rowClass ? ' class="' + escapeHtml(rowClass) + '"' : '') +
                     (rowAttrs ? ' ' + rowAttrs : '') + '>' + cells + '</tr>';
             }).join('')
             : '<tr><td class="shared-table-empty" colspan="' + columns.length + '">' +
                 escapeHtml(options.emptyText || 'Каналов по выбранному фильтру не найдено') + '</td></tr>';
+        const pagination = sortedRows.length > pageSize
+            ? '<div class="shared-table-pagination" style="display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:10px 2px;color:var(--muted);font-size:12px;">' +
+                '<span>Показано ' + (state.offset + 1) + '–' + Math.min(state.offset + pageSize, sortedRows.length) + ' из ' + sortedRows.length + '</span>' +
+                '<button type="button" class="btn btn-secondary" data-shared-page="-1"' + (state.offset <= 0 ? ' disabled' : '') + '>Назад</button>' +
+                '<span>Страница ' + (Math.floor(state.offset / pageSize) + 1) + ' / ' + pageCount + '</span>' +
+                '<button type="button" class="btn btn-secondary" data-shared-page="1"' + (state.offset + pageSize >= sortedRows.length ? ' disabled' : '') + '>Далее</button>' +
+              '</div>'
+            : '';
 
         container.innerHTML = (options.beforeHtml || '') +
             '<table class="ch-table shared-channel-table"><thead><tr>' + header +
             '</tr><tr class="shared-table-filters">' + filters +
-            '</tr></thead><tbody>' + body + '</tbody></table>';
+            '</tr></thead><tbody>' + body + '</tbody></table>' + pagination;
 
         container.querySelectorAll('[data-shared-sort]').forEach((button) => {
             button.addEventListener('click', () => {
                 const key = button.dataset.sharedSort;
                 if (state.sortKey === key) state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
                 else { state.sortKey = key; state.sortDirection = 'asc'; }
+                state.offset = 0;
                 if (typeof options.onChange === 'function') options.onChange();
             });
         });
         container.querySelectorAll('[data-shared-filter]').forEach((control) => {
             const update = () => {
                 state.filters[control.dataset.sharedFilter] = control.value || '';
+                state.offset = 0;
                 if (typeof options.onChange === 'function') options.onChange();
             };
             control.addEventListener('change', update);
             if (control.tagName === 'INPUT') control.addEventListener('keydown', (event) => {
                 if (event.key === 'Enter') update();
+            });
+        });
+        container.querySelectorAll('[data-shared-page]').forEach((button) => {
+            button.addEventListener('click', () => {
+                state.offset = Math.max(0, state.offset + Number(button.dataset.sharedPage || 0) * pageSize);
+                renderSharedChannelTable(container, rows, columns, options);
             });
         });
         if (typeof options.onRowClick === 'function') {
