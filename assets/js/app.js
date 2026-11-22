@@ -688,29 +688,35 @@ document.addEventListener('DOMContentLoaded', () => {
     })();
 
     // ===== NAV =====
-    const navBtnEpg = document.getElementById('nav-btn-epg');
-    const navBtnHealth = document.getElementById('nav-btn-health');
-    if (navBtnEditor) navBtnEditor.onclick = () => { showScreen('editor'); setNavActive('editor'); };
-    if (navBtnParser) navBtnParser.onclick = () => { showScreen('parser'); setNavActive('parser'); };
-    if (navBtnSources) navBtnSources.onclick = () => { showScreen('sources'); setNavActive('sources'); loadSources(); };
-    if (navBtnEpg) navBtnEpg.onclick = () => { showScreen('epg'); setNavActive('epg'); loadEpg(); };
-    const navBtnUsers = document.getElementById('nav-btn-users');
-    if (navBtnUsers) navBtnUsers.onclick = () => { showScreen('users'); setNavActive('users'); loadUsers(); };
-    const navBtnCatalog = document.getElementById('nav-btn-catalog');
-    if (navBtnCatalog) navBtnCatalog.onclick = () => { showScreen('catalog'); setNavActive('catalog'); loadCatalog(); };
-    if (navBtnHealth) navBtnHealth.onclick = () => { showScreen('health'); setNavActive('health'); loadHealthOverview(); };
-    const navBtnSettings = document.getElementById('nav-btn-settings');
-    if (navBtnSettings) navBtnSettings.onclick = () => {
-        showScreen('settings');
-        setNavActive('settings');
-    };
+    document.querySelectorAll('[data-nav-group-toggle]').forEach((toggle) => {
+        toggle.addEventListener('click', () => {
+            const group = toggle.closest('[data-nav-group]');
+            if (!group) return;
+            const isOpen = group.classList.toggle('is-open');
+            toggle.setAttribute('aria-expanded', String(isOpen));
+        });
+    });
+
+    document.querySelectorAll('.nav-item[data-screen]').forEach((button) => {
+        button.addEventListener('click', () => {
+            const screen = button.dataset.screen;
+            if (!screen) return;
+            showScreen(screen);
+            setNavActive(screen);
+            if (screen === 'sources') loadSources();
+            if (screen === 'epg') loadEpg();
+            if (screen === 'users') loadUsers();
+            if (screen === 'catalog') loadCatalog();
+            if (screen === 'health') loadHealthOverview();
+        });
+    });
 
     document.querySelectorAll('[data-settings-target]').forEach((button) => {
         button.addEventListener('click', () => {
             const target = button.dataset.settingsTarget;
             if (!['streaming', 'ui-settings', 'apk'].includes(target)) return;
             showScreen(target);
-            setNavActive('settings');
+            setNavActive(target);
             if (target === 'streaming' && typeof window.__refreshStreamingControls === 'function') {
                 void window.__refreshStreamingControls();
             }
@@ -719,6 +725,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (target === 'apk') loadApkReleases();
         });
+    });
+
+    const navCategories = document.getElementById('nav-btn-categories');
+    if (navCategories) navCategories.addEventListener('click', () => {
+        setNavActive('categories');
+        const openCategories = document.getElementById('btn-open-categories-global');
+        if (openCategories) openCategories.click();
     });
 
     document.querySelectorAll('[data-settings-back]').forEach((button) => {
@@ -730,7 +743,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function setNavActive(name) {
         document.querySelectorAll('.nav-item').forEach(b => {
-            b.classList.toggle('active', b.dataset.screen === name);
+            const itemTarget = b.dataset.screen || b.dataset.settingsTarget || (b.dataset.navAction === 'categories' ? 'categories' : '');
+            b.classList.toggle('active', itemTarget === name);
         });
     }
 
