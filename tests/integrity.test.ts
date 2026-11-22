@@ -424,6 +424,32 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     assert.equal(b.find((channel) => channel.url.endsWith('/only-b.m3u8'))?.group, 'Keep');
   });
 
+  test('9b. Catalog applies column filters and sorting before server pagination', async () => {
+    resetTempWorkspace();
+
+    await api('/api/playlists', 'POST', { name: 'catalog_table' });
+    await api('/api/channels/save', 'POST', {
+      playlist: 'catalog_table',
+      channels: [
+        { name: 'Alpha News', group: 'Новости', logo: '', url: 'https://example.com/alpha.m3u8', tvg_id: 'alpha' },
+        { name: 'Beta Sports', group: 'Спорт', logo: '', url: 'https://example.com/beta.m3u8', tvg_id: 'beta' },
+      ],
+    });
+
+    const filtered = await api<{ channels: Array<{ name: string }> }>(
+      '/api/catalog/channels?limit=1&offset=0&sortBy=name&sortDir=desc&tableFilters=' +
+      encodeURIComponent(JSON.stringify({ name: 'sports' }))
+    );
+    assert.equal(filtered.status, 200);
+    assert.deepEqual(filtered.data.channels.map((channel) => channel.name), ['Beta Sports']);
+
+    const first = await api<{ channels: Array<{ name: string }> }>(
+      '/api/catalog/channels?limit=1&offset=0&sortBy=name&sortDir=asc'
+    );
+    assert.equal(first.status, 200);
+    assert.deepEqual(first.data.channels.map((channel) => channel.name), ['Alpha News']);
+  });
+
   test('10. Write/save failure surfaces HTTP 500 error instead of returning fake ok:true', async () => {
     resetTempWorkspace();
 
