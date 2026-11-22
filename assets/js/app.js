@@ -210,20 +210,24 @@ document.addEventListener('DOMContentLoaded', () => {
         if (statusEl) statusEl.textContent = 'Firestore: сохранение изменений...';
         try {
             await cloudFn();
-            if (typeof revision === 'number' && typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
-                const patched = await window.PQTVFirebase.bumpCloudManifestRevision(revision, manifestExtra);
+            let targetRevision = revision;
+            if (typeof targetRevision !== 'number') {
+                const cloudMeta = await window.PQTVFirebase.getCloudManifestStatus();
+                targetRevision = Math.max(0, Number(cloudMeta && cloudMeta.revision) || 0) + 1;
+            }
+            if (typeof window.PQTVFirebase.bumpCloudManifestRevision === 'function') {
+                const patched = await window.PQTVFirebase.bumpCloudManifestRevision(targetRevision, manifestExtra);
                 if (!patched) {
-                    return await syncCloudDatabase();
+                    const synced = await syncCloudDatabase();
+                    if (!synced) await restoreCloudSnapshotAfterFailedWrite();
+                    return synced;
                 }
             }
-            if (statusEl) {
-                statusEl.textContent = typeof revision === 'number'
-                    ? `Firestore: база синхронизирована (rev ${revision})`
-                    : 'Firestore: база синхронизирована';
-            }
+            if (statusEl) statusEl.textContent = `Firestore: база синхронизирована (rev ${targetRevision})`;
             return true;
         } catch (err) {
             console.error('Targeted Firestore sync failed:', err);
+            await restoreCloudSnapshotAfterFailedWrite();
             const msg = (err && err.message) ? err.message : 'Ошибка записи в Firestore';
             showUsersError(msg);
             showToast('Не удалось сохранить в Firestore: ' + msg, 'err');
@@ -364,6 +368,13 @@ document.addEventListener('DOMContentLoaded', () => {
             isMutation || (methodUpper === 'GET' && url.startsWith('/api/source/rebuild'))
         );
 
+        if (isMutation && !fbAdminConnected && !url.startsWith('/api/cloud/hydrate')) {
+            return {
+                ok: false,
+                _httpStatus: 503,
+                error: 'Изменения заблокированы: сначала подключите Firestore под учётной записью администратора',
+            };
+        }
         if (requiresCloudWrite && !fbAdminConnected) {
             return {
                 ok: false,
@@ -578,10 +589,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     window.__syncStreamingForm(currentStreamingSettings);
                 }
                 if (fbAdminConnected && window.PQTVFirebase) {
-                    await syncTargetedCloudUpdate(
+                    const cloudSaved = await syncTargetedCloudUpdate(
                         saved.revision,
                         () => window.PQTVFirebase.saveStreamingSettingsToCloud(currentStreamingSettings)
                     );
+                    if (!cloudSaved) throw new Error('Firestore не подтвердил сохранение настроек передачи потока');
                 }
                 showToast('Настройки передачи потока сохранены', 'ok');
             } catch (err) {
@@ -2356,10 +2368,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 serverRev = res.revision;
             }
             if (fbAdminConnected && inv.inFirestore && window.PQTVFirebase) {
-                await syncTargetedCloudUpdate(
+                const cloudSaved = await syncTargetedCloudUpdate(
                     serverRev,
                     () => window.PQTVFirebase.deleteInviteAdmin(inv.id)
                 );
+                if (!cloudSaved) return;
             }
             await loadUsers();
             showToast('Приглашение удалено', 'ok');
@@ -2385,11 +2398,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 serverRev = res.revision;
             }
             if (fbAdminConnected && u.inFirestore && window.PQTVFirebase) {
-                await syncTargetedCloudUpdate(
+                const cloudSaved = await syncTargetedCloudUpdate(
                     serverRev,
                     () => window.PQTVFirebase.deleteUserAdmin(u.id),
                     { removeLocalUserId: u.id }
                 );
+                if (!cloudSaved) return;
             }
             await loadUsers();
         } catch (err) {
@@ -2440,13 +2454,13 @@ document.addEventListener('DOMContentLoaded', () => {
                             })
                         );
                     }
+                    if (!syncedCloud) {
+                        showUserFormError('Firestore не подтвердил сохранение приглашения. Изменения не приняты.');
+                        return;
+                    }
                     closeUserPopup();
                     await loadUsers();
-                    if (syncedCloud) {
-                        showToast(`Приглашение для ${email} сохранено в Firestore`, 'ok');
-                    } else if (!fbAdminConnected) {
-                        showToast(`Приглашение для ${email} сохранено локально (войдите в Google для облачного сохранения)`, 'info');
-                    }
+                    showToast(`Приглашение для ${email} сохранено в Firestore`, 'ok');
                     return;
                 }
 
@@ -2488,14 +2502,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     );
                 }
 
+                if (!syncedCloud) {
+                    showUserFormError('Firestore не подтвердил сохранение пользователя. Изменения не приняты.');
+                    return;
+                }
                 closeUserPopup();
                 await loadUsers();
                 loadPlaylists();
-                if (syncedCloud) {
-                    showToast('Пользователь сохранён в Firestore', 'ok');
-                } else if (!fbAdminConnected) {
-                    showToast('Сохранено локально (войдите в Google в разделе «Пользователи», чтобы не сбросилось при обновлении)', 'info');
-                }
+                showToast('Пользователь сохранён в Firestore', 'ok');
             } catch (err) {
                 showUserFormError((err && err.message) ? err.message : 'Ошибка сохранения');
             }
@@ -5109,10 +5123,14 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     uiState = Object.assign({}, uiState, res.settings || uiState);
                     syncUiControlsAndPreview();
                     if (fbAdminConnected && window.PQTVFirebase) {
-                        await syncTargetedCloudUpdate(
+                        const cloudSaved = await syncTargetedCloudUpdate(
                             res.revision,
                             () => window.PQTVFirebase.saveUiSettingsToCloud(uiState)
                         );
+                        if (!cloudSaved) {
+                            showToast('Firestore не подтвердил сохранение настроек интерфейса', 'err');
+                            return;
+                        }
                     }
                     showToast('Настройки интерфейса сохранены', 'ok');
                 } finally {
@@ -5241,10 +5259,14 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 fillForm(currentStreamingSettings);
                 if (typeof window.__syncStreamingTopbar === 'function') window.__syncStreamingTopbar();
                 if (fbAdminConnected && window.PQTVFirebase) {
-                    await syncTargetedCloudUpdate(
+                    const cloudSaved = await syncTargetedCloudUpdate(
                         res.revision,
                         () => window.PQTVFirebase.saveStreamingSettingsToCloud(currentStreamingSettings)
                     );
+                    if (!cloudSaved) {
+                        showToast('Firestore не подтвердил сохранение настроек потока', 'err');
+                        return;
+                    }
                 }
                 showToast('Настройки потока, буферизации и прокси сохранены', 'ok');
             } finally {
