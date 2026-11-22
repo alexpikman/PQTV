@@ -19,7 +19,17 @@ import {
   where,
   writeBatch,
 } from 'firebase/firestore';
-import { auth, db, googleProvider, handleFirestoreError, OperationType } from './firebaseApp.js';
+import {
+  activeFirebaseConfig,
+  auth,
+  db,
+  firebaseEnabled,
+  googleProvider,
+  handleFirestoreError,
+  OperationType,
+  probeFirebaseConfig,
+  storageMode,
+} from './firebaseApp.js';
 import blueprint from '../../firebase-blueprint.json' with { type: 'json' };
 import {
   bumpCloudManifestRevision,
@@ -285,7 +295,30 @@ async function ensureViewerProfileInFirestore(user: User): Promise<void> {
 }
 
 export const PQTVFirebase = {
+  isEnabled(): boolean {
+    return firebaseEnabled;
+  },
+
+  getStorageMode(): 'local' | 'cloud' {
+    return storageMode;
+  },
+
+  getActiveProjectInfo() {
+    if (!firebaseEnabled || !activeFirebaseConfig) return null;
+    return {
+      projectId: String(activeFirebaseConfig.projectId || ''),
+      firestoreDatabaseId: String(activeFirebaseConfig.firestoreDatabaseId || '(default)'),
+      authDomain: String(activeFirebaseConfig.authDomain || ''),
+    };
+  },
+
+  probeFirebaseConfig,
+
   onAuthChange(cb: (info: { signedIn: boolean; isAdmin: boolean; uid: string; email: string; displayName: string }) => void) {
+    if (!firebaseEnabled || !auth) {
+      cb({ signedIn: false, isAdmin: false, uid: '', email: '', displayName: '' });
+      return () => {};
+    }
     return onAuthStateChanged(auth, async (user) => {
       if (!user) {
         cb({ signedIn: false, isAdmin: false, uid: '', email: '', displayName: '' });
@@ -308,6 +341,7 @@ export const PQTVFirebase = {
   },
 
   async isSignedInAdmin(): Promise<boolean> {
+    if (!firebaseEnabled || !auth) return false;
     try {
       return await isCurrentUserAdmin(auth.currentUser);
     } catch {
@@ -316,12 +350,16 @@ export const PQTVFirebase = {
   },
 
   async getAdminIdToken(): Promise<string | null> {
+    if (!firebaseEnabled || !auth) return null;
     const user = auth.currentUser;
     if (!user || !(await isCurrentUserAdmin(user))) return null;
     return user.getIdToken();
   },
 
   async signInWithGoogle() {
+    if (!firebaseEnabled || !auth) {
+      throw new Error('Облачное хранилище Firebase отключено (активен локальный режим)');
+    }
     const cred = await signInWithPopup(auth, googleProvider);
     const admin = await isCurrentUserAdmin(cred.user);
     return {
@@ -334,6 +372,7 @@ export const PQTVFirebase = {
   },
 
   async signOutGoogle() {
+    if (!firebaseEnabled || !auth) return;
     await signOut(auth);
   },
 
@@ -347,6 +386,9 @@ export const PQTVFirebase = {
     pendingApproval?: boolean;
     error?: string;
   }> {
+    if (!firebaseEnabled || !auth) {
+      return { ok: false, error: 'Облачное хранилище Firebase отключено (активен локальный режим)' };
+    }
     const cred = await signInWithPopup(auth, googleProvider);
     const user = cred.user;
     if (!user.emailVerified) {
@@ -391,6 +433,9 @@ export const PQTVFirebase = {
     onData: (users: FirestoreUserRecord[]) => void,
     onError: (err: Error) => void
   ) {
+    if (!firebaseEnabled || !db) {
+      return () => {};
+    }
     const path = 'users';
     const q = query(collection(db, 'users'));
     return onSnapshot(
@@ -511,6 +556,9 @@ export const PQTVFirebase = {
     onData: (invites: FirestoreInviteRecord[]) => void,
     onError: (err: Error) => void
   ) {
+    if (!firebaseEnabled || !db) {
+      return () => {};
+    }
     const path = 'invites';
     const q = query(collection(db, 'invites'));
     return onSnapshot(
@@ -710,6 +758,9 @@ export const PQTVFirebase = {
     onData: (alerts: FirestoreChannelAlertRecord[]) => void,
     onError: (err: Error) => void
   ) {
+    if (!firebaseEnabled || !db) {
+      return () => {};
+    }
     const path = 'channel_alerts';
     const q = query(collection(db, 'channel_alerts'));
     return onSnapshot(
@@ -812,6 +863,9 @@ export const PQTVFirebase = {
     pendingApproval?: boolean;
     error?: string;
   }> {
+    if (!firebaseEnabled || !auth || !db) {
+      return { ok: false, error: 'Облачное хранилище Firebase отключено (активен локальный режим)' };
+    }
     const cred = await signInWithPopup(auth, googleProvider);
     const user = cred.user;
     if (!user.emailVerified) {
@@ -854,6 +908,7 @@ export const PQTVFirebase = {
   },
 
   async pingViewerPresence(): Promise<void> {
+    if (!firebaseEnabled || !auth || !db) return;
     const user = auth.currentUser;
     if (!user) return;
     try {
@@ -905,6 +960,9 @@ export const PQTVFirebase = {
     uiSettings: CloudUiSettings | null;
     apkState: CloudApkState | null;
   }> {
+    if (!firebaseEnabled || !auth || !db) {
+      return { restored: 0, streaming: null, uiSettings: null, apkState: null };
+    }
     const user = auth.currentUser;
     if (!user || !user.emailVerified) {
       return { restored: 0, streaming: null, uiSettings: null, apkState: null };

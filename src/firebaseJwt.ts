@@ -1,6 +1,5 @@
-import fs from 'node:fs';
-import path from 'node:path';
 import crypto from 'node:crypto';
+import { getActiveFirebaseConfig, getBundledFirebaseConfig } from './storageSettings.js';
 
 interface CertCache {
   certs: Record<string, string>;
@@ -10,9 +9,9 @@ interface CertCache {
 let certCache: CertCache | null = null;
 
 function getFirebaseProjectId(): string {
-  const cfgPath = path.resolve(process.cwd(), 'firebase-applet-config.json');
-  const raw = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-  return String(raw.projectId || '');
+  const active = getActiveFirebaseConfig();
+  if (active?.projectId) return active.projectId;
+  return getBundledFirebaseConfig()?.projectId || '';
 }
 
 async function fetchGoogleCerts(): Promise<Record<string, string>> {
