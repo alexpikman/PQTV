@@ -29,7 +29,7 @@ function lockKey(): string {
   return config.dataDir;
 }
 
-export async function createPlaylistUnified(name: string): Promise<UnifiedOpResult> {
+export async function createPlaylistUnified(name: string, enabled = true): Promise<UnifiedOpResult> {
   return withAsyncWriteLock(lockKey(), async () => {
     const clean = name.replace(/\.m3u$/i, '').trim();
     if (!storage.isValidFilename(clean)) {
@@ -38,21 +38,117 @@ export async function createPlaylistUnified(name: string): Promise<UnifiedOpResu
     if (storage.playlistExists(clean)) {
       return { ok: false, status: 400, error: 'Плейлист уже существует' };
     }
-    if (!storage.createPlaylist(clean)) {
+    if (!storage.createPlaylist(clean, enabled)) {
       return { ok: false, status: 500, error: storage.getLastError() || 'Не удалось создать плейлист' };
     }
     const rec = catalogStore.reconcile({ save: true });
     if (!rec.persisted) {
       return { ok: false, status: 500, error: rec.error || 'Не удалось обновить каталог' };
     }
-    const meta = stateLifecycle.bumpRevision('playlist_create', clean);
+    const meta = stateLifecycle.bumpRevision('playlist_create', clean, { enabled: Boolean(enabled) });
     const revisionFailure = revisionWriteFailure(meta);
     if (revisionFailure) {
-      storage.deletePlaylist(clean);
+      storage.deletePlaylist(clean, { skipBackup: true });
       catalogStore.reconcile({ save: true });
       return revisionFailure;
     }
-    return { ok: true, status: 200, playlist: clean, revision: meta.revision };
+    return { ok: true, status: 200, playlist: clean, enabled: Boolean(enabled), revision: meta.revision };
+  });
+}
+
+export async function updatePlaylistUnified(
+  oldName: string,
+  newName: string,
+  enabled?: boolean
+): Promise<UnifiedOpResult> {
+  return withAsyncWriteLock(lockKey(), async () => {
+    const cleanOld = String(oldName || '').replace(/\.m3u$/i, '').trim();
+    const cleanNew = String(newName || '').replace(/\.m3u$/i, '').trim() || cleanOld;
+    if (!storage.isValidFilename(cleanOld) || !storage.isValidFilename(cleanNew)) {
+      return { ok: false, status: 400, error: 'Некорректное имя плейлиста' };
+    }
+    if (!storage.playlistExists(cleanOld)) {
+      return { ok: false, status: 404, error: 'Плейлист не найден' };
+    }
+    const renamed = cleanNew !== cleanOld;
+    if (renamed && storage.playlistExists(cleanNew)) {
+      return { ok: false, status: 400, error: 'Плейлист с таким именем уже существует' };
+    }
+
+    let updatedUsers = 0;
+    let updatedInvites = 0;
+    let updatedUserIds: string[] = [];
+    let updatedInviteIds: string[] = [];
+
+    if (renamed) {
+      if (!storage.renamePlaylist(cleanOld, cleanNew)) {
+        return {
+          ok: false,
+          status: 500,
+          error: storage.getLastError() || 'Не удалось переименовать плейлист',
+        };
+      }
+      const userRename = userAuth.renamePlaylistReferences(cleanOld, cleanNew);
+      if (!userRename.ok) {
+        storage.renamePlaylist(cleanNew, cleanOld);
+        return {
+          ok: false,
+          status: 500,
+          error: userRename.error || 'Не удалось обновить ссылки пользователей при переименовании',
+        };
+      }
+      updatedUsers = userRename.updatedUsers;
+      updatedInvites = userRename.updatedInvites;
+      updatedUserIds = userRename.updatedUserIds;
+      updatedInviteIds = userRename.updatedInviteIds;
+    }
+
+    if (enabled !== undefined) {
+      if (!storage.setPlaylistEnabled(cleanNew, Boolean(enabled))) {
+        return {
+          ok: false,
+          status: 500,
+          error: storage.getLastError() || 'Не удалось обновить статус активности плейлиста',
+        };
+      }
+    }
+
+    if (renamed) {
+      const rec = catalogStore.reconcile({ save: true });
+      if (!rec.persisted) {
+        return {
+          ok: false,
+          status: 500,
+          error: rec.error || 'Плейлист переименован, но не удалось обновить каталог',
+        };
+      }
+      channelHealth.pruneOrphanedIssues();
+    }
+
+    const currentEnabled = storage.isPlaylistEnabled(cleanNew);
+    const meta = stateLifecycle.bumpRevision('playlist_update', cleanNew, {
+      oldName: cleanOld,
+      renamed,
+      enabled: currentEnabled,
+      updatedUsers,
+      updatedInvites,
+    });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
+
+    return {
+      ok: true,
+      status: 200,
+      oldName: cleanOld,
+      playlist: cleanNew,
+      enabled: currentEnabled,
+      renamed,
+      updatedUsers,
+      updatedInvites,
+      updatedUserIds,
+      updatedInviteIds,
+      revision: meta.revision,
+    };
   });
 }
 
@@ -670,6 +766,7 @@ export async function hydrateStateUnified(body: {
   revision?: number | null;
   force?: boolean;
   playlists?: Record<string, Partial<Channel>[]>;
+  playlistMeta?: Record<string, { enabled?: boolean }>;
   replacePlaylists?: boolean;
   sources?: SourceItem[];
   sourceIndex?: Record<string, { items?: Array<{ name: string; url: string; logo: string; group: string; tvg_id: string; userAgent?: string; referer?: string; origin?: string }>; updatedAt?: number }>;
@@ -759,6 +856,12 @@ export async function hydrateStateUnified(body: {
         }
         playlistsHydrated++;
       }
+    }
+
+    if (body.playlistMeta && typeof body.playlistMeta === 'object') {
+      storage.hydratePlaylistMeta(body.playlistMeta);
+    } else if (body.playlists && typeof body.playlists === 'object' && replacePlaylists) {
+      storage.hydratePlaylistMeta({});
     }
 
     // 2. Authoritative Sources (StreamParser)

@@ -109,8 +109,8 @@ a:hover { text-decoration: underline; }
 /* ========== APP SHELL (full width) ========== */
 .app-shell {
   width: 100%; max-width: none; min-width: 0;
-  height: 100vh; margin: 0;
-  display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh; margin: 0;
+  display: flex; flex-direction: column; overflow: hidden;
   background: linear-gradient(180deg, rgba(19,26,43,0.6), rgba(10,14,26,0.6));
   box-shadow: 0 0 80px rgba(0,0,0,0.5);
 }
@@ -188,12 +188,19 @@ a:hover { text-decoration: underline; }
 
 /* ========== COLUMNS ========== */
 .col-left {
-  width: 260px; min-width: 260px; background: rgba(15,20,36,0.5);
-  border-right: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0;
+  width: 264px; min-width: 264px; min-height: 0;
+  background: rgba(15,20,36,0.5);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; flex-shrink: 0;
+  overflow-y: auto; overflow-x: hidden;
 }
-.col-center { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+.col-center {
+  flex: 1; display: flex; flex-direction: column;
+  overflow: hidden; min-width: 0; min-height: 0; position: relative;
+}
 .col-right {
-  width: 360px; min-width: 360px; background: rgba(15,20,36,0.5);
+  width: 360px; min-width: 360px; min-height: 0;
+  background: rgba(15,20,36,0.5);
   border-left: 1px solid var(--border); display: flex; flex-direction: column;
   flex-shrink: 0; overflow-y: auto; padding: 20px;
 }
@@ -204,22 +211,24 @@ a:hover { text-decoration: underline; }
 }
 .col-header h2 { font-size: 17px; font-weight: 700; letter-spacing: -0.01em; color: #fff; }
 .col-header h3 { font-size: 15px; font-weight: 700; color: #fff; }
-.header-actions { display: flex; gap: 8px; align-items: center; }
+.header-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* ========== SIDE NAV ========== */
 .side-nav {
-  padding: 16px 14px; border-bottom: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 6px;
+  padding: 12px; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
 }
 .nav-item {
-  display: flex; align-items: center; gap: 12px;
-  padding: 10px 14px; border-radius: var(--radius-sm);
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 11px; border-radius: var(--radius-sm);
   background: transparent; border: 1px solid transparent;
-  color: var(--text-dim); font-size: 13.5px; font-weight: 500;
+  color: var(--text-dim); font-size: 13px; font-weight: 500;
   cursor: pointer; transition: var(--t); text-align: left; width: 100%;
 }
-.nav-item svg { width: 17px; height: 17px; flex-shrink: 0; }
+.nav-item svg { width: 16px; height: 16px; flex-shrink: 0; opacity: 0.85; }
+.nav-item.active svg { opacity: 1; color: var(--primary-hi); }
 .nav-item:hover { background: var(--surface-2); color: #fff; }
+.nav-item:hover svg { opacity: 1; }
 .nav-item.active {
   background: linear-gradient(135deg, rgba(99,102,241,0.18), rgba(139,92,246,0.1));
   color: var(--primary-hi); border-color: rgba(99,102,241,0.3);
@@ -228,22 +237,20 @@ a:hover { text-decoration: underline; }
 .nav-group { gap: 3px; }
 .nav-group-toggle {
   width: 100%; display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; padding: 9px 10px; border: 1px solid transparent; border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-dim); font-size: 11px; font-weight: 750;
-  letter-spacing: .055em; text-align: left; cursor: pointer; transition: var(--t);
+  gap: 8px; padding: 7px 10px; border: 1px solid transparent; border-radius: var(--radius-sm);
+  background: transparent; color: var(--muted); font-size: 10.5px; font-weight: 800;
+  letter-spacing: .07em; text-align: left; cursor: pointer; transition: var(--t);
 }
 .nav-group-toggle:hover { color: #fff; background: rgba(30,39,64,.65); }
 .nav-group-chevron { font-size: 16px; line-height: 1; transition: transform var(--t); }
 .nav-group:not(.is-open) .nav-group-chevron { transform: rotate(-90deg); }
 .nav-submenu { display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
 .nav-group:not(.is-open) .nav-submenu { display: none; }
-.nav-submenu .nav-item { gap: 8px; padding: 8px 9px; font-size: 12px; }
-.nav-number { flex: 0 0 27px; color: var(--muted); font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.nav-submenu .nav-item.active .nav-number { color: var(--primary-hi); }
+.nav-submenu .nav-item { gap: 10px; padding: 8px 10px; font-size: 12.5px; }
 .nav-standalone { margin-top: 3px; padding-top: 7px; border-top: 1px solid var(--border); }
 
 /* ========== PLAYLIST LIST ========== */
-.nav-list { list-style: none; overflow-y: auto; flex: 1; padding: 6px 10px 16px; }
+.nav-list { list-style: none; overflow-y: auto; flex: 1 0 auto; min-height: 120px; padding: 6px 10px 16px; }
 .nav-list li {
   padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer;
   display: flex; justify-content: space-between; align-items: center; gap: 8px;
@@ -271,7 +278,7 @@ a:hover { text-decoration: underline; }
 .nav-list li .del-pl svg { width: 14px; height: 14px; }
 
 .sidebar-head {
-  padding: 14px 18px 6px; display: flex;
+  padding: 14px 18px 6px; display: flex; flex-shrink: 0;
   align-items: center; justify-content: space-between;
 }
 .sidebar-head span {
@@ -280,13 +287,101 @@ a:hover { text-decoration: underline; }
 }
 
 /* ========== SCREENS ========== */
-#screen-editor, #screen-parser, #screen-sources, #screen-epg, #screen-users, #screen-apk, #screen-ui-settings, #screen-streaming {
-  display: flex; flex-direction: column; height: 100%;
+#screen-playlists,
+#screen-editor,
+#screen-parser,
+#screen-sources,
+#screen-epg,
+#screen-users,
+#screen-catalog,
+#screen-health,
+#screen-settings,
+#screen-apk,
+#screen-ui-settings,
+#screen-streaming {
+  display: flex; flex-direction: column; height: 100%; min-height: 0;
   padding: 24px; box-sizing: border-box; overflow: hidden;
 }
-#channels-container, #parse-results-container, #sources-list-container,
-#epg-list-container, #users-list-container, #apk-screen-scroll, #ui-settings-scroll {
-  flex: 1; overflow-y: auto; margin-top: 14px; padding-right: 4px;
+
+#screen-catalog > .catalog-stats,
+#screen-catalog > .catalog-actions,
+#screen-catalog > .catalog-toolbar,
+#screen-parser > .search-bar,
+#screen-parser > .target-select,
+#screen-parser > .info-box,
+#screen-parser > .progress-box,
+#screen-users > #firebase-users-bar,
+#screen-users > #users-fb-error,
+#screen-health > #health-stats,
+#screen-health > #health-diag-breakdown,
+#screen-health > .catalog-toolbar,
+#screen-editor > #direct-link-box,
+.col-center > div > p {
+  flex-shrink: 0;
+}
+
+#playlists-list-container,
+#channels-container,
+#parse-results-container,
+#sources-list-container,
+#epg-list-container,
+#users-screen-scroll,
+#catalog-list-container,
+#health-list-container,
+#apk-screen-scroll,
+#ui-settings-scroll,
+#streaming-settings-scroll,
+#screen-settings > .ui-settings-grid {
+  flex: 1; min-height: 0; overflow-y: auto; margin-top: 14px; padding-right: 4px;
+}
+
+#screen-settings > .ui-settings-grid {
+  margin-top: 0;
+  align-content: start;
+}
+
+.editor-col-header {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.editor-header-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.editor-playlist-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.editor-playlist-select {
+  min-width: 200px;
+  max-width: 300px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+  cursor: pointer;
+}
+.editor-playlist-select:focus {
+  border-color: var(--primary);
+}
+.playlists-table .playlist-link-a {
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 12px;
+  color: var(--primary-hi);
+  word-break: break-all;
+}
+.playlist-action-btn {
+  padding: 6px 10px;
+  font-size: 12px;
 }
 
 .apk-grid {
@@ -678,12 +773,8 @@ a:hover { text-decoration: underline; }
 
 
 /* ========== CATALOG (База каналов) ========== */
-#screen-catalog {
-    display: flex; flex-direction: column; height: 100%;
-    padding: 24px; box-sizing: border-box; overflow: hidden;
-}
 #screen-catalog #catalog-list-container {
-    flex: 1; width: 100%; overflow-y: auto; overflow-x: auto; margin-top: 14px; padding-right: 0;
+    width: 100%; overflow-x: auto; padding-right: 0;
 }
 
 .catalog-stats {
@@ -1051,20 +1142,6 @@ a:hover { text-decoration: underline; }
 }
 
 /* ========== CHANNEL HEALTH & REMEDIATION SCREEN ========== */
-#screen-health {
-    display: flex;
-    flex-direction: column;
-    height: 100%;
-    padding: 24px;
-    box-sizing: border-box;
-    overflow: hidden;
-}
-#screen-health #health-list-container {
-    flex: 1;
-    overflow-y: auto;
-    margin-top: 12px;
-    padding-right: 4px;
-}
 .health-diag-strip {
     display: flex;
     flex-wrap: wrap;
@@ -1600,13 +1677,13 @@ a:hover { text-decoration: underline; }
 
 /* ========== ADMIN SIDEBAR NAVIGATION GROUPS ========== */
 .side-nav {
-  gap: 14px;
-  padding: 14px 12px 12px;
+  gap: 8px;
+  padding: 12px 10px 10px;
 }
 .nav-section {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
 }
 .nav-section-label {
   padding: 0 12px 5px;
@@ -1618,6 +1695,6 @@ a:hover { text-decoration: underline; }
   text-transform: uppercase;
 }
 .nav-section .nav-item {
-  min-height: 38px;
-  padding: 9px 12px;
+  min-height: 36px;
+  padding: 8px 10px;
 }

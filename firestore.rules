@@ -197,11 +197,12 @@ service cloud.firestore {
 
     function isValidPlaylistMeta(data) {
       return data.keys().hasAll(['id', 'name', 'channelCount', 'chunkCount', 'createdAt', 'updatedAt'])
-        && data.keys().hasOnly(['id', 'name', 'channelCount', 'chunkCount', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['id', 'name', 'channelCount', 'chunkCount', 'enabled', 'createdAt', 'updatedAt'])
         && isValidPlaylistId(data.id)
         && data.name is string && data.name.size() >= 1 && data.name.size() <= 64
         && data.channelCount is int && data.channelCount >= 0 && data.channelCount <= 50000
         && data.chunkCount is int && data.chunkCount >= 0 && data.chunkCount <= 300
+        && (!('enabled' in data) || data.enabled is bool)
         && data.createdAt is timestamp
         && data.updatedAt is timestamp;
     }
@@ -840,7 +841,7 @@ service cloud.firestore {
         && incoming().id == existing().id
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'channelCount', 'chunkCount', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'channelCount', 'chunkCount', 'enabled', 'updatedAt']);
       allow delete: if isAdmin() && isValidPlaylistId(playlistId);
 
       match /chunks/{chunkId} {

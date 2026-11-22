@@ -45,6 +45,7 @@ import { getUiSettings, trySaveUiSettings } from './src/uiSettings.js';
 import { stateLifecycle } from './src/stateLifecycle.js';
 import {
   createPlaylistUnified,
+  updatePlaylistUnified,
   savePlaylistChannelsUnified,
   applyCategoryToPlaylistUrlsUnified,
   deletePlaylistUnified,
@@ -587,6 +588,10 @@ app.get('/playlist/:filename', (req, res, next) => {
   const filePath = storage.getPlaylistPath(cleanName);
   if (!fs.existsSync(filePath)) {
     res.status(404).send('Playlist not found');
+    return;
+  }
+  if (!storage.isPlaylistEnabled(cleanName)) {
+    res.status(403).send('Playlist is disabled');
     return;
   }
   const active = parseM3uFile(filePath).filter((ch) => !ch.paused);
@@ -1287,6 +1292,9 @@ app.get('/watch/api/channels', (req, res) => {
         reason: 'Назначенный плейлист не найден на сервере',
         playlist: pl,
       });
+      continue;
+    }
+    if (!storage.isPlaylistEnabled(pl)) {
       continue;
     }
     const chans = parseM3uFile(filePath);
@@ -2545,6 +2553,7 @@ app.get('/api/cloud/export', (_req, res) => {
     ok: true,
     revision: stateLifecycle.getStateMeta().revision,
     playlists,
+    playlistMeta: storage.getPlaylistMetaMap(),
     sources: StreamParser.getSources(),
     sourceIndex: StreamParser.exportIndexData(),
     epgSources: EpgParser.getSources(),
@@ -2944,15 +2953,55 @@ app.post('/api/auth/set-password', (req, res) => {
 
 // Playlists, backups & channels
 app.get('/api/playlists', (_req, res) => {
+  const playlists = storage.getPlaylists();
+  const metaMap = storage.getPlaylistMetaMap();
+  const users = userAuth.all();
+  const invites = userAuth.allInvites();
+
+  const items = playlists.map((name) => {
+    const channels = parseM3uFile(storage.getPlaylistPath(name));
+    let userCount = 0;
+    for (const u of users) {
+      const assigned = Array.isArray(u.playlists)
+        ? u.playlists.map((p) => String(p || '').replace(/\.m3u$/i, '').trim())
+        : [];
+      if (assigned.includes(name)) userCount++;
+    }
+    for (const inv of invites) {
+      if (inv.claimed_uid) continue;
+      const assigned = Array.isArray(inv.playlists)
+        ? inv.playlists.map((p) => String(p || '').replace(/\.m3u$/i, '').trim())
+        : [];
+      if (assigned.includes(name)) userCount++;
+    }
+    return {
+      name,
+      link: `/playlist/${name}.m3u`,
+      channelCount: channels.length,
+      userCount,
+      enabled: metaMap[name]?.enabled !== false,
+    };
+  });
+
   noCacheJson(res, {
-    playlists: storage.getPlaylists(),
+    playlists,
+    items,
     revision: stateLifecycle.getStateMeta().revision,
   });
 });
 
 app.post('/api/playlists', async (req, res) => {
   const name = String(req.body?.name || '').trim();
-  const out = await createPlaylistUnified(name);
+  const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : true;
+  const out = await createPlaylistUnified(name, enabled);
+  noCacheJson(res, out, out.status);
+});
+
+app.post('/api/playlists/update', async (req, res) => {
+  const oldName = String(req.body?.oldName || req.body?.name || '').trim();
+  const name = String(req.body?.name || oldName).trim();
+  const enabled = req.body?.enabled !== undefined ? Boolean(req.body.enabled) : undefined;
+  const out = await updatePlaylistUnified(oldName, name, enabled);
   noCacheJson(res, out, out.status);
 });
 

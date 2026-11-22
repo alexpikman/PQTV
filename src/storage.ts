@@ -23,8 +23,90 @@ export class Storage {
     return config.backupDir;
   }
 
+  private get playlistMetaFile(): string {
+    return path.join(config.dataDir, 'playlist_meta.json');
+  }
+
   private get maxBackups(): number {
     return config.maxBackups;
+  }
+
+  private readPlaylistMetaRaw(): Record<string, { enabled?: boolean }> {
+    if (!fs.existsSync(this.playlistMetaFile)) return {};
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.playlistMetaFile, 'utf-8'));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, { enabled?: boolean }>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private writePlaylistMetaRaw(meta: Record<string, { enabled: boolean }>): boolean {
+    const dir = path.dirname(this.playlistMetaFile);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    const content = JSON.stringify(meta, null, 2);
+    const res = atomicWriteFileSync(this.playlistMetaFile, content);
+    if (!res.ok) {
+      this.lastError = res.error || 'Ошибка сохранения метаданных плейлистов';
+      return false;
+    }
+    return true;
+  }
+
+  getPlaylistMetaMap(): Record<string, { enabled: boolean }> {
+    const raw = this.readPlaylistMetaRaw();
+    const out: Record<string, { enabled: boolean }> = {};
+    for (const pl of this.getPlaylists()) {
+      out[pl] = { enabled: raw[pl]?.enabled !== false };
+    }
+    return out;
+  }
+
+  isPlaylistEnabled(name: string): boolean {
+    const clean = String(name || '').replace(/\.m3u$/i, '').trim();
+    if (!clean) return false;
+    const raw = this.readPlaylistMetaRaw();
+    return raw[clean]?.enabled !== false;
+  }
+
+  setPlaylistEnabled(name: string, enabled: boolean): boolean {
+    this.lastError = '';
+    const clean = String(name || '').replace(/\.m3u$/i, '').trim();
+    if (!this.isValidFilename(clean)) {
+      this.lastError = 'Некорректное имя плейлиста';
+      return false;
+    }
+    const raw = this.readPlaylistMetaRaw();
+    const next: Record<string, { enabled: boolean }> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (this.isValidFilename(k)) {
+        next[k] = { enabled: v?.enabled !== false };
+      }
+    }
+    next[clean] = { enabled: Boolean(enabled) };
+    return this.writePlaylistMetaRaw(next);
+  }
+
+  hydratePlaylistMeta(meta: unknown): boolean {
+    const next: Record<string, { enabled: boolean }> = {};
+    if (meta && typeof meta === 'object' && !Array.isArray(meta)) {
+      for (const [rawKey, val] of Object.entries(meta as Record<string, unknown>)) {
+        const clean = String(rawKey || '').replace(/\.m3u$/i, '').trim();
+        if (!this.isValidFilename(clean)) continue;
+        const entry = val && typeof val === 'object' ? (val as { enabled?: unknown }) : {};
+        next[clean] = { enabled: entry.enabled !== false };
+      }
+    }
+    for (const pl of this.getPlaylists()) {
+      if (!(pl in next)) {
+        next[pl] = { enabled: true };
+      }
+    }
+    return this.writePlaylistMetaRaw(next);
   }
 
   getLastError(): string {
@@ -77,7 +159,7 @@ export class Storage {
     }
   }
 
-  createPlaylist(name: string): boolean {
+  createPlaylist(name: string, enabled = true): boolean {
     this.lastError = '';
     if (!this.isValidFilename(name)) {
       this.lastError = 'Некорректное имя плейлиста';
@@ -92,6 +174,71 @@ export class Storage {
     if (!res.ok) {
       this.lastError = res.error || 'Ошибка создания файла плейлиста';
       return false;
+    }
+    if (!this.setPlaylistEnabled(name, enabled)) {
+      safeUnlinkSync(filePath);
+      return false;
+    }
+    return true;
+  }
+
+  renamePlaylist(oldName: string, newName: string): boolean {
+    this.lastError = '';
+    const cleanOld = String(oldName || '').replace(/\.m3u$/i, '').trim();
+    const cleanNew = String(newName || '').replace(/\.m3u$/i, '').trim();
+    if (!this.isValidFilename(cleanOld) || !this.isValidFilename(cleanNew)) {
+      this.lastError = 'Некорректное имя плейлиста';
+      return false;
+    }
+    if (cleanOld === cleanNew) return true;
+    const oldPath = this.getPlaylistPath(cleanOld);
+    const newPath = this.getPlaylistPath(cleanNew);
+    if (!fs.existsSync(oldPath)) {
+      this.lastError = 'Плейлист не найден';
+      return false;
+    }
+    if (fs.existsSync(newPath)) {
+      this.lastError = 'Плейлист с таким именем уже существует';
+      return false;
+    }
+    try {
+      fs.renameSync(oldPath, newPath);
+    } catch (err) {
+      this.lastError = err instanceof Error ? err.message : 'Ошибка переименования плейлиста';
+      return false;
+    }
+
+    const raw = this.readPlaylistMetaRaw();
+    const wasEnabled = raw[cleanOld]?.enabled !== false;
+    delete raw[cleanOld];
+    const nextMeta: Record<string, { enabled: boolean }> = {};
+    for (const [k, v] of Object.entries(raw)) {
+      if (this.isValidFilename(k)) {
+        nextMeta[k] = { enabled: v?.enabled !== false };
+      }
+    }
+    nextMeta[cleanNew] = { enabled: wasEnabled };
+    this.writePlaylistMetaRaw(nextMeta);
+
+    if (fs.existsSync(this.backupDir)) {
+      try {
+        const prefix = `${cleanOld}.m3u.`;
+        for (const f of fs.readdirSync(this.backupDir)) {
+          if (f.startsWith(prefix) && f.endsWith('.bak')) {
+            const suffix = f.slice(prefix.length);
+            try {
+              fs.renameSync(
+                path.join(this.backupDir, f),
+                path.join(this.backupDir, `${cleanNew}.m3u.${suffix}`)
+              );
+            } catch {
+              // ignore non-critical backup rename error
+            }
+          }
+        }
+      } catch {
+        // ignore backup dir scan error
+      }
     }
     return true;
   }
@@ -114,6 +261,17 @@ export class Storage {
     if (!res.ok) {
       this.lastError = res.error || 'Ошибка удаления файла плейлиста';
       return false;
+    }
+    const raw = this.readPlaylistMetaRaw();
+    if (name in raw) {
+      delete raw[name];
+      const nextMeta: Record<string, { enabled: boolean }> = {};
+      for (const [k, v] of Object.entries(raw)) {
+        if (this.isValidFilename(k)) {
+          nextMeta[k] = { enabled: v?.enabled !== false };
+        }
+      }
+      this.writePlaylistMetaRaw(nextMeta);
     }
     return true;
   }

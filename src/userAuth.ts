@@ -485,6 +485,102 @@ export class UserAuth {
     };
   }
 
+  renamePlaylistReferences(
+    oldName: string,
+    newName: string
+  ): {
+    ok: boolean;
+    updatedUsers: number;
+    updatedInvites: number;
+    updatedUserIds: string[];
+    updatedInviteIds: string[];
+    error?: string;
+  } {
+    const fromName = normalizePlaylistName(oldName);
+    const toName = normalizePlaylistName(newName);
+    if (!fromName || !toName || fromName === toName) {
+      return { ok: true, updatedUsers: 0, updatedInvites: 0, updatedUserIds: [], updatedInviteIds: [] };
+    }
+
+    const users = this.all();
+    const updatedUserIds: string[] = [];
+    for (const u of users) {
+      const prev = Array.isArray(u.playlists) ? u.playlists : [];
+      const seen = new Set<string>();
+      const next: string[] = [];
+      let changed = false;
+      for (const rawPl of prev) {
+        const clean = normalizePlaylistName(rawPl);
+        if (!clean) continue;
+        const mapped = clean === fromName ? toName : clean;
+        if (clean === fromName) changed = true;
+        if (!seen.has(mapped)) {
+          seen.add(mapped);
+          next.push(mapped);
+        }
+      }
+      if (changed || next.length !== prev.length || next.some((v, idx) => v !== prev[idx])) {
+        if (changed) {
+          u.playlists = next;
+          updatedUserIds.push(u.id);
+        }
+      }
+    }
+    if (updatedUserIds.length > 0 && !this.saveAll(users)) {
+      return {
+        ok: false,
+        updatedUsers: 0,
+        updatedInvites: 0,
+        updatedUserIds: [],
+        updatedInviteIds: [],
+        error: this.lastError || 'Ошибка обновления плейлиста у пользователей',
+      };
+    }
+
+    const invites = this.allInvites();
+    const updatedInviteIds: string[] = [];
+    const now = Math.floor(Date.now() / 1000);
+    for (const inv of invites) {
+      const prev = Array.isArray(inv.playlists) ? inv.playlists : [];
+      const seen = new Set<string>();
+      const next: string[] = [];
+      let changed = false;
+      for (const rawPl of prev) {
+        const clean = normalizePlaylistName(rawPl);
+        if (!clean) continue;
+        const mapped = clean === fromName ? toName : clean;
+        if (clean === fromName) changed = true;
+        if (!seen.has(mapped)) {
+          seen.add(mapped);
+          next.push(mapped);
+        }
+      }
+      if (changed) {
+        inv.playlists = next;
+        inv.updated_at = now;
+        updatedInviteIds.push(inv.id);
+      }
+    }
+    if (updatedInviteIds.length > 0 && !this.saveAllInvites(invites)) {
+      return {
+        ok: false,
+        updatedUsers: updatedUserIds.length,
+        updatedInvites: 0,
+        updatedUserIds,
+        updatedInviteIds: [],
+        error: this.lastError || 'Ошибка обновления плейлиста у приглашений',
+      };
+    }
+
+    return {
+      ok: true,
+      updatedUsers: updatedUserIds.length,
+      updatedInvites: updatedInviteIds.length,
+      updatedUserIds,
+      updatedInviteIds,
+    };
+  }
+
   /**
    * Prunes any stale playlist assignments from users & invites against currently active playlists.
    */

@@ -5,6 +5,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const selectedChannelUrls = new Set();
     let cloudCategories = [];
     let playlistsList = [];
+    let playlistsMetaItems = [];
+    let activeScreen = 'catalog';
+    let usersLoadedOnce = false;
     const streamStatusCache = {};
 
     let parseContext = { playlist: null, channelIndex: -1, channelName: '' };
@@ -292,12 +295,16 @@ document.addEventListener('DOMContentLoaded', () => {
     async function refreshAdminAfterCloudHydrate() {
         await loadPlaylists();
         if (currentPlaylist && playlistsList.includes(currentPlaylist)) {
+            syncEditorPlaylistControls(currentPlaylist);
             await loadChannels();
         } else if (playlistsList.length > 0) {
-            await selectPlaylist(playlistsList[0]);
+            currentPlaylist = playlistsList[0];
+            syncEditorPlaylistControls(currentPlaylist);
+            await loadChannels();
         } else {
             currentPlaylist = null;
             channelsData = [];
+            syncEditorPlaylistControls(null);
             renderChannels();
         }
         await Promise.all([
@@ -310,6 +317,7 @@ document.addEventListener('DOMContentLoaded', () => {
             loadAdminAlerts().catch(() => {}),
             typeof loadHealthOverview === 'function' ? loadHealthOverview().catch(() => {}) : Promise.resolve(),
         ]);
+        renderPlaylistsTable();
         catalogOffset = 0;
         await loadCatalogChannels().catch(() => {});
         if (typeof window.__refreshStreamingControls === 'function') {
@@ -701,8 +709,17 @@ document.addEventListener('DOMContentLoaded', () => {
         button.addEventListener('click', () => {
             const screen = button.dataset.screen;
             if (!screen) return;
+            if (screen === 'editor' && !currentPlaylist && playlistsList.length > 0) {
+                void selectPlaylist(playlistsList[0]);
+                return;
+            }
             showScreen(screen);
             setNavActive(screen);
+            if (screen === 'playlists') void loadPlaylists();
+            if (screen === 'editor') {
+                syncEditorPlaylistControls(currentPlaylist);
+                if (currentPlaylist) void loadChannels();
+            }
             if (screen === 'sources') loadSources();
             if (screen === 'epg') loadEpg();
             if (screen === 'users') loadUsers();
@@ -727,14 +744,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    const navPlaylists = document.getElementById('nav-btn-playlists');
-    if (navPlaylists) navPlaylists.addEventListener('click', () => {
-        showScreen('editor');
-        setNavActive('playlist-list');
-        const playlistList = document.getElementById('playlist-list');
-        if (playlistList) playlistList.scrollIntoView({ block: 'nearest' });
-    });
-
     const navCategories = document.getElementById('nav-btn-categories');
     if (navCategories) navCategories.addEventListener('click', () => {
         setNavActive('categories');
@@ -756,7 +765,29 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function resetAllScrollOffsets(activeEl) {
+        try {
+            document.documentElement.scrollTop = 0;
+            document.body.scrollTop = 0;
+            const appLayout = document.querySelector('.app-layout');
+            if (appLayout) appLayout.scrollTop = 0;
+            const colCenter = document.querySelector('.col-center');
+            if (colCenter) colCenter.scrollTop = 0;
+            if (activeEl) {
+                activeEl.scrollTop = 0;
+                activeEl.querySelectorAll(
+                    '#playlists-list-container, #channels-container, #parse-results-container, ' +
+                    '#sources-list-container, #epg-list-container, #users-screen-scroll, ' +
+                    '#catalog-list-container, #health-list-container, #apk-screen-scroll, ' +
+                    '#ui-settings-scroll, #streaming-settings-scroll, .ui-settings-grid'
+                ).forEach((child) => { child.scrollTop = 0; });
+            }
+        } catch {}
+    }
+
     function showScreen(name) {
+        activeScreen = name;
+        const screenPlaylists = document.getElementById('screen-playlists');
         const screenEpg = document.getElementById('screen-epg');
         const screenUsers = document.getElementById('screen-users');
         const screenCatalog = document.getElementById('screen-catalog');
@@ -765,45 +796,182 @@ document.addEventListener('DOMContentLoaded', () => {
         const screenStreaming = document.getElementById('screen-streaming');
         const screenUiSettings = document.getElementById('screen-ui-settings');
         const screenApk = document.getElementById('screen-apk');
-        [screenEditor, screenParser, screenSources, screenEpg, screenUsers, screenCatalog, screenHealth, screenSettings, screenStreaming, screenUiSettings, screenApk].forEach(s => s && s.classList.add('hidden'));
-        if (name === 'editor' && screenEditor) screenEditor.classList.remove('hidden');
-        if (name === 'parser' && screenParser) screenParser.classList.remove('hidden');
-        if (name === 'sources' && screenSources) screenSources.classList.remove('hidden');
-        if (name === 'epg' && screenEpg) screenEpg.classList.remove('hidden');
-        if (name === 'users' && screenUsers) screenUsers.classList.remove('hidden');
-        if (name === 'catalog' && screenCatalog) screenCatalog.classList.remove('hidden');
-        if (name === 'health' && screenHealth) screenHealth.classList.remove('hidden');
-        if (name === 'settings' && screenSettings) screenSettings.classList.remove('hidden');
-        if (name === 'streaming' && screenStreaming) screenStreaming.classList.remove('hidden');
-        if (name === 'ui-settings' && screenUiSettings) screenUiSettings.classList.remove('hidden');
-        if (name === 'apk' && screenApk) screenApk.classList.remove('hidden');
+        const screensMap = {
+            playlists: screenPlaylists,
+            editor: screenEditor,
+            parser: screenParser,
+            sources: screenSources,
+            epg: screenEpg,
+            users: screenUsers,
+            catalog: screenCatalog,
+            health: screenHealth,
+            settings: screenSettings,
+            streaming: screenStreaming,
+            'ui-settings': screenUiSettings,
+            apk: screenApk,
+        };
+        Object.values(screensMap).forEach((s) => s && s.classList.add('hidden'));
+        const targetScreen = screensMap[name] || null;
+        if (targetScreen) targetScreen.classList.remove('hidden');
         if (name !== 'editor') closeForm();
         if (name !== 'apk' && typeof stopGithubPoll === 'function') stopGithubPoll();
+        resetAllScrollOffsets(targetScreen);
     }
 
     // ===== PLAYLISTS =====
-    async function loadPlaylists() {
-        if (!plListEl) return;
-        const res = await apiRequest('/api/playlists');
-        playlistsList = Array.isArray(res.playlists) ? res.playlists : [];
-        plListEl.innerHTML = '';
-
+    function populateEditorPlaylistSelect() {
+        const selectEl = document.getElementById('editor-playlist-select');
+        if (!selectEl) return;
+        selectEl.innerHTML = '';
         if (playlistsList.length === 0) {
-            plListEl.innerHTML = '<li style="padding:10px; color:#666; font-size:12px; cursor:default;">Нет плейлистов</li>';
-        } else {
-            playlistsList.forEach(name => {
-                const li = document.createElement('li');
-                if (name === currentPlaylist) li.classList.add('active');
-                li.innerHTML = `
-                    <span class="pl-name">${I.file}<span>${escapeHtml(name)}.m3u</span></span>
-                    <button type="button" class="del-pl" title="Удалить плейлист">${I.trash}</button>
-                `;
-                li.querySelector('.pl-name').onclick = () => selectPlaylist(name);
-                li.querySelector('.del-pl').onclick = (e) => { e.stopPropagation(); deletePlaylist(name); };
-                plListEl.appendChild(li);
+            const opt = document.createElement('option');
+            opt.value = '';
+            opt.textContent = '— нет плейлистов —';
+            selectEl.appendChild(opt);
+            selectEl.disabled = true;
+            return;
+        }
+        selectEl.disabled = false;
+        if (!currentPlaylist || !playlistsList.includes(currentPlaylist)) {
+            const placeholder = document.createElement('option');
+            placeholder.value = '';
+            placeholder.textContent = '— выберите плейлист —';
+            selectEl.appendChild(placeholder);
+        }
+        playlistsList.forEach((name) => {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name + '.m3u';
+            selectEl.appendChild(opt);
+        });
+        selectEl.value = (currentPlaylist && playlistsList.includes(currentPlaylist)) ? currentPlaylist : '';
+    }
+
+    function syncEditorPlaylistControls(name) {
+        const hasPl = Boolean(name && playlistsList.includes(name));
+        if (plTitleEl) plTitleEl.textContent = hasPl ? (name + '.m3u') : 'Список каналов плейлиста';
+        if (btnAddCh) btnAddCh.classList.toggle('hidden', !hasPl);
+        if (btnCheckAll) btnCheckAll.classList.toggle('hidden', !hasPl);
+        if (btnDeletePl) btnDeletePl.classList.toggle('hidden', !hasPl);
+        if (directBox) directBox.classList.toggle('hidden', !hasPl);
+        if (hasPl && directUrl) {
+            const url = `${window.location.origin}/playlist/${encodeURIComponent(name)}.m3u`;
+            directUrl.href = url;
+            directUrl.textContent = url;
+        }
+        populateEditorPlaylistSelect();
+    }
+
+    function computePlaylistUserCount(name, fallbackCount) {
+        if (!usersLoadedOnce) return Number(fallbackCount) || 0;
+        let count = 0;
+        for (const u of usersData) {
+            if (Array.isArray(u && u.playlists) && u.playlists.includes(name)) count++;
+        }
+        for (const inv of invitesData) {
+            if (inv && !(inv.claimedUid || inv.claimed_uid) && Array.isArray(inv.playlists) && inv.playlists.includes(name)) count++;
+        }
+        return count;
+    }
+
+    function renderPlaylistsTable() {
+        const container = document.getElementById('playlists-list-container');
+        if (!container) return;
+        if (!Array.isArray(playlistsMetaItems) || playlistsMetaItems.length === 0) {
+            container.innerHTML = '<p class="placeholder-text">Плейлистов пока нет. Нажмите «Добавить плейлист», чтобы создать первый.</p>';
+            return;
+        }
+
+        let html = `<table class="ch-table playlists-table"><thead><tr>
+            <th>Наименование</th>
+            <th>Ссылка</th>
+            <th style="width:160px;">Количество каналов</th>
+            <th style="width:185px;">Количество пользователей</th>
+            <th style="width:120px;">Активный</th>
+            <th style="width:200px; text-align:right;">Действия</th>
+        </tr></thead><tbody>`;
+
+        playlistsMetaItems.forEach((item) => {
+            const name = String(item.name || '');
+            const linkPath = String(item.link || `/playlist/${encodeURIComponent(name)}.m3u`);
+            const chCount = Number(item.channelCount) || 0;
+            const userCount = computePlaylistUserCount(name, item.userCount);
+            const isEnabled = item.enabled !== false;
+            html += `<tr data-playlist-row="${escapeHtml(name)}" style="cursor:pointer;" title="Нажмите, чтобы открыть каналы плейлиста">
+                <td><b>${escapeHtml(name)}</b></td>
+                <td><a class="playlist-link-a" href="${escapeHtml(linkPath)}" target="_blank" rel="noopener noreferrer">${escapeHtml(linkPath)}</a></td>
+                <td>${chCount}</td>
+                <td>${userCount}</td>
+                <td><span class="health-badge ${isEnabled ? 'ok' : 'muted'}">${isEnabled ? 'Активный' : 'Отключён'}</span></td>
+                <td style="text-align:right; white-space:nowrap;">
+                    <button type="button" class="btn btn-secondary playlist-action-btn" data-pl-edit="${escapeHtml(name)}">Изменить</button>
+                    <button type="button" class="btn btn-danger playlist-action-btn" data-pl-delete="${escapeHtml(name)}">Удалить</button>
+                </td>
+            </tr>`;
+        });
+        html += '</tbody></table>';
+        container.innerHTML = html;
+
+        container.querySelectorAll('tr[data-playlist-row]').forEach((row) => {
+            row.addEventListener('click', (e) => {
+                if (e.target && e.target.closest('a, button, input, select')) return;
+                const name = row.dataset.playlistRow;
+                if (name) void selectPlaylist(name);
             });
+        });
+
+        container.querySelectorAll('[data-pl-edit]').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const name = btn.dataset.plEdit;
+                const item = playlistsMetaItems.find((x) => x.name === name) || { name, enabled: true };
+                openPlaylistModal('edit', item);
+            });
+        });
+
+        container.querySelectorAll('[data-pl-delete]').forEach((btn) => {
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const name = btn.dataset.plDelete;
+                if (name) void deletePlaylist(name);
+            });
+        });
+    }
+
+    async function loadPlaylists() {
+        const res = await apiRequest('/api/playlists');
+        playlistsList = Array.isArray(res && res.playlists) ? res.playlists : [];
+        playlistsMetaItems = Array.isArray(res && res.items)
+            ? res.items
+            : playlistsList.map((name) => ({
+                name,
+                link: `/playlist/${encodeURIComponent(name)}.m3u`,
+                channelCount: 0,
+                userCount: 0,
+                enabled: true,
+            }));
+
+        if (plListEl) {
+            plListEl.innerHTML = '';
+            if (playlistsList.length === 0) {
+                plListEl.innerHTML = '<li style="padding:10px; color:#666; font-size:12px; cursor:default;">Нет плейлистов</li>';
+            } else {
+                playlistsList.forEach(name => {
+                    const li = document.createElement('li');
+                    if (name === currentPlaylist) li.classList.add('active');
+                    li.innerHTML = `
+                        <span class="pl-name">${I.file}<span>${escapeHtml(name)}.m3u</span></span>
+                        <button type="button" class="del-pl" title="Удалить плейлист">${I.trash}</button>
+                    `;
+                    li.querySelector('.pl-name').onclick = () => selectPlaylist(name);
+                    li.querySelector('.del-pl').onclick = (e) => { e.stopPropagation(); deletePlaylist(name); };
+                    plListEl.appendChild(li);
+                });
+            }
         }
         populateParseTargetSelect();
+        syncEditorPlaylistControls(currentPlaylist);
+        renderPlaylistsTable();
     }
 
     function populateParseTargetSelect() {
@@ -829,13 +997,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function selectPlaylist(name) {
         currentPlaylist = name;
-        if (plTitleEl) plTitleEl.textContent = name + '.m3u';
-        if (btnAddCh) btnAddCh.classList.remove('hidden');
-        if (btnCheckAll) btnCheckAll.classList.remove('hidden');
-        if (btnDeletePl) btnDeletePl.classList.remove('hidden');
-        if (directBox) directBox.classList.remove('hidden');
-        const url = `${window.location.origin}/playlist/${encodeURIComponent(name)}.m3u`;
-        if (directUrl) { directUrl.href = url; directUrl.textContent = url; }
+        syncEditorPlaylistControls(name);
         closeForm();
         showScreen('editor');
         setNavActive('editor');
@@ -1930,8 +2092,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         invitesData = mergedInv;
 
+        usersLoadedOnce = true;
         renderUsers();
         renderInvites();
+        if (typeof renderPlaylistsTable === 'function') renderPlaylistsTable();
     }
 
     async function loadUsers() {
@@ -3286,20 +3450,141 @@ document.addEventListener('DOMContentLoaded', () => {
         return true;
     }
 
-    // ===== PLAYLIST ACTIONS =====
-    const btnAddPl = document.getElementById('btn-add-playlist');
-    if (btnAddPl) {
-        btnAddPl.onclick = async () => {
-            const name = await uiPrompt('Имя нового плейлиста (латиница, цифры, _ -):', '', 'Новый плейлист');
-            if (!name) return;
-            const res = await apiRequest('/api/playlists', 'POST', { name });
-            if (res && res.ok) {
-                await selectPlaylist(name);
-                loadCatalogPlaylists().catch(() => {});
-            } else {
-                showToast((res && res.error) || 'Ошибка создания плейлиста', 'err');
+    // ===== PLAYLIST ACTIONS & MODAL =====
+    const playlistModal = document.getElementById('playlist-modal');
+    const playlistModalBackdrop = document.getElementById('playlist-modal-backdrop');
+    const playlistModalClose = document.getElementById('playlist-modal-close');
+    const playlistModalCancel = document.getElementById('playlist-modal-cancel');
+    const playlistModalForm = document.getElementById('playlist-modal-form');
+    const playlistModalTitle = document.getElementById('playlist-modal-title');
+    const playlistModalOldName = document.getElementById('playlist-modal-old-name');
+    const playlistModalName = document.getElementById('playlist-modal-name');
+    const playlistModalEnabled = document.getElementById('playlist-modal-enabled');
+    const playlistModalError = document.getElementById('playlist-modal-error');
+    const playlistModalSubmit = document.getElementById('playlist-modal-submit');
+
+    function closePlaylistModal() {
+        if (playlistModal) playlistModal.classList.add('hidden');
+        if (playlistModalError) {
+            playlistModalError.textContent = '';
+            playlistModalError.classList.add('hidden');
+        }
+    }
+
+    function openPlaylistModal(mode = 'create', item = null) {
+        if (!playlistModal || !playlistModalForm) return;
+        const isEdit = mode === 'edit' && item && item.name;
+        if (playlistModalTitle) playlistModalTitle.textContent = isEdit ? 'Изменить плейлист' : 'Добавить плейлист';
+        if (playlistModalOldName) playlistModalOldName.value = isEdit ? String(item.name) : '';
+        if (playlistModalName) playlistModalName.value = isEdit ? String(item.name) : '';
+        if (playlistModalEnabled) playlistModalEnabled.checked = isEdit ? item.enabled !== false : true;
+        if (playlistModalSubmit) playlistModalSubmit.textContent = isEdit ? 'Сохранить' : 'Создать';
+        if (playlistModalError) {
+            playlistModalError.textContent = '';
+            playlistModalError.classList.add('hidden');
+        }
+        playlistModal.classList.remove('hidden');
+        if (playlistModalName) {
+            setTimeout(() => {
+                playlistModalName.focus();
+                if (isEdit) playlistModalName.select();
+            }, 20);
+        }
+    }
+
+    if (playlistModalBackdrop) playlistModalBackdrop.onclick = closePlaylistModal;
+    if (playlistModalClose) playlistModalClose.onclick = closePlaylistModal;
+    if (playlistModalCancel) playlistModalCancel.onclick = closePlaylistModal;
+
+    if (playlistModalForm) {
+        playlistModalForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const oldName = playlistModalOldName ? String(playlistModalOldName.value || '').trim() : '';
+            const rawName = playlistModalName ? String(playlistModalName.value || '').trim().replace(/\.m3u$/i, '') : '';
+            const enabled = playlistModalEnabled ? Boolean(playlistModalEnabled.checked) : true;
+
+            const showErr = (msg) => {
+                if (!playlistModalError) return;
+                playlistModalError.textContent = msg;
+                playlistModalError.classList.remove('hidden');
+            };
+
+            if (!rawName || !/^[a-zA-Z0-9_.-]{1,64}$/.test(rawName)) {
+                showErr('Имя должно содержать только латиницу, цифры, _, - или . (1–64 символа)');
+                return;
             }
-        };
+
+            if (playlistModalError) playlistModalError.classList.add('hidden');
+            if (playlistModalSubmit) playlistModalSubmit.disabled = true;
+
+            try {
+                if (!oldName) {
+                    const res = await apiRequest('/api/playlists', 'POST', { name: rawName, enabled });
+                    if (!res || !res.ok) {
+                        showErr((res && res.error) || 'Ошибка создания плейлиста');
+                        return;
+                    }
+                    const createdName = res.playlist || rawName;
+                    closePlaylistModal();
+                    showToast(`Плейлист ${createdName}.m3u создан`, 'ok');
+                    await loadPlaylists();
+                    loadCatalogPlaylists().catch(() => {});
+                    if (activeScreen === 'editor') {
+                        await selectPlaylist(createdName);
+                    }
+                    if (fbAdminConnected) void syncCloudDatabase();
+                } else {
+                    const res = await apiRequest('/api/playlists/update', 'POST', { oldName, name: rawName, enabled });
+                    if (!res || !res.ok) {
+                        showErr((res && res.error) || 'Ошибка изменения плейлиста');
+                        return;
+                    }
+                    const nextName = res.playlist || rawName;
+                    const renamed = oldName !== nextName;
+                    closePlaylistModal();
+                    if (currentPlaylist === oldName) {
+                        currentPlaylist = nextName;
+                    }
+                    await Promise.all([
+                        loadPlaylists(),
+                        loadUsers().catch(() => {}),
+                        loadCatalog().catch(() => {}),
+                        typeof loadHealthOverview === 'function' ? loadHealthOverview().catch(() => {}) : Promise.resolve(),
+                    ]);
+                    if (currentPlaylist === nextName) {
+                        syncEditorPlaylistControls(nextName);
+                        if (activeScreen === 'editor') await loadChannels();
+                    }
+                    if (fbAdminConnected && window.PQTVFirebase) {
+                        if (renamed && typeof window.PQTVFirebase.deletePlaylistFromCloud === 'function') {
+                            await window.PQTVFirebase.deletePlaylistFromCloud(oldName).catch(() => {});
+                        }
+                        await syncCloudDatabase().catch(() => {});
+                    }
+                    showToast(renamed ? `Плейлист переименован в ${nextName}.m3u` : `Плейлист ${nextName}.m3u обновлён`, 'ok');
+                }
+            } finally {
+                if (playlistModalSubmit) playlistModalSubmit.disabled = false;
+            }
+        });
+    }
+
+    const btnAddPl = document.getElementById('btn-add-playlist');
+    if (btnAddPl) btnAddPl.onclick = () => openPlaylistModal('create');
+
+    const btnPlaylistsAdd = document.getElementById('btn-playlists-add');
+    if (btnPlaylistsAdd) btnPlaylistsAdd.onclick = () => openPlaylistModal('create');
+
+    const btnEditorAddPl = document.getElementById('btn-editor-add-playlist');
+    if (btnEditorAddPl) btnEditorAddPl.onclick = () => openPlaylistModal('create');
+
+    const editorPlSelect = document.getElementById('editor-playlist-select');
+    if (editorPlSelect) {
+        editorPlSelect.addEventListener('change', () => {
+            const chosen = editorPlSelect.value;
+            if (!chosen) return;
+            void selectPlaylist(chosen);
+        });
     }
 
     if (btnDeletePl) {
@@ -3315,11 +3600,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (currentPlaylist === name) {
                 currentPlaylist = null;
                 channelsData = [];
-                if (plTitleEl) plTitleEl.textContent = 'Выберите плейлист';
-                if (btnAddCh) btnAddCh.classList.add('hidden');
-                if (btnCheckAll) btnCheckAll.classList.add('hidden');
-                if (btnDeletePl) btnDeletePl.classList.add('hidden');
-                if (directBox) directBox.classList.add('hidden');
+                syncEditorPlaylistControls(null);
                 closeForm();
                 renderChannels();
             }
@@ -5442,10 +5723,9 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
     // ===== СТАРТ: открываем каталог по умолчанию =====
     try {
         showScreen('catalog');
-        document.querySelectorAll('.nav-item').forEach(b => {
-            b.classList.toggle('active', b.dataset.screen === 'catalog');
-        });
+        setNavActive('catalog');
         loadCatalog();
+        loadUsers().catch(() => {});
     } catch (e) {
         console.error('boot catalog:', e);
     }

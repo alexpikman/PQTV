@@ -146,6 +146,7 @@ export interface CloudChannelHealthState {
 export interface CloudExportPayload {
   revision?: number;
   playlists: Record<string, CloudChannelItem[]>;
+  playlistMeta?: Record<string, { enabled?: boolean }>;
   sources: CloudSourceItem[];
   sourceIndex: Record<string, { items: CloudIndexedItem[]; updatedAt: number }>;
   epgSources: CloudEpgSourceItem[];
@@ -496,7 +497,8 @@ function normalizeChannelItem(raw: Partial<CloudChannelItem>): CloudChannelItem 
 export async function savePlaylistToCloud(
   rawName: string,
   channels: Array<Partial<CloudChannelItem>>,
-  updateManifest = true
+  updateManifest = true,
+  enabled = true
 ): Promise<void> {
   const plId = cleanPlaylistName(rawName);
   if (!isValidPlaylistName(plId)) throw new Error('Некорректное имя плейлиста');
@@ -528,8 +530,9 @@ export async function savePlaylistToCloud(
       name: plId,
       channelCount: cleanItems.length,
       chunkCount: chunks.length,
+      enabled: Boolean(enabled),
     },
-    mutableKeys: ['name', 'channelCount', 'chunkCount'],
+    mutableKeys: ['name', 'channelCount', 'chunkCount', 'enabled'],
   });
   await batchUpsertDocs(writes, `playlists/${plId}`);
 
@@ -1509,7 +1512,8 @@ export async function pushFullLocalToCloud(data: CloudExportPayload): Promise<vo
     const clean = cleanPlaylistName(rawName);
     if (!isValidPlaylistName(clean)) continue;
     plNames.push(clean);
-    await savePlaylistToCloud(clean, channels, false);
+    const enabled = data.playlistMeta?.[clean]?.enabled !== false;
+    await savePlaylistToCloud(clean, channels, false, enabled);
   }
   plNames.sort();
 
@@ -1722,12 +1726,15 @@ export async function loadFullCloudSnapshot(): Promise<{
 
   // Playlists
   const playlists: Record<string, CloudChannelItem[]> = {};
+  const playlistMeta: Record<string, { enabled: boolean }> = {};
   await Promise.all(
     manifest.playlists.map(async (plId) => {
       try {
         const metaSnap = await getDoc(doc(db, 'playlists', plId));
         if (!metaSnap.exists()) return;
-        const cc = Number(metaSnap.data().chunkCount) || 0;
+        const metaData = metaSnap.data();
+        playlistMeta[plId] = { enabled: metaData.enabled !== false };
+        const cc = Number(metaData.chunkCount) || 0;
         const items: CloudChannelItem[] = [];
         for (let i = 0; i < cc; i++) {
           const chunkSnap = await getDoc(doc(db, 'playlists', plId, 'chunks', `c_${i}`));
@@ -1999,6 +2006,7 @@ export async function loadFullCloudSnapshot(): Promise<{
     snapshot: {
       ...(typeof manifest.revision === 'number' ? { revision: manifest.revision } : {}),
       playlists,
+      playlistMeta,
       replacePlaylists: true,
       sources,
       sourceIndex,
@@ -2036,7 +2044,9 @@ export async function fetchViewerCloudState(playlistNames: string[]): Promise<{
       try {
         const metaSnap = await getDoc(doc(db, 'playlists', plId));
         if (!metaSnap.exists()) return;
-        const cc = Number(metaSnap.data().chunkCount) || 0;
+        const metaData = metaSnap.data();
+        if (metaData.enabled === false) return;
+        const cc = Number(metaData.chunkCount) || 0;
         const items: CloudChannelItem[] = [];
         for (let i = 0; i < cc; i++) {
           const cSnap = await getDoc(doc(db, 'playlists', plId, 'chunks', `c_${i}`));

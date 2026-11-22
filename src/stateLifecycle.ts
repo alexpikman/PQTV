@@ -6,6 +6,7 @@ import { atomicWriteJsonSync } from './persistence.js';
 
 export type LifecycleAction =
   | 'playlist_create'
+  | 'playlist_update'
   | 'playlist_save'
   | 'category_bulk_update'
   | 'playlist_delete'

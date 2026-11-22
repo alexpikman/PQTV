@@ -104,36 +104,72 @@
             <div class="col-left">
                 <div class="side-nav" aria-label="Основная навигация">
                     <section class="nav-section nav-group is-open" data-nav-group>
-                        <button type="button" class="nav-group-toggle" aria-expanded="true">
-                            <span>1. КАТАЛОГ КАНАЛОВ</span><span class="nav-group-chevron" aria-hidden="true">⌄</span>
+                        <button type="button" class="nav-group-toggle" data-nav-group-toggle aria-expanded="true">
+                            <span>КАТАЛОГ КАНАЛОВ</span><span class="nav-group-chevron" aria-hidden="true">⌄</span>
                         </button>
                         <div class="nav-submenu">
-                            <button id="nav-btn-catalog" class="nav-item active" data-screen="catalog"><span class="nav-number">1.0</span><span>Список каналов каталога</span></button>
-                            <button id="nav-btn-sources" class="nav-item" data-screen="sources"><span class="nav-number">1.1</span><span>Источники</span></button>
-                            <button id="nav-btn-parser" class="nav-item" data-screen="parser"><span class="nav-number">1.2</span><span>Поиск каналов</span></button>
-                            <button id="nav-btn-health" class="nav-item" data-screen="health"><span class="nav-number">1.3</span><span>Контроль каналов</span></button>
-                            <button id="nav-btn-epg" class="nav-item" data-screen="epg"><span class="nav-number">1.4</span><span>Телепрограмма</span></button>
+                            <button id="nav-btn-catalog" class="nav-item active" data-screen="catalog">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="18" x2="12" y2="21"/></svg>
+                                <span>Список каналов каталога</span>
+                            </button>
+                            <button id="nav-btn-sources" class="nav-item" data-screen="sources">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                                <span>Источники</span>
+                            </button>
+                            <button id="nav-btn-parser" class="nav-item" data-screen="parser">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                                <span>Поиск каналов</span>
+                            </button>
+                            <button id="nav-btn-health" class="nav-item" data-screen="health">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+                                <span>Контроль каналов</span>
+                            </button>
+                            <button id="nav-btn-epg" class="nav-item" data-screen="epg">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+                                <span>Телепрограмма</span>
+                            </button>
                         </div>
                     </section>
                     <section class="nav-section nav-group is-open" data-nav-group>
-                        <button type="button" class="nav-group-toggle" aria-expanded="true">
-                            <span>2. ПЛЕЙЛИСТЫ</span><span class="nav-group-chevron" aria-hidden="true">⌄</span>
+                        <button type="button" class="nav-group-toggle" data-nav-group-toggle aria-expanded="true">
+                            <span>ПЛЕЙЛИСТЫ</span><span class="nav-group-chevron" aria-hidden="true">⌄</span>
                         </button>
                         <div class="nav-submenu">
-                            <button id="nav-btn-playlists" class="nav-item" type="button" data-nav-action="playlist-list"><span class="nav-number">2.0</span><span>Список плейлистов</span></button>
-                            <button id="nav-btn-editor" class="nav-item" data-screen="editor"><span class="nav-number">2.1</span><span>Список каналов плейлиста</span></button>
-                            <button id="nav-btn-categories" class="nav-item" type="button" data-nav-action="categories"><span class="nav-number">2.2</span><span>Список категорий каналов</span></button>
+                            <button id="nav-btn-playlists" class="nav-item" type="button" data-screen="playlists">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                                <span>Список плейлистов</span>
+                            </button>
+                            <button id="nav-btn-editor" class="nav-item" data-screen="editor">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="14" y2="17"/></svg>
+                                <span>Список каналов плейлиста</span>
+                            </button>
+                            <button id="nav-btn-categories" class="nav-item" type="button" data-nav-action="categories">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                                <span>Список категорий каналов</span>
+                            </button>
                         </div>
                     </section>
                     <section class="nav-section nav-group is-open" data-nav-group>
-                        <button type="button" class="nav-group-toggle" aria-expanded="true">
-                            <span>3. НАСТРОЙКИ</span><span class="nav-group-chevron" aria-hidden="true">⌄</span>
+                        <button type="button" class="nav-group-toggle" data-nav-group-toggle aria-expanded="true">
+                            <span>НАСТРОЙКИ</span><span class="nav-group-chevron" aria-hidden="true">⌄</span>
                         </button>
                         <div class="nav-submenu">
-                            <button id="nav-btn-settings" class="nav-item" data-screen="settings"><span class="nav-number">3.0</span><span>Дашборд основных настроек</span></button>
-                            <button id="nav-btn-streaming" class="nav-item" data-settings-target="streaming"><span class="nav-number">3.1</span><span>Настройки потока</span></button>
-                            <button id="nav-btn-ui-settings" class="nav-item" data-settings-target="ui-settings"><span class="nav-number">3.2</span><span>Настройки интерфейса</span></button>
-                            <button id="nav-btn-apk" class="nav-item" data-settings-target="apk"><span class="nav-number">3.3</span><span>Android TV APK</span></button>
+                            <button id="nav-btn-settings" class="nav-item" data-screen="settings">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
+                                <span>Дашборд основных настроек</span>
+                            </button>
+                            <button id="nav-btn-streaming" class="nav-item" data-settings-target="streaming">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+                                <span>Настройки потока</span>
+                            </button>
+                            <button id="nav-btn-ui-settings" class="nav-item" data-settings-target="ui-settings">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
+                                <span>Настройки интерфейса</span>
+                            </button>
+                            <button id="nav-btn-apk" class="nav-item" data-settings-target="apk">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
+                                <span>Android TV APK</span>
+                            </button>
                         </div>
                     </section>
                     <div class="nav-section nav-standalone">
@@ -141,7 +177,7 @@
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                                 <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>
                             </svg>
-                            Пользователи
+                            <span>Пользователи</span>
                         </button>
                     </div>
                 </div>
@@ -167,16 +203,38 @@
             </div>
 
             <div class="col-center">
-                <div id="screen-editor" class="hidden">
+                <div id="screen-playlists" class="hidden">
                     <div class="col-header">
-                        <h2 id="current-playlist-title">Выберите плейлист</h2>
+                        <h2>Список плейлистов</h2>
                         <div class="header-actions">
-                            <button id="btn-delete-playlist" type="button" class="btn btn-danger hidden" title="Удалить текущий плейлист">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <polyline points="3 6 5 6 21 6"/>
-                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                            <button type="button" id="btn-playlists-add" class="btn btn-primary">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"/>
+                                    <line x1="5" y1="12" x2="19" y2="12"/>
                                 </svg>
-                                Удалить плейлист
+                                Добавить плейлист
+                            </button>
+                        </div>
+                    </div>
+                    <div id="playlists-list-container"></div>
+                </div>
+
+                <div id="screen-editor" class="hidden">
+                    <div class="col-header editor-col-header">
+                        <div class="editor-header-main">
+                            <h2 id="current-playlist-title">Список каналов плейлиста</h2>
+                            <div class="editor-playlist-picker">
+                                <select id="editor-playlist-select" class="editor-playlist-select" aria-label="Выбор плейлиста"></select>
+                                <button type="button" id="btn-editor-add-playlist" class="btn btn-secondary">Добавить плейлист</button>
+                            </div>
+                        </div>
+                        <div class="header-actions">
+                            <button id="btn-add-channel" class="btn btn-primary hidden">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                                    <line x1="12" y1="5" x2="12" y2="19"/>
+                                    <line x1="5" y1="12" x2="19" y2="12"/>
+                                </svg>
+                                Добавить канал
                             </button>
                             <button id="btn-check-all" class="btn btn-secondary hidden">
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -185,12 +243,12 @@
                                 Проверить всё
                             </button>
                             <button id="btn-open-categories-global" type="button" class="btn btn-secondary">Категории</button>
-                            <button id="btn-add-channel" class="btn btn-primary hidden">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-                                    <line x1="12" y1="5" x2="12" y2="19"/>
-                                    <line x1="5" y1="12" x2="19" y2="12"/>
+                            <button id="btn-delete-playlist" type="button" class="btn btn-danger hidden" title="Удалить текущий плейлист">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <polyline points="3 6 5 6 21 6"/>
+                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                                 </svg>
-                                Добавить канал
+                                Удалить плейлист
                             </button>
                         </div>
                     </div>
@@ -205,7 +263,7 @@
                     </div>
 
                     <div id="channels-container">
-                        <p class="placeholder-text">Выберите плейлист слева<br>или откройте «Парсинг каналов»</p>
+                        <p class="placeholder-text">Выберите плейлист из списка выше<br>или откройте «Поиск каналов»</p>
                     </div>
                 </div>
 
@@ -317,10 +375,12 @@
                         </div>
                     </div>
                     <div id="users-fb-error" class="error-msg hidden" style="margin-bottom:12px;"></div>
-                    <div id="users-list-container"></div>
-                    <div id="invites-section" style="margin-top:24px;">
-                        <h3 style="font-size:14px; font-weight:700; color:#fff; margin-bottom:10px;">Приглашения по Google Email</h3>
-                        <div id="invites-list-container"></div>
+                    <div id="users-screen-scroll">
+                        <div id="users-list-container"></div>
+                        <div id="invites-section" style="margin-top:24px;">
+                            <h3 style="font-size:14px; font-weight:700; color:#fff; margin-bottom:10px;">Приглашения по Google Email</h3>
+                            <div id="invites-list-container"></div>
+                        </div>
                     </div>
                 </div>
 
@@ -1642,6 +1702,47 @@
                 </div>
                 <div id="categories-list"></div>
             </div>
+        </div>
+    </div>
+
+    <!-- PLAYLIST ADD / EDIT MODAL -->
+    <div id="playlist-modal" class="player-modal hidden" style="z-index:12850;">
+        <div class="player-backdrop" id="playlist-modal-backdrop"></div>
+        <div class="player-window" style="max-width:440px; width:100%;">
+            <div class="player-head">
+                <div class="player-head-top">
+                    <div class="player-meta">
+                        <div class="player-title" id="playlist-modal-title">Добавить плейлист</div>
+                    </div>
+                    <div class="player-actions">
+                        <button type="button" id="playlist-modal-close" class="btn-icon" title="Закрыть">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <line x1="18" y1="6" x2="6" y2="18"/>
+                                <line x1="6" y1="6" x2="18" y2="18"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <form id="playlist-modal-form" style="padding:20px;">
+                <input type="hidden" id="playlist-modal-old-name" value="">
+                <div class="form-group">
+                    <label for="playlist-modal-name">Наименование плейлиста</label>
+                    <input type="text" id="playlist-modal-name" required maxlength="64" placeholder="Например: playlist или sport" autocomplete="off">
+                    <div style="font-size:11.5px; color:var(--muted); margin-top:6px;">
+                        Латиница, цифры, <code>_</code>, <code>-</code>, <code>.</code> (до 64 символов)
+                    </div>
+                </div>
+                <div class="form-group" style="display:flex; align-items:center; gap:8px;">
+                    <input type="checkbox" id="playlist-modal-enabled" checked>
+                    <label for="playlist-modal-enabled" style="margin:0; cursor:pointer; color:#fff;">Активный</label>
+                </div>
+                <div id="playlist-modal-error" class="error-msg hidden" style="margin-top:10px;"></div>
+                <div class="form-actions" style="margin-top:18px;">
+                    <button type="submit" id="playlist-modal-submit" class="btn btn-primary" style="flex:1;">Создать</button>
+                    <button type="button" id="playlist-modal-cancel" class="btn btn-secondary">Отмена</button>
+                </div>
+            </form>
         </div>
     </div>
 

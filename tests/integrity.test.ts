@@ -815,4 +815,99 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
       streamParserMod.StreamParser.fetchTextWithSource = origFetch;
     }
   });
+
+  test('17. Playlists summary, enabled flag enforcement, and /api/playlists/update rename cascade', async () => {
+    resetTempWorkspace();
+
+    // Create active and disabled playlists
+    assert.equal((await api('/api/playlists', 'POST', { name: 'pl_active', enabled: true })).status, 200);
+    assert.equal((await api('/api/playlists', 'POST', { name: 'pl_hidden', enabled: false })).status, 200);
+
+    await api('/api/channels/save', 'POST', {
+      playlist: 'pl_active',
+      channels: [{ name: 'ActiveCh', group: 'G', logo: '', url: 'https://cdn.example.com/active.m3u8' }],
+    });
+    await api('/api/channels/save', 'POST', {
+      playlist: 'pl_hidden',
+      channels: [{ name: 'HiddenCh', group: 'G', logo: '', url: 'https://cdn.example.com/hidden.m3u8' }],
+    });
+
+    // Assign pl_hidden to one user + one unclaimed invite + one claimed invite (claimed should not double-count)
+    await api('/api/users/save', 'POST', {
+      login: 'u_pl',
+      password: 'secret',
+      name: 'User PL',
+      playlists: ['pl_hidden'],
+      enabled: true,
+    });
+    await api('/api/invites/save', 'POST', {
+      email: 'pending@example.com',
+      name: 'Pending',
+      playlists: ['pl_hidden'],
+      enabled: true,
+    });
+    userAuthMod.userAuth.saveInvite({
+      email: 'claimed@example.com',
+      name: 'Claimed',
+      playlists: ['pl_hidden'],
+      enabled: true,
+      claimed_uid: 'uid-claimed',
+    });
+
+    const listRes = await api<{
+      playlists: string[];
+      items: Array<{ name: string; link: string; channelCount: number; userCount: number; enabled: boolean }>;
+    }>('/api/playlists');
+    assert.equal(listRes.status, 200);
+    assert.deepEqual(listRes.data.playlists.sort(), ['pl_active', 'pl_hidden']);
+
+    const hiddenItem = listRes.data.items.find((it) => it.name === 'pl_hidden')!;
+    assert.equal(hiddenItem.link, '/playlist/pl_hidden.m3u');
+    assert.equal(hiddenItem.channelCount, 1);
+    assert.equal(hiddenItem.userCount, 2);
+    assert.equal(hiddenItem.enabled, false);
+
+    // Disabled playlist returns 403 on direct .m3u and is omitted from /watch/api/channels
+    const disabledM3u = await fetch(`${baseUrl}/playlist/pl_hidden.m3u`);
+    assert.equal(disabledM3u.status, 403);
+    const activeM3u = await fetch(`${baseUrl}/playlist/pl_active.m3u`);
+    assert.equal(activeM3u.status, 200);
+
+    const watchBefore = await api<{ channels: Array<{ name: string }> }>('/watch/api/channels');
+    assert.equal(watchBefore.status, 200);
+    assert.deepEqual(watchBefore.data.channels.map((c) => c.name), ['ActiveCh']);
+
+    // Rename & enable pl_hidden -> pl_renamed via /api/playlists/update
+    const updRes = await api<{ ok: boolean; playlist: string; renamed: boolean; enabled: boolean }>(
+      '/api/playlists/update',
+      'POST',
+      { oldName: 'pl_hidden', name: 'pl_renamed', enabled: true }
+    );
+    assert.equal(updRes.status, 200);
+    assert.equal(updRes.data.ok, true);
+    assert.equal(updRes.data.playlist, 'pl_renamed');
+    assert.equal(updRes.data.renamed, true);
+    assert.equal(updRes.data.enabled, true);
+
+    assert.equal((await fetch(`${baseUrl}/playlist/pl_hidden.m3u`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/playlist/pl_renamed.m3u`)).status, 200);
+
+    const watchAfter = await api<{ channels: Array<{ name: string }> }>('/watch/api/channels');
+    assert.deepEqual(
+      watchAfter.data.channels.map((c) => c.name).sort(),
+      ['ActiveCh', 'HiddenCh']
+    );
+
+    const usersAfter = (await api<{ users: Array<{ playlists: string[] }> }>('/api/users')).data.users;
+    assert.deepEqual(usersAfter[0].playlists, ['pl_renamed']);
+    const invitesAfter = (await api<{ invites: Array<{ email: string; playlists: string[] }> }>('/api/invites')).data.invites;
+    assert.deepEqual(invitesAfter.find((i) => i.email === 'pending@example.com')?.playlists, ['pl_renamed']);
+
+    const catAfter = (await api<{ channels: Array<{ name: string; used_in_list: string[] }> }>('/api/catalog/channels?limit=50')).data.channels;
+    assert.deepEqual(catAfter.find((c) => c.name === 'HiddenCh')?.used_in_list, ['pl_renamed']);
+
+    const exported = (await api<{ playlistMeta: Record<string, { enabled: boolean }> }>('/api/cloud/export')).data;
+    assert.equal(exported.playlistMeta.pl_renamed?.enabled, true);
+    assert.equal(exported.playlistMeta.pl_hidden, undefined);
+  });
 });
