@@ -727,6 +727,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
+    const navPlaylists = document.getElementById('nav-btn-playlists');
+    if (navPlaylists) navPlaylists.addEventListener('click', () => {
+        showScreen('editor');
+        setNavActive('playlist-list');
+        const playlistList = document.getElementById('playlist-list');
+        if (playlistList) playlistList.scrollIntoView({ block: 'nearest' });
+    });
+
     const navCategories = document.getElementById('nav-btn-categories');
     if (navCategories) navCategories.addEventListener('click', () => {
         setNavActive('categories');
@@ -743,7 +751,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function setNavActive(name) {
         document.querySelectorAll('.nav-item').forEach(b => {
-            const itemTarget = b.dataset.screen || b.dataset.settingsTarget || (b.dataset.navAction === 'categories' ? 'categories' : '');
+            const itemTarget = b.dataset.screen || b.dataset.settingsTarget || b.dataset.navAction || '';
             b.classList.toggle('active', itemTarget === name);
         });
     }
