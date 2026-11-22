@@ -824,11 +824,20 @@ document.addEventListener('DOMContentLoaded', () => {
             id: raw.id ?? raw.code ?? raw.url ?? '',
             order: Number(raw.order ?? originalIndex),
             code: String(raw.code || ''),
+            type: String(raw.type || ''),
+            sourceId: String(raw.sourceId || raw.source_id || ''),
             name: String(raw.name || raw.title || ''),
             group: String(raw.group || raw.groupTitle || ''),
             logo: String(raw.logo || ''),
             url: String(raw.url || raw.primaryUrl || ''),
             tvgId: String(raw.tvg_id || raw.tvgId || ''),
+            altNames: Array.isArray(raw.alt_names)
+                ? raw.alt_names.join(' ')
+                : typeof raw.alt_names === 'string'
+                    ? raw.alt_names.replace(/[\[\]"]/g, '').replace(/,/g, ' ')
+                    : String(raw.altNames || ''),
+            createdAt: Number(raw.created_at || raw.createdAt || 0),
+            updatedAt: Number(raw.updated_at || raw.updatedAt || 0),
             status: String(raw.status || raw.overallStatus || 'unknown'),
             playlists: playlists.map((item) => String(item).replace(/\\.m3u$/i, '').trim()).filter(Boolean).join(', '),
             streamCount: Number(raw.streams_count ?? raw.streamCount ?? 0),
@@ -840,6 +849,8 @@ document.addEventListener('DOMContentLoaded', () => {
             sourceName: String(raw.source || raw.sourceName || ''),
             diagCode: String(raw.diagCode || ''),
             viewerErrors: Array.isArray(raw.viewerErrors) ? raw.viewerErrors.map((item) => String(item.reason || item.userName || item.userLogin || '')).join(' ') : String(raw.viewerErrors || ''),
+            viewerErrorCount: Number(raw.viewerErrorCount ?? (Array.isArray(raw.viewerErrors) ? raw.viewerErrors.length : 0)),
+            ms: Number(raw.ms || raw.response_ms || 0),
             hiddenForViewers: Boolean(raw.hiddenForViewers),
             stillBrokenAfterResolve: Boolean(raw.stillBrokenAfterResolve),
             raw,
@@ -848,9 +859,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function getSharedChannelTableState(key, defaultSort) {
         if (!sharedChannelTableStates[key]) {
-            sharedChannelTableStates[key] = { sortKey: defaultSort || 'name', sortDirection: 'asc', filters: {} };
+            sharedChannelTableStates[key] = { sortKey: defaultSort || 'name', sortDirection: 'asc', filters: {}, offset: 0, pageSize: 100 };
         }
         return sharedChannelTableStates[key];
+    }
+
+    function resetSharedChannelTableOffset(key) {
+        if (sharedChannelTableStates[key]) sharedChannelTableStates[key].offset = 0;
     }
 
     function renderSharedChannelTable(container, rows, columns, options = {}) {
@@ -897,40 +912,64 @@ document.addEventListener('DOMContentLoaded', () => {
                 escapeHtml(column.key) + '" value="' + value + '" placeholder="Фильтр"></th>';
         }).join('');
 
-        const body = sortedRows.length
-            ? sortedRows.map((row, index) => {
+        const pageSize = Math.max(10, Math.min(500, Number(options.pageSize) || state.pageSize || 100));
+        const pageCount = Math.max(1, Math.ceil(sortedRows.length / pageSize));
+        state.pageSize = pageSize;
+        state.offset = Math.min(Math.max(0, Number(state.offset) || 0), (pageCount - 1) * pageSize);
+        const pageRows = sortedRows.slice(state.offset, state.offset + pageSize);
+        const body = pageRows.length
+            ? pageRows.map((row, index) => {
                 const cells = columns.map((column) => '<td>' +
-                    (typeof column.render === 'function' ? column.render(row, index) : escapeHtml(String(row[column.key] ?? '—'))) +
+                    (typeof column.render === 'function' ? column.render(row, state.offset + index) : escapeHtml(String(row[column.key] ?? '—'))) +
                     '</td>').join('');
                 const rowClass = typeof options.rowClass === 'function' ? options.rowClass(row) : '';
                 const rowAttrs = typeof options.rowAttributes === 'function' ? options.rowAttributes(row) : '';
-                return '<tr data-idx="' + row.originalIndex + '" data-shared-index="' + index + '"' + (rowClass ? ' class="' + escapeHtml(rowClass) + '"' : '') +
+                const sharedIndex = state.offset + index;
+                return '<tr data-idx="' + row.originalIndex + '" data-shared-index="' + sharedIndex + '"' + (rowClass ? ' class="' + escapeHtml(rowClass) + '"' : '') +
                     (rowAttrs ? ' ' + rowAttrs : '') + '>' + cells + '</tr>';
             }).join('')
             : '<tr><td class="shared-table-empty" colspan="' + columns.length + '">' +
                 escapeHtml(options.emptyText || 'Каналов по выбранному фильтру не найдено') + '</td></tr>';
+        const pagination = sortedRows.length > pageSize
+            ? '<div class="shared-table-pagination" style="display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:10px 2px;color:var(--muted);font-size:12px;">' +
+                '<span>Показано ' + (state.offset + 1) + '–' + Math.min(state.offset + pageSize, sortedRows.length) + ' из ' + sortedRows.length + '</span>' +
+                '<button type="button" class="btn btn-secondary" data-shared-page="-1"' + (state.offset <= 0 ? ' disabled' : '') + '>Назад</button>' +
+                '<span>Страница ' + (Math.floor(state.offset / pageSize) + 1) + ' / ' + pageCount + '</span>' +
+                '<button type="button" class="btn btn-secondary" data-shared-page="1"' + (state.offset + pageSize >= sortedRows.length ? ' disabled' : '') + '>Далее</button>' +
+              '</div>'
+            : '';
 
         container.innerHTML = (options.beforeHtml || '') +
             '<table class="ch-table shared-channel-table"><thead><tr>' + header +
             '</tr><tr class="shared-table-filters">' + filters +
-            '</tr></thead><tbody>' + body + '</tbody></table>';
+            '</tr></thead><tbody>' + body + '</tbody></table>' + pagination;
 
         container.querySelectorAll('[data-shared-sort]').forEach((button) => {
             button.addEventListener('click', () => {
                 const key = button.dataset.sharedSort;
                 if (state.sortKey === key) state.sortDirection = state.sortDirection === 'asc' ? 'desc' : 'asc';
                 else { state.sortKey = key; state.sortDirection = 'asc'; }
+                state.offset = 0;
                 if (typeof options.onChange === 'function') options.onChange();
             });
         });
         container.querySelectorAll('[data-shared-filter]').forEach((control) => {
             const update = () => {
                 state.filters[control.dataset.sharedFilter] = control.value || '';
+                state.offset = 0;
                 if (typeof options.onChange === 'function') options.onChange();
             };
             control.addEventListener('change', update);
             if (control.tagName === 'INPUT') control.addEventListener('keydown', (event) => {
                 if (event.key === 'Enter') update();
+            });
+        });
+        container.querySelectorAll('[data-shared-page]').forEach((button) => {
+            button.addEventListener('click', () => {
+                state.offset = Math.max(0, state.offset + Number(button.dataset.sharedPage || 0) * pageSize);
+                if (typeof options.onPageChange === 'function') options.onPageChange();
+                else if (typeof options.onChange === 'function') options.onChange();
+                else renderSharedChannelTable(container, rows, columns, options);
             });
         });
         if (typeof options.onRowClick === 'function') {
@@ -976,7 +1015,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 render: (row) => `<input type="checkbox" data-select-channel data-url="${escapeHtml(row.url)}" ${selectedChannelUrls.has(row.url) ? 'checked' : ''} aria-label="Выбрать ${escapeHtml(row.name)}">`,
             },
             {
-                key: 'logo', label: '', sortable: false, filterType: 'none',
+                key: 'logo', label: 'Логотип URL', filterType: 'text',
                 render: (row) => row.logo
                     ? `<div class="ch-logo-wrap"><img src="${escapeHtml(row.logo)}" class="ch-logo" data-logo></div>`
                     : `<div class="ch-logo-wrap">${I.tv}</div>`,
@@ -1007,7 +1046,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 },
             },
             {
-                key: 'order', label: 'Порядок', filterType: 'none', type: 'number',
+                key: 'order', label: 'Порядок', filterType: 'text', type: 'number',
                 render: (row) => String(row.originalIndex + 1),
             },
             {
@@ -1204,12 +1243,22 @@ document.addEventListener('DOMContentLoaded', () => {
             const rows = items.map((item, index) => normalizeChannelRow({
                 name: item.title || query,
                 source: item.source,
+                sourceName: item.source,
+                type: item.type || '',
+                group: item.group || '',
+                logo: item.logo || '',
+                tvg_id: item.tvg_id || item.tvgId || '',
                 url: item.url,
                 status: checks.get(item.url) || 'unknown',
             }, 'parser', index));
-            const renderParserTable = () => renderSharedChannelTable(parseResultsContainer, rows, [
+            const renderParserTable = () => {
+                renderSharedChannelTable(parseResultsContainer, rows, [
                 { key: 'sourceName', label: 'Источник', filterType: 'text' },
+                { key: 'type', label: 'Тип источника', filterType: 'select' },
                 { key: 'name', label: 'Канал', filterType: 'text' },
+                { key: 'group', label: 'Категория', filterType: 'text' },
+                { key: 'logo', label: 'Логотип URL', filterType: 'text' },
+                { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
                 {
                     key: 'url', label: 'Ссылка потока', filterType: 'text',
                     render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>`,
@@ -1239,8 +1288,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(query)}"`,
                 onChange: renderParserTable,
                 emptyText: 'Потоков по выбранным фильтрам не найдено',
-            });
-            renderParserTable();
+            } );
+
 
             parseResultsContainer.querySelectorAll('.parse-row').forEach(tr => {
                 tr.onclick = (e) => {
@@ -1258,6 +1307,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     decodeURIComponent(b.dataset.name)
                 );
             });
+
+            };
+            renderParserTable();
         } catch (e) {
             if (parseProgressStatus) parseProgressStatus.textContent = 'Ошибка при парсинге';
             console.error(e);
@@ -2659,6 +2711,7 @@ document.addEventListener('DOMContentLoaded', () => {
             catalogSearch = (document.getElementById('catalog-search') || {}).value || '';
             catalogFilter = (document.getElementById('catalog-filter') || {}).value || '';
             catalogOffset = 0;
+            resetSharedChannelTableOffset('catalog');
             loadCatalogChannels();
             // Закрыть дропдаун если открыт
             const dd = document.getElementById('pl-dropdown');
@@ -2713,11 +2766,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadCatalogChannels() {
+        const tableState = getSharedChannelTableState('catalog', 'name');
         const params = new URLSearchParams({
             limit: '200',
             offset: catalogOffset,
             search: catalogSearch,
             filter: catalogFilter,
+            sortBy: tableState.sortKey || 'name',
+            sortDir: tableState.sortDirection || 'asc',
+            tableFilters: JSON.stringify(tableState.filters || {}),
         });
         if (catalogActivePL.length > 0) {
             params.set('playlists', catalogActivePL.join(','));
@@ -2784,6 +2841,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 key: 'name', label: 'Название', filterType: 'text',
                 render: (row) => `<div class="ch-title">${escapeHtml(row.name)}</div>${row.tvgId ? `<div class="ch-group">${escapeHtml(row.tvgId)}</div>` : ''}`,
             },
+            { key: 'logo', label: 'Логотип URL', filterType: 'text', render: (row) => escapeHtml(row.logo || '—') },
+            { key: 'url', label: 'Основной URL', filterType: 'text', render: (row) => '<code class="shared-table-url">' + escapeHtml(row.url || '—') + '</code>' },
+            { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
+            { key: 'sourceName', label: 'Источник', filterType: 'text' },
+            { key: 'altNames', label: 'Альтернативные названия', filterType: 'text' },
+            { key: 'status', label: 'Статус', filterType: 'select' },
+            { key: 'sourceId', label: 'ID источника', filterType: 'text' },
+            { key: 'createdAt', label: 'Добавлен', filterType: 'text', render: (row) => row.createdAt ? new Date(row.createdAt * 1000).toLocaleString() : '—' },
+            { key: 'updatedAt', label: 'Изменён', filterType: 'text', render: (row) => row.updatedAt ? new Date(row.updatedAt * 1000).toLocaleString() : '—' },
             {
                 key: 'playlists', label: 'Собственные плейлисты', filterType: 'text',
                 render: (row) => row.playlists
@@ -2791,6 +2857,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     : '<span class="cat-badge grey">нет</span>',
             },
             { key: 'streamCount', label: 'Потоков', filterType: 'text', render: (row) => `<b class="shared-table-number">${row.streamCount}</b>` },
+            { key: 'offlineCount', label: 'Offline потоков', filterType: 'text' },
+            { key: 'unknownCount', label: 'Неизвестно потоков', filterType: 'text' },
             {
                 key: 'onlineCount', label: 'Online', filterType: 'text',
                 render: (row) => renderStatusBadge(row.onlineCount, row.streamCount, row.offlineCount, row.unknownCount),
@@ -2803,6 +2871,7 @@ document.addEventListener('DOMContentLoaded', () => {
             key: 'catalog',
             defaultSort: 'name',
             onChange: () => { catalogOffset = 0; void loadCatalogChannels(); },
+            onPageChange: renderCatalogChannels,
             emptyText: 'Каналов по выбранным фильтрам не найдено',
         });
 
@@ -3001,6 +3070,7 @@ document.addEventListener('DOMContentLoaded', () => {
             t = setTimeout(() => {
                 catalogSearch = catSearch.value;
                 catalogOffset = 0;
+                resetSharedChannelTableOffset('catalog');
                 loadCatalogChannels();
             }, 250);
         };
@@ -3010,6 +3080,7 @@ document.addEventListener('DOMContentLoaded', () => {
         catFilter.onchange = () => {
             catalogFilter = catFilter.value;
             catalogOffset = 0;
+            resetSharedChannelTableOffset('catalog');
             loadCatalogChannels();
         };
     }
@@ -3023,6 +3094,8 @@ document.addEventListener('DOMContentLoaded', () => {
             catalogFilter = '';
             catalogActivePL = [];
             catalogOffset = 0;
+            resetSharedChannelTableOffset('catalog');
+            if (sharedChannelTableStates.catalog) sharedChannelTableStates.catalog.filters = {};
             const s = document.getElementById('catalog-search');
             if (s) s.value = '';
             const f = document.getElementById('catalog-filter');
@@ -4505,6 +4578,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     const sel = document.getElementById('health-filter-diag');
                     if (!sel) return;
                     sel.value = sel.value === btn.dataset.diagChip ? '' : btn.dataset.diagChip;
+                    resetSharedChannelTableOffset('health');
                     renderHealthView();
                 };
             });
@@ -4579,8 +4653,16 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     return '<span class="health-badge muted">Не проверялся</span>';
                 },
             },
+            { key: 'group', label: 'Категория', filterType: 'text', render: (row) => escapeHtml(row.group || '—') },
+            { key: 'logo', label: 'Логотип URL', filterType: 'text', render: (row) => escapeHtml(row.logo || '—') },
+            { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
             { key: 'diagCode', label: 'Диагностика', filterType: 'select', render: (row) => escapeHtml(row.diagCode || '—') },
             { key: 'reason', label: 'Причина', filterType: 'text', render: (row) => escapeHtml(row.reason || '—') },
+            { key: 'paused', label: 'Пауза', filterType: 'select', render: (row) => row.paused ? 'Да' : 'Нет' },
+            { key: 'hiddenForViewers', label: 'Скрыт у зрителей', filterType: 'select', render: (row) => row.hiddenForViewers ? 'Да' : 'Нет' },
+            { key: 'stillBrokenAfterResolve', label: 'Не работает после решения', filterType: 'select', render: (row) => row.stillBrokenAfterResolve ? 'Да' : 'Нет' },
+            { key: 'viewerErrorCount', label: 'Жалоб', filterType: 'text', render: (row) => String(row.raw.viewerErrorCount || 0) },
+            { key: 'ms', label: 'Время ответа, мс', filterType: 'text', render: (row) => String(row.raw.ms || 0) },
             { key: 'url', label: 'URL потока', filterType: 'text', render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>` },
             {
                 key: 'viewerErrors', label: 'Жалобы зрителей', filterType: 'text',
@@ -4715,10 +4797,14 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const selDiag = document.getElementById('health-filter-diag');
         const inpSearch = document.getElementById('health-search');
 
-        if (selPl) selPl.onchange = renderHealthView;
-        if (selSt) selSt.onchange = renderHealthView;
-        if (selDiag) selDiag.onchange = renderHealthView;
-        if (inpSearch) inpSearch.oninput = renderHealthView;
+        const updateHealthFilters = () => {
+            resetSharedChannelTableOffset('health');
+            renderHealthView();
+        };
+        if (selPl) selPl.onchange = updateHealthFilters;
+        if (selSt) selSt.onchange = updateHealthFilters;
+        if (selDiag) selDiag.onchange = updateHealthFilters;
+        if (inpSearch) inpSearch.oninput = updateHealthFilters;
         if (btnRefresh) btnRefresh.onclick = loadHealthOverview;
 
         if (btnCheckAll) {

@@ -395,6 +395,7 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
       playlist: 'category_b',
       channels: [
         { name: 'Shared B', group: 'Old', logo: '', url: 'https://example.com/shared.m3u8' },
+        { name: 'Near match', group: 'Keep', logo: '', url: 'https://example.com/shared.m3u8?token=other' },
         { name: 'Only B', group: 'Keep', logo: '', url: 'https://example.com/only-b.m3u8' },
       ],
     });
@@ -417,9 +418,36 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     const a = (await api<{ channels: Array<{ url: string; group: string }> }>('/api/channels?playlist=category_a')).data.channels;
     const b = (await api<{ channels: Array<{ url: string; group: string }> }>('/api/channels?playlist=category_b')).data.channels;
     assert.equal(a.find((channel) => channel.url.endsWith('/shared.m3u8'))?.group, 'Спорт');
-    assert.equal(b.find((channel) => channel.url.endsWith('/shared.m3u8'))?.group, 'Спорт');
+    assert.equal(b.find((channel) => channel.url === 'https://example.com/shared.m3u8')?.group, 'Спорт');
+    assert.equal(b.find((channel) => channel.url === 'https://example.com/shared.m3u8?token=other')?.group, 'Keep');
     assert.equal(a.find((channel) => channel.url.endsWith('/only-a.m3u8'))?.group, 'Old');
     assert.equal(b.find((channel) => channel.url.endsWith('/only-b.m3u8'))?.group, 'Keep');
+  });
+
+  test('9b. Catalog applies column filters and sorting before server pagination', async () => {
+    resetTempWorkspace();
+
+    await api('/api/playlists', 'POST', { name: 'catalog_table' });
+    await api('/api/channels/save', 'POST', {
+      playlist: 'catalog_table',
+      channels: [
+        { name: 'Alpha News', group: 'Новости', logo: '', url: 'https://example.com/alpha.m3u8', tvg_id: 'alpha' },
+        { name: 'Beta Sports', group: 'Спорт', logo: '', url: 'https://example.com/beta.m3u8', tvg_id: 'beta' },
+      ],
+    });
+
+    const filtered = await api<{ channels: Array<{ name: string }> }>(
+      '/api/catalog/channels?limit=1&offset=0&sortBy=name&sortDir=desc&tableFilters=' +
+      encodeURIComponent(JSON.stringify({ name: 'sports' }))
+    );
+    assert.equal(filtered.status, 200);
+    assert.deepEqual(filtered.data.channels.map((channel) => channel.name), ['Beta Sports']);
+
+    const first = await api<{ channels: Array<{ name: string }> }>(
+      '/api/catalog/channels?limit=1&offset=0&sortBy=name&sortDir=asc'
+    );
+    assert.equal(first.status, 200);
+    assert.deepEqual(first.data.channels.map((channel) => channel.name), ['Alpha News']);
   });
 
   test('10. Write/save failure surfaces HTTP 500 error instead of returning fake ok:true', async () => {

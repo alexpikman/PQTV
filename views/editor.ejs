@@ -234,9 +234,12 @@
 
                 <div id="screen-parser" class="hidden">
                     <div class="col-header">
-                        <h2>Парсинг и поиск каналов</h2>
+                        <h2>Индекс источников и поиск каналов</h2>
                     </div>
 
+                    <p style="color:var(--muted); font-size:12.5px; margin-bottom:12px;">
+                        Поиск выполняется по индексу включённых источников. Индекс и его ревизия синхронизируются с Firestore; локальные файлы используются только как кеш.
+                    </p>
                     <div class="search-bar">
                         <input type="text" id="parse-search-input" placeholder="Введите название канала...">
                         <button id="btn-start-parse" class="btn btn-primary">
@@ -292,7 +295,7 @@
                         </div>
                     </div>
                     <p style="color:var(--muted); font-size:12.5px; margin-bottom:8px;">
-                        Источники скачиваются один раз и сохраняются локально. Поиск идёт по индексу — мгновенно. Обновление раз в 6 часов автоматически.
+                        Индекс формируется из включённых источников, синхронизируется с Firestore и используется для поиска каналов и отслеживания изменений. Серверный индекс на диске — только временный кеш. Автоматическое обновление — раз в 6 часов.
                     </p>
                     <div id="sources-list-container"></div>
                 </div>
