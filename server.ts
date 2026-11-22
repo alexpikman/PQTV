@@ -179,8 +179,7 @@ function bumpRevisionForResponse(
   target: Parameters<typeof stateLifecycle.bumpRevision>[1],
   details?: Parameters<typeof stateLifecycle.bumpRevision>[2]
 ): ReturnType<typeof stateLifecycle.bumpRevision> | null {
-  const meta = bumpRevisionForResponse(res, action, target, details);
-  if (!meta) return;
+  const meta = stateLifecycle.bumpRevision(action, target, details);
   const error = stateLifecycle.getLastError();
   if (error) {
     noCacheJson(res, { ok: false, error }, 500);
