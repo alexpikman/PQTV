@@ -831,6 +831,9 @@ document.addEventListener('DOMContentLoaded', () => {
             logo: String(raw.logo || ''),
             url: String(raw.url || raw.primaryUrl || ''),
             tvgId: String(raw.tvg_id || raw.tvgId || ''),
+            altNames: Array.isArray(raw.alt_names) ? raw.alt_names.join(' ') : String(raw.altNames || ''),
+            createdAt: Number(raw.created_at || raw.createdAt || 0),
+            updatedAt: Number(raw.updated_at || raw.updatedAt || 0),
             status: String(raw.status || raw.overallStatus || 'unknown'),
             playlists: playlists.map((item) => String(item).replace(/\\.m3u$/i, '').trim()).filter(Boolean).join(', '),
             streamCount: Number(raw.streams_count ?? raw.streamCount ?? 0),
@@ -1000,7 +1003,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 render: (row) => `<input type="checkbox" data-select-channel data-url="${escapeHtml(row.url)}" ${selectedChannelUrls.has(row.url) ? 'checked' : ''} aria-label="Выбрать ${escapeHtml(row.name)}">`,
             },
             {
-                key: 'logo', label: '', sortable: false, filterType: 'none',
+                key: 'logo', label: 'Логотип URL', filterType: 'text',
                 render: (row) => row.logo
                     ? `<div class="ch-logo-wrap"><img src="${escapeHtml(row.logo)}" class="ch-logo" data-logo></div>`
                     : `<div class="ch-logo-wrap">${I.tv}</div>`,
@@ -1031,7 +1034,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 },
             },
             {
-                key: 'order', label: 'Порядок', filterType: 'none', type: 'number',
+                key: 'order', label: 'Порядок', filterType: 'text', type: 'number',
                 render: (row) => String(row.originalIndex + 1),
             },
             {
@@ -1228,12 +1231,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const rows = items.map((item, index) => normalizeChannelRow({
                 name: item.title || query,
                 source: item.source,
+                sourceName: item.source,
+                type: item.type || '',
+                group: item.group || '',
+                logo: item.logo || '',
+                tvg_id: item.tvg_id || item.tvgId || '',
                 url: item.url,
                 status: checks.get(item.url) || 'unknown',
             }, 'parser', index));
             const renderParserTable = () => renderSharedChannelTable(parseResultsContainer, rows, [
                 { key: 'sourceName', label: 'Источник', filterType: 'text' },
+                { key: 'type', label: 'Тип источника', filterType: 'select' },
                 { key: 'name', label: 'Канал', filterType: 'text' },
+                { key: 'group', label: 'Категория', filterType: 'text' },
+                { key: 'logo', label: 'Логотип URL', filterType: 'text' },
+                { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
                 {
                     key: 'url', label: 'Ссылка потока', filterType: 'text',
                     render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>`,
@@ -2808,6 +2820,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 key: 'name', label: 'Название', filterType: 'text',
                 render: (row) => `<div class="ch-title">${escapeHtml(row.name)}</div>${row.tvgId ? `<div class="ch-group">${escapeHtml(row.tvgId)}</div>` : ''}`,
             },
+            { key: 'group', label: 'Категория', filterType: 'text', render: (row) => escapeHtml(row.group || '—') },
+            { key: 'logo', label: 'Логотип URL', filterType: 'text', render: (row) => escapeHtml(row.logo || '—') },
+            { key: 'url', label: 'Основной URL', filterType: 'text', render: (row) => '<code class="shared-table-url">' + escapeHtml(row.url || '—') + '</code>' },
+            { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
+            { key: 'sourceName', label: 'Источник', filterType: 'text' },
+            { key: 'altNames', label: 'Альтернативные названия', filterType: 'text' },
             {
                 key: 'playlists', label: 'Собственные плейлисты', filterType: 'text',
                 render: (row) => row.playlists
@@ -2815,6 +2833,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     : '<span class="cat-badge grey">нет</span>',
             },
             { key: 'streamCount', label: 'Потоков', filterType: 'text', render: (row) => `<b class="shared-table-number">${row.streamCount}</b>` },
+            { key: 'offlineCount', label: 'Offline потоков', filterType: 'text' },
+            { key: 'unknownCount', label: 'Неизвестно потоков', filterType: 'text' },
             {
                 key: 'onlineCount', label: 'Online', filterType: 'text',
                 render: (row) => renderStatusBadge(row.onlineCount, row.streamCount, row.offlineCount, row.unknownCount),
@@ -4603,8 +4623,16 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     return '<span class="health-badge muted">Не проверялся</span>';
                 },
             },
+            { key: 'group', label: 'Категория', filterType: 'text', render: (row) => escapeHtml(row.group || '—') },
+            { key: 'logo', label: 'Логотип URL', filterType: 'text', render: (row) => escapeHtml(row.logo || '—') },
+            { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
             { key: 'diagCode', label: 'Диагностика', filterType: 'select', render: (row) => escapeHtml(row.diagCode || '—') },
             { key: 'reason', label: 'Причина', filterType: 'text', render: (row) => escapeHtml(row.reason || '—') },
+            { key: 'paused', label: 'Пауза', filterType: 'select', render: (row) => row.paused ? 'Да' : 'Нет' },
+            { key: 'hiddenForViewers', label: 'Скрыт у зрителей', filterType: 'select', render: (row) => row.hiddenForViewers ? 'Да' : 'Нет' },
+            { key: 'stillBrokenAfterResolve', label: 'Не работает после решения', filterType: 'select', render: (row) => row.stillBrokenAfterResolve ? 'Да' : 'Нет' },
+            { key: 'viewerErrorCount', label: 'Жалоб', filterType: 'text', render: (row) => String(row.raw.viewerErrorCount || 0) },
+            { key: 'ms', label: 'Время ответа, мс', filterType: 'text', render: (row) => String(row.raw.ms || 0) },
             { key: 'url', label: 'URL потока', filterType: 'text', render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>` },
             {
                 key: 'viewerErrors', label: 'Жалобы зрителей', filterType: 'text',
