@@ -56,6 +56,7 @@ import {
   deleteStreamUnified,
   reconcileCatalogUnified,
   aggregateCatalogFromSourcesUnified,
+  clearCatalogUnified,
   checkCatalogStreamsUnified,
   hydrateCatalogSliceUnified,
   hydrateStateUnified,
@@ -2987,7 +2988,11 @@ app.get('/api/channels', (req, res) => {
     return;
   }
   const filePath = storage.getPlaylistPath(playlist);
-  noCacheJson(res, { channels: parseM3uFile(filePath) });
+  const channels = parseM3uFile(filePath).map((ch) => {
+    const catalogStatus = catalogStore.getPlaylistChannelCatalogStatus(ch.url, ch.name);
+    return catalogStatus ? { ...ch, catalogStatus } : ch;
+  });
+  noCacheJson(res, { channels });
 });
 
 app.post('/api/channels/save', async (req, res) => {
@@ -3704,6 +3709,11 @@ app.post('/api/catalog/to-playlist', async (req, res) => {
 
 app.post('/api/catalog/aggregate', async (_req, res) => {
   const out = await aggregateCatalogFromSourcesUnified();
+  noCacheJson(res, out, out.status);
+});
+
+app.post('/api/catalog/clear', async (_req, res) => {
+  const out = await clearCatalogUnified();
   noCacheJson(res, out, out.status);
 });
 

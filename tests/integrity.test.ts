@@ -718,4 +718,101 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
       streamParserMod.StreamParser.fetchTextWithSource = origFetch;
     }
   });
+
+  test('16. Clearing shared catalog preserves playlists, stays empty across reconcile/hydrate, and aggregate rebuilds cleanly with playlist sync', async () => {
+    resetTempWorkspace();
+
+    assert.equal((await api('/api/playlists', 'POST', { name: 'my_tv' })).status, 200);
+    assert.equal(
+      (await api('/api/channels/save', 'POST', {
+        playlist: 'my_tv',
+        channels: [
+          { name: 'SharedNews', group: 'News', logo: '', url: 'https://cdn.example.com/shared_news.m3u8' },
+          { name: 'PrivateOnly', group: 'Other', logo: '', url: 'https://cdn.example.com/private_only.m3u8' },
+        ],
+      })).status,
+      200
+    );
+
+    assert.equal(
+      (await api('/api/sources/save', 'POST', {
+        sources: [{ id: 'src_live', name: 'Live Src', type: 'm3u', url: 'https://example.com/live.m3u', enabled: true }],
+      })).status,
+      200
+    );
+
+    // Clear the shared catalog table
+    const clearRes = await api<{ ok: boolean; clearedChannels: number; clearedStreams: number; revision: number }>(
+      '/api/catalog/clear',
+      'POST',
+      {}
+    );
+    assert.equal(clearRes.status, 200);
+    assert.equal(clearRes.data.ok, true);
+    assert.equal(clearRes.data.clearedChannels, 2);
+
+    // Shared catalog is empty
+    const statsAfterClear = (await api<{ channels: number; streams: number }>('/api/catalog/stats')).data;
+    assert.equal(statsAfterClear.channels, 0);
+    assert.equal(statsAfterClear.streams, 0);
+
+    // Playlists & their channels are completely preserved
+    const plCh = (await api<{ channels: Array<{ name: string }> }>('/api/channels?playlist=my_tv')).data.channels;
+    assert.deepEqual(plCh.map((c) => c.name), ['SharedNews', 'PrivateOnly']);
+
+    // Reconcile, empty cloud hydrate, and editing playlist keep shared table cleared
+    assert.equal((await api('/api/catalog/reconcile', 'POST', {})).status, 200);
+    assert.equal(
+      (await api('/api/catalog/hydrate', 'POST', {
+        revision: clearRes.data.revision + 1,
+        catalog: { nextChannelId: 1, nextStreamId: 1, nextSourceId: 2, channels: [], streams: [], sources: [] },
+      })).status,
+      200
+    );
+    assert.equal(
+      (await api('/api/channels/save', 'POST', {
+        playlist: 'my_tv',
+        channels: [
+          { name: 'SharedNews', group: 'News', logo: '', url: 'https://cdn.example.com/shared_news.m3u8' },
+          { name: 'PrivateOnly', group: 'Other', logo: '', url: 'https://cdn.example.com/private_only.m3u8' },
+        ],
+      })).status,
+      200
+    );
+    const statsStillEmpty = (await api<{ channels: number; streams: number }>('/api/catalog/stats')).data;
+    assert.equal(statsStillEmpty.channels, 0);
+    assert.equal(statsStillEmpty.streams, 0);
+
+    // Aggregate from sources rebuilds shared table completely & syncs playlist channels
+    const origRefresh = streamParserMod.StreamParser.refreshAll;
+    const origFetch = streamParserMod.StreamParser.fetchTextWithSource;
+    let currentM3u = '#EXTM3U\n#EXTINF:-1,SharedNews\nhttps://cdn.example.com/src_news.m3u8\n#EXTINF:-1,OldSourceOnly\nhttps://cdn.example.com/old.m3u8\n';
+    streamParserMod.StreamParser.refreshAll = async () => ({ ok: true, total: 1, elapsed: 0, results: {} });
+    streamParserMod.StreamParser.fetchTextWithSource = async () => currentM3u;
+
+    try {
+      const agg1 = await api<{ ok: boolean }>('/api/catalog/aggregate', 'POST', {});
+      assert.equal(agg1.status, 200);
+      assert.equal(agg1.data.ok, true);
+
+      const cat1 = (await api<{ channels: Array<{ name: string; used_in_list: string[] }> }>('/api/catalog/channels?limit=50')).data.channels;
+      const names1 = cat1.map((c) => c.name).sort();
+      assert.deepEqual(names1, ['OldSourceOnly', 'PrivateOnly', 'SharedNews']);
+      assert.deepEqual(cat1.find((c) => c.name === 'SharedNews')?.used_in_list, ['my_tv']);
+      assert.deepEqual(cat1.find((c) => c.name === 'OldSourceOnly')?.used_in_list, []);
+
+      // Update source to drop OldSourceOnly and add NewSourceOnly -> aggregate completely replaces source channels
+      currentM3u = '#EXTM3U\n#EXTINF:-1,SharedNews\nhttps://cdn.example.com/src_news.m3u8\n#EXTINF:-1,NewSourceOnly\nhttps://cdn.example.com/new.m3u8\n';
+      const agg2 = await api<{ ok: boolean }>('/api/catalog/aggregate', 'POST', {});
+      assert.equal(agg2.status, 200);
+      const cat2 = (await api<{ channels: Array<{ name: string }> }>('/api/catalog/channels?limit=50')).data.channels;
+      assert.deepEqual(
+        cat2.map((c) => c.name).sort(),
+        ['NewSourceOnly', 'PrivateOnly', 'SharedNews']
+      );
+    } finally {
+      streamParserMod.StreamParser.refreshAll = origRefresh;
+      streamParserMod.StreamParser.fetchTextWithSource = origFetch;
+    }
+  });
 });

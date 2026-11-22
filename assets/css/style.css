@@ -683,7 +683,7 @@ a:hover { text-decoration: underline; }
     padding: 24px; box-sizing: border-box; overflow: hidden;
 }
 #screen-catalog #catalog-list-container {
-    flex: 1; overflow-y: auto; margin-top: 14px; padding-right: 4px;
+    flex: 1; width: 100%; overflow-y: auto; overflow-x: auto; margin-top: 14px; padding-right: 0;
 }
 
 .catalog-stats {
@@ -1541,6 +1541,53 @@ a:hover { text-decoration: underline; }
 .shared-table-url { display: block; max-width: 320px; overflow-wrap: anywhere; color: var(--text-dim); font-size: 11px; }
 .shared-table-code { color: var(--muted); font-family: monospace; font-size: 11px; }
 .shared-table-number { color: var(--text); }
+
+#screen-catalog .catalog-channel-table {
+  width: 100%;
+  table-layout: fixed;
+}
+#screen-catalog .catalog-channel-table th,
+#screen-catalog .catalog-channel-table td {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#screen-catalog .catalog-channel-table th:nth-child(1),
+#screen-catalog .catalog-channel-table td:nth-child(1) { width: 18%; }
+#screen-catalog .catalog-channel-table th:nth-child(2),
+#screen-catalog .catalog-channel-table td:nth-child(2) { width: 29%; }
+#screen-catalog .catalog-channel-table th:nth-child(3),
+#screen-catalog .catalog-channel-table td:nth-child(3) { width: 15%; }
+#screen-catalog .catalog-channel-table th:nth-child(4),
+#screen-catalog .catalog-channel-table td:nth-child(4) { width: 11%; }
+#screen-catalog .catalog-channel-table th:nth-child(5),
+#screen-catalog .catalog-channel-table td:nth-child(5) { width: 15%; }
+#screen-catalog .catalog-channel-table th:nth-child(6),
+#screen-catalog .catalog-channel-table td:nth-child(6) { width: 6%; text-align: center; }
+#screen-catalog .catalog-channel-table th:nth-child(7),
+#screen-catalog .catalog-channel-table td:nth-child(7) { width: 6%; text-align: right; }
+#screen-catalog .catalog-channel-table .ch-title,
+#screen-catalog .catalog-channel-table .catalog-source-cell {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#screen-catalog .catalog-channel-table .shared-table-url {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#screen-catalog .catalog-channel-table .catalog-playlist-list {
+  max-width: 100%;
+}
+@media (max-width: 980px) {
+  #screen-catalog .catalog-channel-table {
+    table-layout: auto;
+    min-width: 780px;
+  }
+}
 .health-table-badges { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .health-action-button { padding: 5px 8px; font-size: 11px; }
 .parse-row { cursor: pointer; }

@@ -131,6 +131,7 @@ class CatalogStore {
   private nextChannelId = 1;
   private nextStreamId = 1;
   private initialized = false;
+  private cleared = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSaveError = '';
 
@@ -140,6 +141,11 @@ class CatalogStore {
 
   getLastSaveError(): string {
     return this.lastSaveError;
+  }
+
+  isCleared(): boolean {
+    this.ensureInit();
+    return this.cleared;
   }
 
   resetState(): void {
@@ -152,6 +158,7 @@ class CatalogStore {
     this.nextChannelId = 1;
     this.nextStreamId = 1;
     this.initialized = false;
+    this.cleared = false;
     this.lastSaveError = '';
   }
 
@@ -179,10 +186,12 @@ class CatalogStore {
         sources?: CatalogSource[];
         nextChannelId?: number;
         nextStreamId?: number;
+        cleared?: boolean;
       };
       if (!Array.isArray(raw.channels) || !Array.isArray(raw.streams)) return false;
       this.channels = raw.channels;
       this.streams = raw.streams;
+      this.cleared = Boolean(raw.cleared) && this.channels.length === 0 && this.streams.length === 0;
 
       // DEF-08: One-time migration if catalog.json had sources but data/sources.json was missing/empty
       if (Array.isArray(raw.sources) && raw.sources.length > 0 && StreamParser.getSources().length === 0) {
@@ -225,6 +234,7 @@ class CatalogStore {
       nextChannelId: this.nextChannelId,
       nextStreamId: this.nextStreamId,
       nextSourceId,
+      cleared: this.cleared,
       channels: this.channels,
       streams: this.streams,
     });
@@ -300,36 +310,39 @@ class CatalogStore {
     const removedStreams = Math.max(0, prevStreamCount - this.streams.length);
 
     // 2. Ensure all channels & streams present in live .m3u files exist in catalog
+    //    (skip when the shared catalog has been explicitly cleared and is currently empty).
     let imported = 0;
-    for (const [pl, items] of playlistItems.entries()) {
-      for (const ch of items) {
-        const name = (ch.name || '').trim();
-        if (!name) continue;
-        let existing = this.findByNameInternal(name);
-        if (!existing) {
-          const id = this.nextChannelId++;
-          existing = {
-            id,
-            code: 'ID' + String(id).padStart(6, '0'),
-            name,
-            logo: ch.logo || '',
-            tvg_id: ch.tvg_id || '',
-            in_my_pl: 1,
-            used_in: [pl],
-            alt_names: [],
-            created_at: now,
-            updated_at: now,
-          };
-          this.channels.push(existing);
-          imported++;
-        } else {
-          if (!existing.logo && ch.logo) existing.logo = ch.logo;
-          if (!existing.tvg_id && ch.tvg_id) existing.tvg_id = ch.tvg_id;
-        }
+    if (!(this.cleared && this.channels.length === 0 && this.streams.length === 0)) {
+      for (const [pl, items] of playlistItems.entries()) {
+        for (const ch of items) {
+          const name = (ch.name || '').trim();
+          if (!name) continue;
+          let existing = this.findByNameInternal(name);
+          if (!existing) {
+            const id = this.nextChannelId++;
+            existing = {
+              id,
+              code: 'ID' + String(id).padStart(6, '0'),
+              name,
+              logo: ch.logo || '',
+              tvg_id: ch.tvg_id || '',
+              in_my_pl: 1,
+              used_in: [pl],
+              alt_names: [],
+              created_at: now,
+              updated_at: now,
+            };
+            this.channels.push(existing);
+            imported++;
+          } else {
+            if (!existing.logo && ch.logo) existing.logo = ch.logo;
+            if (!existing.tvg_id && ch.tvg_id) existing.tvg_id = ch.tvg_id;
+          }
 
-        const cleanUrl = (ch.url || '').trim();
-        if (cleanUrl) {
-          this.addStreamInternal(existing.id, cleanUrl, null, null, null);
+          const cleanUrl = (ch.url || '').trim();
+          if (cleanUrl) {
+            this.addStreamInternal(existing.id, cleanUrl, null, null, null);
+          }
         }
       }
     }
@@ -389,7 +402,33 @@ class CatalogStore {
 
   importFromPlaylists(): ReconcileResult {
     this.ensureInit();
+    this.cleared = false;
     return this.reconcile({ save: true });
+  }
+
+  clearCatalog(): {
+    ok: boolean;
+    clearedChannels: number;
+    clearedStreams: number;
+    persisted: boolean;
+    error?: string;
+  } {
+    this.ensureInit();
+    const clearedChannels = this.channels.length;
+    const clearedStreams = this.streams.length;
+    this.channels = [];
+    this.streams = [];
+    this.nextChannelId = 1;
+    this.nextStreamId = 1;
+    this.cleared = true;
+    const saveRes = this.saveToDisk();
+    return {
+      ok: saveRes.ok,
+      clearedChannels,
+      clearedStreams,
+      persisted: saveRes.ok,
+      ...(saveRes.error ? { error: saveRes.error } : {}),
+    };
   }
 
   private findByNameInternal(name: string): CatalogChannel | undefined {
@@ -569,6 +608,48 @@ class CatalogStore {
       }
     }
     return map;
+  }
+
+  getPlaylistChannelCatalogStatus(
+    url: string,
+    channelName = ''
+  ): { status: 'online' | 'offline' | 'unknown'; diagCode: string; reason: string } | null {
+    this.ensureInit();
+    if (this.cleared || this.channels.length === 0) return null;
+    const cleanUrl = (url || '').trim();
+    const now = Math.floor(Date.now() / 1000);
+    let matched: CatalogStream | undefined;
+
+    if (cleanUrl) {
+      const exactMatches = this.streams
+        .filter((s) => s.url.trim() === cleanUrl && s.checked_at > 0)
+        .sort((a, b) => getStreamPriority(b, now) - getStreamPriority(a, now) || b.checked_at - a.checked_at);
+      matched = exactMatches[0];
+    }
+
+    if (!matched && channelName.trim()) {
+      const ch = this.findByNameInternal(channelName.trim());
+      if (ch) {
+        const chStreams = this.streams
+          .filter((s) => s.channel_id === ch.id && s.checked_at > 0)
+          .sort((a, b) => getStreamPriority(b, now) - getStreamPriority(a, now) || b.checked_at - a.checked_at);
+        matched = chStreams[0];
+      }
+    }
+
+    if (!matched) return null;
+    const fresh = isStreamStatusFresh(matched, now);
+    const status: 'online' | 'offline' | 'unknown' =
+      !fresh || matched.online === 0
+        ? 'unknown'
+        : matched.online === 1
+          ? 'online'
+          : 'offline';
+    return {
+      status,
+      diagCode: matched.diag_code || '',
+      reason: matched.diag_reason || '',
+    };
   }
 
   getUsedPlaylists(): string[] {
@@ -892,6 +973,7 @@ class CatalogStore {
     items: Array<{ name: string; url: string; logo?: string; group?: string; tvg_id?: string }>
   ): { addedChannels: number; addedStreams: number } {
     this.ensureInit();
+    this.cleared = false;
     const now = Math.floor(Date.now() / 1000);
     const catId = Number(source.catalogId) || null;
     let addedChannels = 0;
@@ -919,6 +1001,9 @@ class CatalogStore {
         };
         this.channels.push(ch);
         addedChannels++;
+      } else {
+        if (!ch.logo && it.logo) ch.logo = it.logo;
+        if (!ch.tvg_id && it.tvg_id) ch.tvg_id = it.tvg_id;
       }
       if (this.addStreamInternal(ch.id, url, catId, source.name, source.type)) {
         addedStreams++;
@@ -1093,11 +1178,19 @@ class CatalogStore {
     error?: string;
   }> {
     this.ensureInit();
+    this.cleared = false;
     await StreamParser.refreshAll();
     let addedChannels = 0;
     let addedStreams = 0;
     const now = Math.floor(Date.now() / 1000);
     const parserSources = StreamParser.getSources();
+
+    const enabledCatalogIds = new Set(
+      parserSources.filter((s) => s.enabled && s.catalogId).map((s) => Number(s.catalogId))
+    );
+    this.streams = this.streams.filter(
+      (s) => s.source_id === null || s.source_id === undefined || enabledCatalogIds.has(Number(s.source_id))
+    );
 
     for (const src of parserSources) {
       if (!src.enabled || !src.catalogId) continue;
@@ -1107,8 +1200,44 @@ class CatalogStore {
           StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
           continue;
         }
+        const prevHealthByUrl = new Map<
+          string,
+          Pick<
+            CatalogStream,
+            'online' | 'http_code' | 'response_ms' | 'checked_at' | 'diag_code' | 'diag_reason' | 'codec_warning'
+          >
+        >();
+        for (const existingStream of this.streams) {
+          if (existingStream.source_id === src.catalogId && existingStream.checked_at > 0) {
+            prevHealthByUrl.set(existingStream.url, {
+              online: existingStream.online,
+              http_code: existingStream.http_code,
+              response_ms: existingStream.response_ms,
+              checked_at: existingStream.checked_at,
+              diag_code: existingStream.diag_code,
+              diag_reason: existingStream.diag_reason,
+              codec_warning: existingStream.codec_warning,
+            });
+          }
+        }
+        this.streams = this.streams.filter((s) => s.source_id !== src.catalogId);
         const items = StreamParser.parseSource(body, src);
         const res = this.ingestSourceItems(src, items);
+        if (prevHealthByUrl.size > 0) {
+          for (const st of this.streams) {
+            if (st.source_id !== src.catalogId) continue;
+            const prev = prevHealthByUrl.get(st.url);
+            if (prev) {
+              st.online = prev.online;
+              st.http_code = prev.http_code;
+              st.response_ms = prev.response_ms;
+              st.checked_at = prev.checked_at;
+              if (prev.diag_code) st.diag_code = prev.diag_code;
+              if (prev.diag_reason) st.diag_reason = prev.diag_reason;
+              if (prev.codec_warning) st.codec_warning = prev.codec_warning;
+            }
+          }
+        }
         addedChannels += res.addedChannels;
         addedStreams += res.addedStreams;
         StreamParser.updateSourceStats(src.catalogId, {
@@ -1134,6 +1263,7 @@ class CatalogStore {
     nextChannelId: number;
     nextStreamId: number;
     nextSourceId: number;
+    cleared: boolean;
     channels: CatalogChannel[];
     streams: CatalogStream[];
     sources: CatalogSource[];
@@ -1145,6 +1275,7 @@ class CatalogStore {
       nextChannelId: this.nextChannelId,
       nextStreamId: this.nextStreamId,
       nextSourceId,
+      cleared: this.cleared,
       channels: this.channels,
       streams: this.streams,
       sources,
@@ -1155,6 +1286,7 @@ class CatalogStore {
     nextChannelId?: number;
     nextStreamId?: number;
     nextSourceId?: number;
+    cleared?: boolean;
     channels?: CatalogChannel[];
     streams?: CatalogStream[];
     sources?: CatalogSource[];
@@ -1167,6 +1299,7 @@ class CatalogStore {
     }
     this.channels = raw.channels;
     this.streams = raw.streams;
+    this.cleared = Boolean(raw.cleared) || (this.channels.length === 0 && this.streams.length === 0);
     this.nextChannelId =
       Number(raw.nextChannelId) || Math.max(1, ...this.channels.map((c) => Number(c.id) + 1));
     this.nextStreamId =

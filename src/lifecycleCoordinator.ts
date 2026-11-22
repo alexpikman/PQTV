@@ -517,6 +517,28 @@ export async function aggregateCatalogFromSourcesUnified(): Promise<UnifiedOpRes
   });
 }
 
+export async function clearCatalogUnified(): Promise<UnifiedOpResult> {
+  return withAsyncWriteLock(lockKey(), async () => {
+    const result = catalogStore.clearCatalog();
+    if (!result.persisted) {
+      return { ok: false, status: 500, error: result.error || 'Не удалось очистить общую таблицу каталога' };
+    }
+    const meta = stateLifecycle.bumpRevision('reconcile', 'catalog_clear', {
+      clearedChannels: result.clearedChannels,
+      clearedStreams: result.clearedStreams,
+    });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
+    return {
+      ok: true,
+      status: 200,
+      clearedChannels: result.clearedChannels,
+      clearedStreams: result.clearedStreams,
+      revision: meta.revision,
+    };
+  });
+}
+
 export async function checkCatalogStreamsUnified(limit = 500): Promise<UnifiedOpResult> {
   return withAsyncWriteLock(lockKey(), async () => {
     const cleanLimit = Math.max(1, Math.min(5000, Number(limit) || 500));
@@ -661,6 +683,7 @@ export async function hydrateStateUnified(body: {
     nextChannelId?: number;
     nextStreamId?: number;
     nextSourceId?: number;
+    cleared?: boolean;
     channels?: never[];
     streams?: never[];
     sources?: never[];

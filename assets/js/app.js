@@ -847,6 +847,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!currentPlaylist) return;
         const res = await apiRequest(`/api/channels?playlist=${encodeURIComponent(currentPlaylist)}`);
         channelsData = Array.isArray(res.channels) ? res.channels : [];
+        channelsData.forEach((channel) => {
+            if (channel && channel.url && channel.catalogStatus) {
+                if (!streamStatusCache[channel.url] || (channel.catalogStatus.status && channel.catalogStatus.status !== 'unknown')) {
+                    streamStatusCache[channel.url] = channel.catalogStatus;
+                }
+            }
+        });
         selectedChannelUrls.clear();
         await refreshCloudCategories();
         renderChannels();
@@ -989,8 +996,9 @@ document.addEventListener('DOMContentLoaded', () => {
             : '';
 
         const filterRow = options.showFilters === false ? '' : '<tr class="shared-table-filters">' + filters + '</tr>';
+        const extraClass = options.tableClass ? ' ' + escapeHtml(options.tableClass) : '';
         container.innerHTML = (options.beforeHtml || '') +
-            '<table class="ch-table shared-channel-table"><thead><tr>' + header +
+            '<table class="ch-table shared-channel-table' + extraClass + '"><thead><tr>' + header +
             '</tr>' + filterRow + '</thead><tbody>' + body + '</tbody></table>' + pagination;
 
         container.querySelectorAll('[data-shared-sort]').forEach((button) => {
@@ -2831,46 +2839,65 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById('catalog-list-container');
         if (!el) return;
         if (catalogData.length === 0) {
-            el.innerHTML = '<p class="placeholder-text">Каталог пока пуст. Используйте «Собрать из источников», чтобы наполнить список каналов.</p>';
+            const hasFilters = Boolean(catalogSearch || catalogFilter || catalogSourceFilter || catalogActivePL.length);
+            el.innerHTML = hasFilters
+                ? '<p class="placeholder-text">Каналов по выбранным фильтрам не найдено.</p>'
+                : '<p class="placeholder-text">Общая таблица каталога пуста. Нажмите «Собрать из источников», чтобы загрузить каналы.</p>';
             renderCatalogStats();
             return;
         }
         renderCatalogStats();
 
-        const rows = catalogData.map((channel, index) => normalizeChannelRow(channel, 'catalog', index));
+        const rows = catalogData.map((channel, index) => {
+            const normalized = normalizeChannelRow(channel, 'catalog', index);
+            return {
+                id: normalized.id,
+                originalIndex: normalized.originalIndex,
+                name: normalized.name,
+                url: normalized.url,
+                sourceName: normalized.sourceName,
+                status: normalized.status,
+                playlists: normalized.playlists,
+                streamCount: normalized.streamCount,
+                onlineCount: normalized.onlineCount,
+                offlineCount: normalized.offlineCount,
+                unknownCount: normalized.unknownCount,
+            };
+        });
         renderSharedChannelTable(el, rows, [
-            { key: 'code', label: 'Код', filterType: 'text', render: (row) => `<span class="shared-table-code">${escapeHtml(row.code)}</span>` },
             {
                 key: 'name', label: 'Название', filterType: 'text',
-                render: (row) => `<div class="ch-title">${escapeHtml(row.name)}</div>`,
+                render: (row) => `<div class="ch-title" title="${escapeHtml(row.name)}">${escapeHtml(row.name)}</div>`,
             },
-            { key: 'logo', label: 'Логотип URL', filterType: 'text', render: (row) => escapeHtml(row.logo || '—') },
-            { key: 'url', label: 'Основной URL', filterType: 'text', render: (row) => '<code class="shared-table-url">' + escapeHtml(row.url || '—') + '</code>' },
-            { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
-            { key: 'sourceName', label: 'Источник', filterType: 'text' },
-            { key: 'altNames', label: 'Альтернативные названия', filterType: 'text' },
+            {
+                key: 'url', label: 'Основной URL', filterType: 'text',
+                render: (row) => `<code class="shared-table-url" title="${escapeHtml(row.url || '')}">${escapeHtml(row.url || '—')}</code>`,
+            },
+            {
+                key: 'sourceName', label: 'Источник (Имя)', filterType: 'text',
+                render: (row) => `<span class="catalog-source-cell" title="${escapeHtml(row.sourceName || '')}">${escapeHtml(row.sourceName || '—')}</span>`,
+            },
             {
                 key: 'status', label: 'Статус', filterType: 'select',
                 render: (row) => renderStatusBadge(row.onlineCount, row.streamCount, row.offlineCount, row.unknownCount),
             },
-            { key: 'sourceId', label: 'ID источника', filterType: 'text' },
-            { key: 'createdAt', label: 'Добавлен', filterType: 'text', render: (row) => row.createdAt ? new Date(row.createdAt * 1000).toLocaleString() : '—' },
-            { key: 'updatedAt', label: 'Изменён', filterType: 'text', render: (row) => row.updatedAt ? new Date(row.updatedAt * 1000).toLocaleString() : '—' },
             {
                 key: 'playlists', label: 'Собственные плейлисты', filterType: 'text',
                 render: (row) => row.playlists
                     ? `<div class="catalog-playlist-list">${row.playlists.split(', ').map((name) => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join(' ')}</div>`
                     : '<span class="cat-badge grey">нет</span>',
             },
-            { key: 'streamCount', label: 'Потоков', filterType: 'text', render: (row) => `<b class="shared-table-number">${row.streamCount}</b>` },
-            { key: 'offlineCount', label: 'Offline потоков', filterType: 'text' },
-            { key: 'unknownCount', label: 'Неизвестно потоков', filterType: 'text' },
+            {
+                key: 'streamCount', label: 'Потоков', filterType: 'text',
+                render: (row) => `<b class="shared-table-number">${row.streamCount}</b>`,
+            },
             {
                 key: 'actions', label: 'Действия', sortable: false, filterType: 'none',
                 render: (row) => `<button class="icon-btn accent" data-cat-view="${row.id}" title="Потоки">${I.search}</button>`,
             },
         ], {
             key: 'catalog',
+            tableClass: 'catalog-channel-table',
             defaultSort: 'name',
             pageSize: catalogPageSize,
             showFilters: false,
@@ -3054,6 +3081,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 addBtn.textContent = 'Добавить';
                 if (res.ok) {
                     showToast(`«${res.name}» добавлен в ${target}.m3u`, 'ok');
+                    loadCatalog().catch(() => {});
+                    if (currentPlaylist === target) loadChannels().catch(() => {});
                 } else {
                     showToast('Ошибка: ' + (res.error || 'неизвестная'), 'err');
                 }
@@ -3082,7 +3111,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (source) source.value = '';
             const playlist = document.getElementById('catalog-playlist-filter');
             if (playlist) playlist.value = '';
-            renderCatalogPlFilter();
+            if (typeof renderCatalogPlFilter === 'function') renderCatalogPlFilter();
             loadCatalogChannels();
         };
     })();
@@ -3108,6 +3137,33 @@ document.addEventListener('DOMContentLoaded', () => {
             } finally {
                 if (txt) txt.textContent = 'Собрать из источников';
                 btnCatAgg.disabled = false;
+            }
+        };
+    }
+
+    const btnCatClear = document.getElementById('btn-catalog-clear');
+    if (btnCatClear) {
+        btnCatClear.onclick = async () => {
+            if (!(await uiConfirm('Очистить общую таблицу «Каталог каналов»? Каналы в ваших плейлистах сохранятся.'))) return;
+            const txt = document.getElementById('btn-catalog-clear-text');
+            btnCatClear.disabled = true;
+            if (txt) txt.textContent = 'Очищаю...';
+            try {
+                const res = await apiRequest('/api/catalog/clear', 'POST', {}, { skipCloudSync: true });
+                if (!res || !res.ok) {
+                    showToast('Ошибка: ' + ((res && res.error) || 'неизвестная'), 'err');
+                    return;
+                }
+                if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision))) {
+                    return;
+                }
+                catalogOffset = 0;
+                resetSharedChannelTableOffset('catalog');
+                await loadCatalog();
+                showToast('Общая таблица каталога очищена (плейлисты сохранены)', 'ok');
+            } finally {
+                if (txt) txt.textContent = 'Очистить таблицу';
+                btnCatClear.disabled = false;
             }
         };
     }
