@@ -173,6 +173,22 @@ function noCacheJson(res: Response, data: unknown, status = 200): void {
   res.json(data);
 }
 
+function bumpRevisionForResponse(
+  res: Response,
+  action: Parameters<typeof stateLifecycle.bumpRevision>[0],
+  target: Parameters<typeof stateLifecycle.bumpRevision>[1],
+  details?: Parameters<typeof stateLifecycle.bumpRevision>[2]
+): ReturnType<typeof stateLifecycle.bumpRevision> | null {
+  const meta = bumpRevisionForResponse(res, action, target, details);
+  if (!meta) return;
+  const error = stateLifecycle.getLastError();
+  if (error) {
+    noCacheJson(res, { ok: false, error }, 500);
+    return null;
+  }
+  return meta;
+}
+
 function parseCookies(req: Request): Record<string, string> {
   const out: Record<string, string> = {};
   const header = req.headers.cookie;
@@ -803,10 +819,11 @@ app.post('/api/admin/apk-upload', (req, res) => {
     source: 'upload',
   });
 
-  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_upload', {
+  const meta = bumpRevisionForResponse(res, 'apk_update', 'apk_upload', {
     versionCode: release.versionCode,
     versionName: release.versionName,
   });
+  if (!meta) return;
 
   noCacheJson(res, {
     ok: true,
@@ -1550,7 +1567,8 @@ app.post('/watch/api/admin/users/save', (req, res) => {
       return;
     }
     const createdFull = created.user ? userAuth.find(created.user.id) : null;
-    const meta = stateLifecycle.bumpRevision('users_update', created.user!.id, { action: 'create' });
+    const meta = bumpRevisionForResponse(res, 'users_update', created.user!.id, { action: 'create' });
+    if (!meta) return;
     noCacheJson(res, {
       ok: true,
       user: created.user,
@@ -1579,7 +1597,8 @@ app.post('/watch/api/admin/users/save', (req, res) => {
       }
     }
     const syncedFull = userAuth.find(synced.id);
-    const meta = stateLifecycle.bumpRevision('users_update', synced.id, { action: 'upsert' });
+    const meta = bumpRevisionForResponse(res, 'users_update', synced.id, { action: 'upsert' });
+    if (!meta) return;
     noCacheJson(res, {
       ok: true,
       user: synced,
@@ -1597,7 +1616,8 @@ app.post('/watch/api/admin/users/save', (req, res) => {
     return;
   }
   const updatedFull = userAuth.find(id);
-  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'update' });
+  const meta = bumpRevisionForResponse(res, 'users_update', id, { action: 'update' });
+  if (!meta) return;
   noCacheJson(res, {
     ok: true,
     revision: meta.revision,
@@ -1614,7 +1634,8 @@ app.post('/watch/api/admin/users/delete', (req, res) => {
     return;
   }
   if (userAuth.delete(id)) {
-    const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'delete' });
+    const meta = bumpRevisionForResponse(res, 'users_update', id, { action: 'delete' });
+    if (!meta) return;
     noCacheJson(res, { ok: true, revision: meta.revision });
     return;
   }
@@ -1631,7 +1652,8 @@ app.post('/watch/api/admin/invites/save', (req, res) => {
     noCacheJson(res, { error: saved.error || 'Ошибка сохранения приглашения' }, 400);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('users_update', saved.invite!.id, { action: 'invite_save' });
+  const meta = bumpRevisionForResponse(res, 'users_update', saved.invite!.id, { action: 'invite_save' });
+  if (!meta) return;
   noCacheJson(res, { ok: true, invite: saved.invite, revision: meta.revision });
 });
 
@@ -1641,7 +1663,8 @@ app.post('/watch/api/admin/invites/delete', (req, res) => {
     noCacheJson(res, { error: 'Приглашение не найдено' }, 404);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'invite_delete' });
+  const meta = bumpRevisionForResponse(res, 'users_update', id, { action: 'invite_delete' });
+  if (!meta) return;
   noCacheJson(res, { ok: true, revision: meta.revision });
 });
 
@@ -1691,7 +1714,8 @@ app.post('/watch/api/admin/streaming-settings', (req, res) => {
     noCacheJson(res, { ok: false, error: saved.error || 'Не удалось сохранить настройки' }, 500);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('health_update', 'streaming_settings');
+  const meta = bumpRevisionForResponse(res, 'health_update', 'streaming_settings');
+  if (!meta) return;
   noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
 });
 
@@ -2390,7 +2414,8 @@ app.post('/api/settings/streaming', (req, res) => {
     noCacheJson(res, { ok: false, error: saved.error || 'Ошибка сохранения настроек' }, 500);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('health_update', 'streaming_settings');
+  const meta = bumpRevisionForResponse(res, 'health_update', 'streaming_settings');
+  if (!meta) return;
   noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
 });
 
@@ -2404,7 +2429,8 @@ app.post('/api/settings/ui', (req, res) => {
     noCacheJson(res, { ok: false, error: saved.error || 'Ошибка сохранения настроек интерфейса' }, 500);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('health_update', 'ui_settings');
+  const meta = bumpRevisionForResponse(res, 'health_update', 'ui_settings');
+  if (!meta) return;
   noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
 });
 
@@ -2623,7 +2649,8 @@ app.post('/api/admin/apk/delete', (req, res) => {
     noCacheJson(res, { error: 'Релиз не найден' }, 404);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_delete', { id });
+  const meta = bumpRevisionForResponse(res, 'apk_update', 'apk_delete', { id });
+  if (!meta) return;
   noCacheJson(res, {
     ok: true,
     policy: apkManager.getPolicy(),
@@ -2653,10 +2680,11 @@ app.post('/api/admin/apk/policy', (req, res) => {
     noCacheJson(res, { ok: false, error: out.error || 'Ошибка обновления политики версий' }, 400);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_policy', {
+  const meta = bumpRevisionForResponse(res, 'apk_update', 'apk_policy', {
     minSupportedVersionCode: out.policy.minSupportedVersionCode,
     blockMode: out.policy.blockMode,
   });
+  if (!meta) return;
   noCacheJson(res, {
     ok: true,
     policy: out.policy,
@@ -2679,11 +2707,12 @@ app.post('/api/admin/apk/toggle-block', (req, res) => {
     );
     return;
   }
-  const meta = stateLifecycle.bumpRevision('apk_update', 'apk_toggle_block', {
+  const meta = bumpRevisionForResponse(res, 'apk_update', 'apk_toggle_block', {
     id,
     blocked,
     versionCode: out.release?.versionCode,
   });
+  if (!meta) return;
   noCacheJson(res, {
     ok: true,
     release: out.release,
@@ -3059,10 +3088,11 @@ app.post('/api/health/replace-url', async (req, res) => {
     unpause,
   });
   if (out.ok) {
-    const meta = stateLifecycle.bumpRevision('health_update', channelName, {
+    const meta = bumpRevisionForResponse(res, 'health_update', channelName, {
       action: 'replace_url',
       updatedPlaylists: out.updatedPlaylists,
     });
+    if (!meta) return;
     noCacheJson(res, { ...out, revision: meta.revision }, 200);
     return;
   }
@@ -3087,7 +3117,8 @@ app.post('/api/health/pause', (req, res) => {
   const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : undefined;
   const out = channelHealth.setChannelPaused({ channelName, paused, playlists });
   if (out.ok) {
-    const meta = stateLifecycle.bumpRevision('health_update', channelName, { action: 'pause', paused });
+    const meta = bumpRevisionForResponse(res, 'health_update', channelName, { action: 'pause', paused });
+    if (!meta) return;
     noCacheJson(res, { ...out, revision: meta.revision }, 200);
     return;
   }
@@ -3104,9 +3135,10 @@ app.post('/api/health/delete-channel', (req, res) => {
   const playlists = Array.isArray(req.body?.playlists) ? req.body.playlists : undefined;
   const out = channelHealth.deleteChannelFromPlaylists({ channelName, playlists });
   if (out.ok) {
-    const meta = stateLifecycle.bumpRevision('channel_delete', channelName, {
+    const meta = bumpRevisionForResponse(res, 'channel_delete', channelName, {
       updatedPlaylists: out.updatedPlaylists,
     });
+    if (!meta) return;
     noCacheJson(res, { ...out, revision: meta.revision }, 200);
     return;
   }
@@ -3187,7 +3219,8 @@ app.post('/api/epg/save', (req, res) => {
     return;
   }
   if (EpgParser.saveSources(epg)) {
-    const meta = stateLifecycle.bumpRevision('health_update', 'epg_sources');
+    const meta = bumpRevisionForResponse(res, 'health_update', 'epg_sources');
+    if (!meta) return;
     noCacheJson(res, { ok: true, revision: meta.revision });
     return;
   }
@@ -3255,7 +3288,8 @@ app.post('/api/users/save', (req, res) => {
       return;
     }
     const createdFull = created.user ? userAuth.find(created.user.id) : null;
-    const meta = stateLifecycle.bumpRevision('users_update', created.user!.id, { action: 'create' });
+    const meta = bumpRevisionForResponse(res, 'users_update', created.user!.id, { action: 'create' });
+    if (!meta) return;
     noCacheJson(res, {
       ok: true,
       user: created.user,
@@ -3289,7 +3323,8 @@ app.post('/api/users/save', (req, res) => {
       }
     }
     const syncedFull = userAuth.find(synced.id);
-    const meta = stateLifecycle.bumpRevision('users_update', synced.id, { action: 'upsert' });
+    const meta = bumpRevisionForResponse(res, 'users_update', synced.id, { action: 'upsert' });
+    if (!meta) return;
     noCacheJson(res, {
       ok: true,
       user: synced,
@@ -3308,7 +3343,8 @@ app.post('/api/users/save', (req, res) => {
     return;
   }
   const updatedFull = userAuth.find(id);
-  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'update' });
+  const meta = bumpRevisionForResponse(res, 'users_update', id, { action: 'update' });
+  if (!meta) return;
   noCacheJson(res, {
     ok: true,
     revision: meta.revision,
@@ -3355,7 +3391,8 @@ app.post('/api/users/delete', (req, res) => {
     return;
   }
   if (userAuth.delete(id)) {
-    const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'delete' });
+    const meta = bumpRevisionForResponse(res, 'users_update', id, { action: 'delete' });
+    if (!meta) return;
     noCacheJson(res, { ok: true, revision: meta.revision });
     return;
   }
@@ -3397,7 +3434,8 @@ app.post('/api/invites/save', (req, res) => {
     noCacheJson(res, { error: saved.error || 'Ошибка сохранения приглашения' }, code);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('users_update', saved.invite!.id, { action: 'invite_save' });
+  const meta = bumpRevisionForResponse(res, 'users_update', saved.invite!.id, { action: 'invite_save' });
+  if (!meta) return;
   noCacheJson(res, { ok: true, invite: saved.invite, revision: meta.revision });
 });
 
@@ -3408,7 +3446,8 @@ app.post('/api/invites/delete', (req, res) => {
     noCacheJson(res, { error: userAuth.getLastError() || 'Приглашение не найдено' }, code);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('users_update', id, { action: 'invite_delete' });
+  const meta = bumpRevisionForResponse(res, 'users_update', id, { action: 'invite_delete' });
+  if (!meta) return;
   noCacheJson(res, { ok: true, revision: meta.revision });
 });
 
@@ -3625,10 +3664,11 @@ app.post('/api/catalog/aggregate', async (_req, res) => {
     noCacheJson(res, { ok: false, error: result.error || 'Ошибка агрегации каталога' }, 500);
     return;
   }
-  const meta = stateLifecycle.bumpRevision('reconcile', 'aggregate', {
+  const meta = bumpRevisionForResponse(res, 'reconcile', 'aggregate', {
     addedChannels: result.addedChannels,
     addedStreams: result.addedStreams,
   });
+  if (!meta) return;
   noCacheJson(res, {
     ok: true,
     output: `Aggregated ${result.addedChannels} channels and ${result.addedStreams} streams`,
