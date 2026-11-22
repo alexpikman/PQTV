@@ -297,11 +297,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusEl = document.getElementById('fb-status-text');
         try {
             if (statusEl) statusEl.textContent = 'Firestore: проверка облачной базы...';
-            const cloudMeta = typeof window.PQTVFirebase.getCloudManifestStatus === 'function'
-                ? await window.PQTVFirebase.getCloudManifestStatus()
-                : null;
+            if (typeof window.PQTVFirebase.getCloudManifestStatus !== 'function') {
+                throw new Error('Firebase-клиент не поддерживает чтение cloud manifest');
+            }
+            const cloudMeta = await window.PQTVFirebase.getCloudManifestStatus();
+            if (!cloudMeta) {
+                throw new Error('Не удалось определить состояние cloud manifest');
+            }
 
-            if (!cloudMeta || !cloudMeta.exists) {
+            if (!cloudMeta.exists) {
                 const seeded = await syncCloudDatabase();
                 if (!seeded) throw new Error('Не удалось создать первичный снимок Firestore');
                 return;
