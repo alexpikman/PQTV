@@ -20,6 +20,11 @@ export interface UnifiedOpResult {
   [key: string]: unknown;
 }
 
+function revisionWriteFailure(meta: { revision: number }): UnifiedOpResult | null {
+  const error = stateLifecycle.getLastError();
+  return error ? { ok: false, status: 500, error, revision: meta.revision } : null;
+}
+
 function lockKey(): string {
   return config.dataDir;
 }
@@ -41,6 +46,12 @@ export async function createPlaylistUnified(name: string): Promise<UnifiedOpResu
       return { ok: false, status: 500, error: rec.error || 'Не удалось обновить каталог' };
     }
     const meta = stateLifecycle.bumpRevision('playlist_create', clean);
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) {
+      storage.deletePlaylist(clean);
+      catalogStore.reconcile({ save: true });
+      return revisionFailure;
+    }
     return { ok: true, status: 200, playlist: clean, revision: meta.revision };
   });
 }
@@ -53,6 +64,10 @@ export async function savePlaylistChannelsUnified(
     const clean = name.replace(/\.m3u$/i, '').trim();
     if (!storage.isValidFilename(clean)) {
       return { ok: false, status: 400, error: 'Некорректное имя плейлиста' };
+    }
+    const before = storage.getChannels(clean);
+    if (storage.getLastError()) {
+      return { ok: false, status: 500, error: storage.getLastError() || 'Не удалось прочитать текущий плейлист' };
     }
     if (!storage.saveChannels(clean, channels)) {
       return {
@@ -77,6 +92,12 @@ export async function savePlaylistChannelsUnified(
       removedStreams: rec.removedStreams,
       prunedHealthIssues: healthPrune.removed,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) {
+      storage.saveChannels(clean, before, { skipBackup: true });
+      catalogStore.reconcile({ save: true });
+      return revisionFailure;
+    }
     return {
       ok: true,
       status: 200,
@@ -213,6 +234,8 @@ export async function deletePlaylistUnified(name: string): Promise<UnifiedOpResu
       removedStreams: rec.removedStreams,
       prunedHealthIssues: healthPrune.removed,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
 
     return {
       ok: true,
@@ -254,6 +277,8 @@ export async function restoreBackupUnified(
       filename,
       channelsCount: res.channelsCount,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
     return {
       ok: true,
       status: 200,
@@ -279,6 +304,8 @@ export async function deleteBackupUnified(filename: string): Promise<UnifiedOpRe
       };
     }
     const meta = stateLifecycle.bumpRevision('backup_delete', filename);
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
     return { ok: true, status: 200, deleted: filename, revision: meta.revision };
   });
 }
@@ -305,6 +332,8 @@ export async function saveAuthoritativeSourcesUnified(sources: SourceItem[]): Pr
       removedStreams: rec.removedStreams,
       removedChannels: rec.removedChannels,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
     return {
       ok: true,
       status: 200,
@@ -347,6 +376,8 @@ export async function upsertCatalogSourceUnified(input: {
     const meta = stateLifecycle.bumpRevision('source_save', res.source?.id || String(res.id || ''), {
       name: input.name,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
     return {
       ok: true,
       status: 200,
@@ -383,6 +414,8 @@ export async function deleteSourceUnified(id: string | number): Promise<UnifiedO
       removedStreams: res.removedStreams,
       removedChannels: res.removedChannels,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
     return {
       ok: true,
       status: 200,
@@ -418,6 +451,8 @@ export async function deleteStreamUnified(streamId: number): Promise<UnifiedOpRe
     const meta = stateLifecycle.bumpRevision('stream_delete', String(streamId), {
       removedChannels: res.removedChannels,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
     return {
       ok: true,
       status: 200,
@@ -441,6 +476,8 @@ export async function reconcileCatalogUnified(): Promise<UnifiedOpResult> {
       updatedChannels: rec.updatedChannels,
       prunedHealthIssues: pruned.removed,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
     return {
       ok: true,
       status: 200,
@@ -725,6 +762,8 @@ export async function hydrateStateUnified(body: {
       prunedHealthIssues: healthPrune.removed,
       alertsHydrated,
     });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
 
     return {
       ok: true,
