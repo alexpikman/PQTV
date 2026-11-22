@@ -1247,7 +1247,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 url: item.url,
                 status: checks.get(item.url) || 'unknown',
             }, 'parser', index));
-            const renderParserTable = () => renderSharedChannelTable(parseResultsContainer, rows, [
+            const renderParserTable = () => {
+                renderSharedChannelTable(parseResultsContainer, rows, [
                 { key: 'sourceName', label: 'Источник', filterType: 'text' },
                 { key: 'type', label: 'Тип источника', filterType: 'select' },
                 { key: 'name', label: 'Канал', filterType: 'text' },
@@ -1283,8 +1284,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(query)}"`,
                 onChange: renderParserTable,
                 emptyText: 'Потоков по выбранным фильтрам не найдено',
-            });
-            renderParserTable();
+            } );
+
 
             parseResultsContainer.querySelectorAll('.parse-row').forEach(tr => {
                 tr.onclick = (e) => {
@@ -1302,6 +1303,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     decodeURIComponent(b.dataset.name)
                 );
             });
+
+            };
+            renderParserTable();
         } catch (e) {
             if (parseProgressStatus) parseProgressStatus.textContent = 'Ошибка при парсинге';
             console.error(e);
