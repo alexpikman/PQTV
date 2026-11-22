@@ -115,13 +115,14 @@ class StateLifecycleManager {
       lastAction: action,
       lastTarget: target,
     };
-    if (!this.saveStateMeta(next)) throw new Error(this.lastError || 'Не удалось сохранить ревизию состояния');
-    if (!this.appendLog({
+    this.lastError = '';
+    this.saveStateMeta(next);
+    this.appendLog({
       revision: next.revision,
       action,
       target,
       details,
-    })) throw new Error(this.lastError || 'Не удалось записать журнал ревизий');
+    });
     return next;
   }
 
@@ -141,13 +142,14 @@ class StateLifecycleManager {
       lastAction: action,
       lastTarget: target,
     };
-    if (!this.saveStateMeta(next)) throw new Error(this.lastError || 'Не удалось сохранить ревизию состояния');
-    if (!this.appendLog({
+    this.lastError = '';
+    this.saveStateMeta(next);
+    this.appendLog({
       revision: next.revision,
       action,
       target,
       details,
-    })) throw new Error(this.lastError || 'Не удалось записать журнал ревизий');
+    });
     return next;
   }
 

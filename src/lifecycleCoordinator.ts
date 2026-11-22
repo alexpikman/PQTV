@@ -130,6 +130,10 @@ export async function applyCategoryToPlaylistUrlsUnified(
     }
     const updatedPlaylists = pending.map((item) => item.name);
     const meta = stateLifecycle.bumpRevision('category_bulk_update', clean, { category: group, selectedUrls: urls.size, updatedChannels, updatedPlaylists });
+    const revisionError = stateLifecycle.getLastError();
+    if (revisionError) {
+      return { ok: false, status: 500, error: revisionError, revision: meta.revision, updatedChannels, updatedPlaylists };
+    }
     return { ok: true, status: 200, updatedChannels, updatedPlaylists, revision: meta.revision };
   });
 }
