@@ -360,66 +360,56 @@
                 </div>
 
                 <div id="screen-catalog">
-                    <div class="col-header">
-                        <h2>Каталог каналов</h2>
-                        <div style="display:flex; gap:8px;">
-                            <button id="btn-catalog-check" class="btn btn-secondary">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-                                </svg>
-                                <span id="btn-catalog-check-text">Проверить потоки</span>
-                            </button>
-                            <button id="btn-catalog-aggregate" class="btn btn-secondary">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                    <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
-                                </svg>
-                                <span id="btn-catalog-aggregate-text">Собрать из источников</span>
-                            </button>
-                        </div>
-                    </div>
-
                     <div class="catalog-stats" id="catalog-stats">
                         <!-- JS заполнит -->
                     </div>
-                    <div class="catalog-toolbar">
-                        <div class="pl-dropdown" id="pl-dropdown">
-                            <button type="button" class="pl-dropdown-toggle" id="pl-dropdown-toggle">
-                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
-                                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
-                                </svg>
-                                <span id="pl-dropdown-label">Все плейлисты</span>
-                                <svg class="pl-dropdown-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:14px;height:14px;">
-                                    <polyline points="6 9 12 15 18 9"/>
-                                </svg>
-                            </button>
-                            <div class="pl-dropdown-menu hidden" id="pl-dropdown-menu">
-                                <div class="pl-dropdown-head">
-                                    <button type="button" class="pl-dropdown-toggle-all" id="pl-dropdown-toggle-all">Выбрать все</button>
-                                </div>
-                                <div class="pl-dropdown-list" id="pl-dropdown-list">
-                                    <!-- JS заполнит -->
-                                </div>
-                            </div>
-                        </div>
 
-                        <input type="text" id="catalog-search" placeholder="Поиск по названию..." style="flex:1; padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none;">
-                        <button type="button" id="catalog-find-btn" class="btn btn-primary" style="padding:10px 20px;">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:15px;height:15px;">
-                                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    <div class="col-header catalog-page-heading">
+                        <h2>Список каналов каталога</h2>
+                    </div>
+
+                    <div class="catalog-actions">
+                        <button id="btn-catalog-check" class="btn btn-secondary">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                             </svg>
-                            Найти
+                            <span id="btn-catalog-check-text">Проверить потоки</span>
                         </button>
-                        <select id="catalog-filter" style="padding:10px 14px; background:var(--surface); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none; min-width:160px;">
-                            <option value="">Любой статус</option>
-                            <option value="online">● Online</option>
-                            <option value="offline">● Offline</option>
+                        <button id="btn-catalog-aggregate" class="btn btn-secondary">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+                            </svg>
+                            <span id="btn-catalog-aggregate-text">Собрать из источников</span>
+                        </button>
+                    </div>
+
+                    <div class="catalog-toolbar catalog-toolbar-unified">
+                        <select id="catalog-source-filter" aria-label="Фильтр по источнику">
+                            <option value="">Все источники</option>
+                        </select>
+                        <select id="catalog-playlist-filter" aria-label="Фильтр по собственным плейлистам">
+                            <option value="">Все собственные плейлисты</option>
+                        </select>
+                        <select id="catalog-filter" aria-label="Фильтр по статусу">
+                            <option value="">Все статусы</option>
+                            <option value="online">Online</option>
+                            <option value="offline">Offline</option>
+                            <option value="unknown">Неизвестно</option>
                             <option value="no_streams">Без потоков</option>
                         </select>
+                        <input type="search" id="catalog-search" placeholder="Поиск по названию канала..." aria-label="Поиск по названию канала">
+                        <label class="catalog-page-size">
+                            <span>Строк:</span>
+                            <select id="catalog-page-size" aria-label="Количество строк">
+                                <option value="100" selected>100</option>
+                                <option value="200">200</option>
+                                <option value="300">300</option>
+                            </select>
+                        </label>
                     </div>
 
                     <div id="catalog-list-container"></div>
-                    <div style="text-align:center; padding:14px;"><button id="catalog-show-more" class="btn btn-secondary hidden">Показать ещё</button></div>
                 </div>
 
                 <div id="screen-health" class="hidden">
