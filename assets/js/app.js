@@ -158,6 +158,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const NON_SYNC_POST_PREFIXES = [
         '/api/cloud/hydrate',
+        '/api/catalog/hydrate',
         '/api/users/sync-from-firebase',
         '/api/invites/sync-from-firebase',
         '/api/stream/parse',
@@ -231,6 +232,32 @@ document.addEventListener('DOMContentLoaded', () => {
             if (statusEl) statusEl.textContent = 'Firestore: ошибка сохранения';
             return false;
         }
+    }
+
+    async function syncCatalogCloudSlice(revision, opts = {}) {
+        if (!fbAdminConnected || !window.PQTVFirebase) return false;
+        const exported = await apiRequest('/api/catalog/export');
+        if (!exported || !exported.ok || !exported.catalog) {
+            const msg = (exported && exported.error) || 'Не удалось экспортировать каталог для сохранения в Firestore';
+            showToast(msg, 'err');
+            return false;
+        }
+        const manifestExtra = {};
+        return syncTargetedCloudUpdate(
+            typeof revision === 'number' ? revision : exported.revision,
+            async () => {
+                const chunkInfo = await window.PQTVFirebase.saveCatalogToCloud(exported.catalog, false);
+                manifestExtra.catalogChannelChunks = chunkInfo.channelChunks;
+                manifestExtra.catalogStreamChunks = chunkInfo.streamChunks;
+                if (opts.includeSources && typeof window.PQTVFirebase.saveSourcesToCloud === 'function') {
+                    manifestExtra.sourceIds = await window.PQTVFirebase.saveSourcesToCloud(exported.sources || [], false);
+                }
+                if (opts.includeSources && typeof window.PQTVFirebase.saveSourceIndexToCloud === 'function') {
+                    manifestExtra.sourceIndexIds = await window.PQTVFirebase.saveSourceIndexToCloud(exported.sourceIndex || {}, false);
+                }
+            },
+            manifestExtra
+        );
     }
 
     function scheduleCloudSync() {
@@ -365,7 +392,7 @@ document.addEventListener('DOMContentLoaded', () => {
             isMutation || (methodUpper === 'GET' && url.startsWith('/api/source/rebuild'))
         );
 
-        if (isMutation && !fbAdminConnected && !url.startsWith('/api/cloud/hydrate')) {
+        if (isMutation && !fbAdminConnected && !url.startsWith('/api/cloud/hydrate') && !url.startsWith('/api/catalog/hydrate')) {
             return {
                 ok: false,
                 _httpStatus: 503,
@@ -2586,6 +2613,27 @@ document.addEventListener('DOMContentLoaded', () => {
     let catalogActivePL = [];       // выбранные (пусто = все)
 
     async function loadCatalog() {
+        if (cloudBootstrapPromise) {
+            try { await cloudBootstrapPromise; } catch {}
+        }
+        if (fbAdminConnected && window.PQTVFirebase && typeof window.PQTVFirebase.loadCatalogFromCloud === 'function') {
+            try {
+                const cloudCat = await window.PQTVFirebase.loadCatalogFromCloud();
+                if (cloudCat && cloudCat.exists && cloudCat.catalog) {
+                    const hydrated = await apiRequest('/api/catalog/hydrate', 'POST', {
+                        revision: cloudCat.revision,
+                        sources: cloudCat.sources,
+                        catalog: cloudCat.catalog,
+                    }, { skipCloudSync: true });
+                    if (!hydrated || !hydrated.ok) {
+                        showToast((hydrated && hydrated.error) || 'Не удалось синхронизировать каталог из Firestore', 'err');
+                    }
+                }
+            } catch (err) {
+                console.error('loadCatalogFromCloud:', err);
+                showToast('Ошибка загрузки каталога из Firestore: ' + ((err && err.message) || 'неизвестная ошибка'), 'err');
+            }
+        }
         // Каждый вызов независим — если один упал, остальные работают
         try { await loadCatalogStats(); } catch(e) { console.error('stats:', e); }
         try { await loadCatalogSources(); } catch(e) { console.error('sources:', e); }
@@ -2830,7 +2878,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById('catalog-list-container');
         if (!el) return;
         if (catalogData.length === 0) {
-            el.innerHTML = '<p class="placeholder-text">Каталог пуст. Нажмите «Импорт из плейлистов» чтобы загрузить ваши каналы.</p>';
+            el.innerHTML = '<p class="placeholder-text">Каталог пуст. Нажмите «Собрать из источников», чтобы загрузить каналы.</p>';
             return;
         }
 
@@ -2839,14 +2887,17 @@ document.addEventListener('DOMContentLoaded', () => {
             { key: 'code', label: 'Код', filterType: 'text', render: (row) => `<span class="shared-table-code">${escapeHtml(row.code)}</span>` },
             {
                 key: 'name', label: 'Название', filterType: 'text',
-                render: (row) => `<div class="ch-title">${escapeHtml(row.name)}</div>${row.tvgId ? `<div class="ch-group">${escapeHtml(row.tvgId)}</div>` : ''}`,
+                render: (row) => `<div class="ch-title">${escapeHtml(row.name)}</div>`,
             },
             { key: 'logo', label: 'Логотип URL', filterType: 'text', render: (row) => escapeHtml(row.logo || '—') },
             { key: 'url', label: 'Основной URL', filterType: 'text', render: (row) => '<code class="shared-table-url">' + escapeHtml(row.url || '—') + '</code>' },
             { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
             { key: 'sourceName', label: 'Источник', filterType: 'text' },
             { key: 'altNames', label: 'Альтернативные названия', filterType: 'text' },
-            { key: 'status', label: 'Статус', filterType: 'select' },
+            {
+                key: 'status', label: 'Статус', filterType: 'select',
+                render: (row) => renderStatusBadge(row.onlineCount, row.streamCount, row.offlineCount, row.unknownCount),
+            },
             { key: 'sourceId', label: 'ID источника', filterType: 'text' },
             { key: 'createdAt', label: 'Добавлен', filterType: 'text', render: (row) => row.createdAt ? new Date(row.createdAt * 1000).toLocaleString() : '—' },
             { key: 'updatedAt', label: 'Изменён', filterType: 'text', render: (row) => row.updatedAt ? new Date(row.updatedAt * 1000).toLocaleString() : '—' },
@@ -2860,16 +2911,13 @@ document.addEventListener('DOMContentLoaded', () => {
             { key: 'offlineCount', label: 'Offline потоков', filterType: 'text' },
             { key: 'unknownCount', label: 'Неизвестно потоков', filterType: 'text' },
             {
-                key: 'onlineCount', label: 'Online', filterType: 'text',
-                render: (row) => renderStatusBadge(row.onlineCount, row.streamCount, row.offlineCount, row.unknownCount),
-            },
-            {
                 key: 'actions', label: 'Действия', sortable: false, filterType: 'none',
                 render: (row) => `<button class="icon-btn accent" data-cat-view="${row.id}" title="Потоки">${I.search}</button>`,
             },
         ], {
             key: 'catalog',
             defaultSort: 'name',
+            pageSize: 200,
             onChange: () => { catalogOffset = 0; void loadCatalogChannels(); },
             onPageChange: renderCatalogChannels,
             emptyText: 'Каналов по выбранным фильтрам не найдено',
@@ -3019,11 +3067,12 @@ document.addEventListener('DOMContentLoaded', () => {
         modal.querySelectorAll('[data-del-stream]').forEach(b => {
             b.onclick = async () => {
                 if (!(await uiConfirm('Удалить поток?'))) return;
-                const res = await apiRequest('/api/catalog/stream/delete', 'POST', { id: +b.dataset.delStream });
+                const res = await apiRequest('/api/catalog/stream/delete', 'POST', { id: +b.dataset.delStream }, { skipCloudSync: true });
                 if (!res || !res.ok) {
                     showToast((res && res.error) || 'Не удалось удалить поток', 'err');
                     return;
                 }
+                if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision))) return;
                 showToast('Поток удалён', 'ok');
                 modal.remove();
                 if ((res.removedChannels || 0) === 0) {
@@ -3113,13 +3162,16 @@ document.addEventListener('DOMContentLoaded', () => {
             btnCatAgg.disabled = true;
             if (txt) txt.textContent = 'Собираю...';
             try {
-                const res = await apiRequest('/api/catalog/aggregate', 'POST', {});
-                if (res.ok) {
-                    loadCatalog();
-                    showToast('Сбор каналов завершён', 'ok');
-                } else {
-                    showToast('Ошибка: ' + (res.output || ''), 'err');
+                const res = await apiRequest('/api/catalog/aggregate', 'POST', {}, { skipCloudSync: true });
+                if (!res || !res.ok) {
+                    showToast('Ошибка: ' + ((res && (res.error || res.output)) || 'неизвестная'), 'err');
+                    return;
                 }
+                if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision, { includeSources: true }))) {
+                    return;
+                }
+                await loadCatalog();
+                showToast('Сбор каналов завершён', 'ok');
             } finally {
                 if (txt) txt.textContent = 'Собрать из источников';
                 btnCatAgg.disabled = false;
@@ -3133,15 +3185,23 @@ document.addEventListener('DOMContentLoaded', () => {
             const txt = document.getElementById('btn-catalog-check-text');
             btnCatCheck.disabled = true;
             if (txt) txt.textContent = 'Проверка...';
-            const res = await apiRequest('/api/catalog/check', 'POST', { limit: 500 });
-            if (txt) txt.textContent = 'Проверить потоки';
-            btnCatCheck.disabled = false;
-            if (res.ok) {
-                loadCatalogStats();
-                loadCatalogChannels();
+            try {
+                const res = await apiRequest('/api/catalog/check', 'POST', { limit: 500 }, { skipCloudSync: true });
+                if (!res || !res.ok) {
+                    showToast('Ошибка: ' + ((res && (res.error || res.output)) || 'неизвестная'), 'err');
+                    return;
+                }
+                if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision))) {
+                    return;
+                }
+                await Promise.all([
+                    loadCatalogStats().catch(() => {}),
+                    loadCatalogChannels().catch(() => {}),
+                ]);
                 showToast('Проверка потоков завершена', 'ok');
-            } else {
-                showToast('Ошибка: ' + (res.output || ''), 'err');
+            } finally {
+                if (txt) txt.textContent = 'Проверить потоки';
+                btnCatCheck.disabled = false;
             }
         };
     }
@@ -5052,9 +5112,12 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             btnReconcile.onclick = async () => {
                 btnReconcile.disabled = true;
                 try {
-                    const res = await apiRequest('/api/catalog/reconcile', 'POST', {});
+                    const res = await apiRequest('/api/catalog/reconcile', 'POST', {}, { skipCloudSync: true });
                     if (!res || !res.ok) {
                         showToast((res && res.error) || 'Ошибка синхронизации каталога', 'err');
+                        return;
+                    }
+                    if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision))) {
                         return;
                     }
                     showToast(`Синхронизировано (удалено каналов: ${res.removedChannels || 0}, потоков: ${res.removedStreams || 0})`, 'ok');

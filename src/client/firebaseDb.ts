@@ -27,6 +27,7 @@ export interface CloudChannelItem {
 
 export interface CloudSourceItem {
   id: string;
+  catalogId?: number;
   name: string;
   type: string;
   url: string;
@@ -36,6 +37,10 @@ export interface CloudSourceItem {
   origin?: string;
   timeoutSec?: number;
   ignoreTlsErrors?: boolean;
+  created_at?: number;
+  last_run?: number;
+  last_status?: string;
+  total_found?: number;
 }
 
 export interface CloudEpgSourceItem {
@@ -421,6 +426,10 @@ export async function bumpCloudManifestRevision(
     addLocalUserId?: string;
     removeLocalUserId?: string;
     playlists?: string[];
+    sourceIds?: string[];
+    sourceIndexIds?: string[];
+    catalogChannelChunks?: number;
+    catalogStreamChunks?: number;
   }
 ): Promise<boolean> {
   const uid = auth.currentUser?.uid;
@@ -451,6 +460,14 @@ export async function bumpCloudManifestRevision(
             .filter(isValidPlaylistName)
             .sort(),
         }
+      : {}),
+    ...(Array.isArray(extra?.sourceIds) ? { sourceIds: extra.sourceIds } : {}),
+    ...(Array.isArray(extra?.sourceIndexIds) ? { sourceIndexIds: extra.sourceIndexIds } : {}),
+    ...(typeof extra?.catalogChannelChunks === 'number'
+      ? { catalogChannelChunks: Math.max(0, Math.floor(extra.catalogChannelChunks)) }
+      : {}),
+    ...(typeof extra?.catalogStreamChunks === 'number'
+      ? { catalogStreamChunks: Math.max(0, Math.floor(extra.catalogStreamChunks)) }
       : {}),
   };
 
@@ -773,7 +790,7 @@ export async function saveCatalogToCloud(
   }
 
   const cleanChannels = (Array.isArray(catalog.channels) ? catalog.channels : []).map((c) => ({
-    id: Number(c.id) || 0,
+    id: Math.max(1, Math.floor(Number(c.id) || 1)),
     code: s(c.code, 32),
     name: s(c.name, 200),
     logo: s(c.logo, 1000),
@@ -785,23 +802,23 @@ export async function saveCatalogToCloud(
     alt_names: Array.isArray(c.alt_names)
       ? c.alt_names.map((x) => s(x, 120)).filter(Boolean).slice(0, 30)
       : [],
-    created_at: Number(c.created_at) || 0,
-    updated_at: Number(c.updated_at) || 0,
+    created_at: Math.max(0, Math.floor(Number(c.created_at) || 0)),
+    updated_at: Math.max(0, Math.floor(Number(c.updated_at) || 0)),
   }));
 
   const cleanStreams = (Array.isArray(catalog.streams) ? catalog.streams : []).map((st) => {
     const out: Record<string, unknown> = {
-      id: Number(st.id) || 0,
-      channel_id: Number(st.channel_id) || 0,
+      id: Math.max(1, Math.floor(Number(st.id) || 1)),
+      channel_id: Math.max(1, Math.floor(Number(st.channel_id) || 1)),
       url: s(st.url, 1500),
-      source_id: st.source_id !== null && st.source_id !== undefined ? Number(st.source_id) : null,
+      source_id: st.source_id !== null && st.source_id !== undefined ? Math.floor(Number(st.source_id)) : null,
       source_name: st.source_name ? s(st.source_name, 120) : null,
       source_type: st.source_type ? s(st.source_type, 32) : null,
       online: Number(st.online) === 1 ? 1 : Number(st.online) === -1 ? -1 : 0,
-      http_code: Number(st.http_code) || 0,
-      response_ms: Number(st.response_ms) || 0,
-      checked_at: Number(st.checked_at) || 0,
-      added_at: Number(st.added_at) || 0,
+      http_code: Math.max(0, Math.floor(Number(st.http_code) || 0)),
+      response_ms: Math.max(0, Math.floor(Number(st.response_ms) || 0)),
+      checked_at: Math.max(0, Math.floor(Number(st.checked_at) || 0)),
+      added_at: Math.max(0, Math.floor(Number(st.added_at) || 0)),
     };
     if (st.diag_code) out.diag_code = s(st.diag_code, 32);
     if (st.diag_reason) out.diag_reason = s(st.diag_reason, 220);
@@ -811,16 +828,17 @@ export async function saveCatalogToCloud(
 
   const cleanSources = (Array.isArray(catalog.sources) ? catalog.sources : []).slice(0, 100).map((cs) => {
     const out: Record<string, unknown> = {
-      id: Number(cs.id) || 1,
+      id: Math.max(1, Math.floor(Number(cs.id) || 1)),
       name: s(cs.name, 120),
       type: s(cs.type || 'm3u', 32),
       url: s(cs.url, 1000),
       enabled: Number(cs.enabled) ? 1 : 0,
-      created_at: Number(cs.created_at) || 0,
+      created_at: Math.max(0, Math.floor(Number(cs.created_at) || 0)),
     };
-    if (cs.last_run !== undefined) out.last_run = Number(cs.last_run) || 0;
+    if (cs.stringId) out.stringId = s(cs.stringId, 64);
+    if (cs.last_run !== undefined) out.last_run = Math.max(0, Math.floor(Number(cs.last_run) || 0));
     if (cs.last_status !== undefined) out.last_status = s(cs.last_status, 32);
-    if (cs.total_found !== undefined) out.total_found = Number(cs.total_found) || 0;
+    if (cs.total_found !== undefined) out.total_found = Math.max(0, Math.floor(Number(cs.total_found) || 0));
     return out;
   });
 
@@ -888,6 +906,131 @@ export async function saveCatalogToCloud(
     });
   }
   return { channelChunks: chChunks.length, streamChunks: stChunks.length };
+}
+
+export async function loadCatalogFromCloud(): Promise<{
+  exists: boolean;
+  revision?: number | null;
+  sources?: CloudSourceItem[];
+  catalog?: CloudExportPayload['catalog'];
+}> {
+  const sumRef = doc(db, 'catalog_summary', 'main');
+  let sumSnap;
+  try {
+    sumSnap = await getDoc(sumRef);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.GET, sumRef.path);
+  }
+  if (!sumSnap.exists()) {
+    return { exists: false };
+  }
+
+  const sd = sumSnap.data();
+  const chCount = Math.max(0, Math.min(500, Number(sd.channelChunkCount) || 0));
+  const stCount = Math.max(0, Math.min(500, Number(sd.streamChunkCount) || 0));
+
+  const [manifest, channelSnaps, streamSnaps] = await Promise.all([
+    readManifest().catch(() => null),
+    Promise.all(
+      Array.from({ length: chCount }, async (_, index) => {
+        const ref = doc(db, 'catalog_chunks', `ch_${index}`);
+        try {
+          return await getDoc(ref);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.GET, ref.path);
+        }
+      })
+    ),
+    Promise.all(
+      Array.from({ length: stCount }, async (_, index) => {
+        const ref = doc(db, 'catalog_stream_chunks', `st_${index}`);
+        try {
+          return await getDoc(ref);
+        } catch (err) {
+          handleFirestoreError(err, OperationType.GET, ref.path);
+        }
+      })
+    ),
+  ]);
+
+  const channels: Array<Record<string, unknown>> = [];
+  for (const snap of channelSnaps) {
+    if (snap.exists() && Array.isArray(snap.data().items)) {
+      channels.push(...(snap.data().items as Array<Record<string, unknown>>));
+    }
+  }
+
+  const streams: Array<Record<string, unknown>> = [];
+  for (const snap of streamSnaps) {
+    if (snap.exists() && Array.isArray(snap.data().items)) {
+      streams.push(...(snap.data().items as Array<Record<string, unknown>>));
+    }
+  }
+
+  const catalogSources = Array.isArray(sd.sources) ? (sd.sources as Array<Record<string, unknown>>) : [];
+  const catByStringId = new Map<string, Record<string, unknown>>();
+  const catByUrl = new Map<string, Record<string, unknown>>();
+  for (const cs of catalogSources) {
+    if (typeof cs.stringId === 'string' && cs.stringId) catByStringId.set(cs.stringId, cs);
+    if (typeof cs.url === 'string' && cs.url) catByUrl.set(cs.url, cs);
+  }
+
+  let sources: CloudSourceItem[] | undefined;
+  if (manifest && Array.isArray(manifest.sourceIds)) {
+    const loadedSources: CloudSourceItem[] = [];
+    await Promise.all(
+      manifest.sourceIds.map(async (sid) => {
+        const ref = doc(db, 'sources', sid);
+        try {
+          const snap = await getDoc(ref);
+          if (snap.exists()) {
+            const d = snap.data();
+            const sourceId = String(d.id || sid);
+            const url = String(d.url || '');
+            const matchedCat = catByStringId.get(sourceId) || catByUrl.get(url);
+            const item: CloudSourceItem = {
+              id: sourceId,
+              name: String(d.name || ''),
+              type: String(d.type || 'm3u'),
+              url,
+              enabled: Boolean(d.enabled),
+            };
+            if (matchedCat) {
+              const catNum = Number(matchedCat.id);
+              if (Number.isInteger(catNum) && catNum > 0) item.catalogId = catNum;
+              if (typeof matchedCat.created_at === 'number' && matchedCat.created_at > 0) item.created_at = matchedCat.created_at;
+              if (typeof matchedCat.last_run === 'number' && matchedCat.last_run > 0) item.last_run = matchedCat.last_run;
+              if (typeof matchedCat.last_status === 'string' && matchedCat.last_status) item.last_status = matchedCat.last_status;
+              if (typeof matchedCat.total_found === 'number' && matchedCat.total_found >= 0) item.total_found = matchedCat.total_found;
+            }
+            if (typeof d.userAgent === 'string' && d.userAgent) item.userAgent = d.userAgent;
+            if (typeof d.referer === 'string' && d.referer) item.referer = d.referer;
+            if (typeof d.origin === 'string' && d.origin) item.origin = d.origin;
+            if (typeof d.timeoutSec === 'number' && d.timeoutSec > 0) item.timeoutSec = d.timeoutSec;
+            if (typeof d.ignoreTlsErrors === 'boolean') item.ignoreTlsErrors = d.ignoreTlsErrors;
+            loadedSources.push(item);
+          }
+        } catch (err) {
+          handleFirestoreError(err, OperationType.GET, ref.path);
+        }
+      })
+    );
+    sources = loadedSources;
+  }
+
+  return {
+    exists: true,
+    revision: manifest?.revision ?? null,
+    ...(sources ? { sources } : {}),
+    catalog: {
+      nextChannelId: Math.max(1, Number(sd.nextChannelId) || 1),
+      nextStreamId: Math.max(1, Number(sd.nextStreamId) || 1),
+      nextSourceId: Math.max(1, Number(sd.nextSourceId) || 1),
+      sources: catalogSources,
+      channels,
+      streams,
+    },
+  };
 }
 
 function clampCloudInt(v: unknown, def: number, min: number, max: number): number {

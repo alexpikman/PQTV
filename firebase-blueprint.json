@@ -555,7 +555,7 @@
     },
     "CatalogSummary": {
       "title": "CatalogSummary",
-      "description": "Catalog metadata, counters, sources, and chunk counts.",
+      "description": "Catalog metadata, counters, sources (id, optional stringId, name, type, url, enabled, created_at, last_run, last_status, total_found), and chunk counts.",
       "type": "object",
       "properties": {
         "docId": {
@@ -579,7 +579,8 @@
           "type": "integer"
         },
         "sources": {
-          "type": "array"
+          "type": "array",
+          "description": "List of up to 100 CatalogSource objects with id, optional stringId, name, type, url, enabled, created_at, and optional run stats."
         },
         "createdAt": {
           "type": "string",

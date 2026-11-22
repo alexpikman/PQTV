@@ -538,4 +538,184 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     );
     assert.deepEqual(statsAfter, statsBefore);
   });
+
+  test('13. Multi-stream catalog channels select fresh online primary stream and consistent source metadata', async () => {
+    resetTempWorkspace();
+
+    const s1 = { id: 'src_stale', name: 'Stale Src', type: 'm3u', url: 'https://example.com/stale.m3u', enabled: true };
+    const s2 = { id: 'src_fresh', name: 'Fresh Src', type: 'm3u', url: 'https://example.com/fresh.m3u', enabled: true };
+    assert.equal((await api('/api/sources/save', 'POST', { sources: [s1, s2] })).status, 200);
+
+    const savedSources = (await api<{ sources: Array<{ id: string; catalogId: number; name: string; type: string }> }>('/api/sources')).data.sources;
+    const srcStale = savedSources.find((s) => s.id === 'src_stale')!;
+    const srcFresh = savedSources.find((s) => s.id === 'src_fresh')!;
+
+    catalogStoreMod.catalogStore.ingestSourceItems(srcStale, [
+      { name: 'MultiFreshCh', url: 'https://cdn.example.com/stale_online.m3u8', logo: '', group: 'G', tvg_id: '' },
+    ]);
+    catalogStoreMod.catalogStore.ingestSourceItems(srcFresh, [
+      { name: 'MultiFreshCh', url: 'https://cdn.example.com/fresh_online.m3u8', logo: '', group: 'G', tvg_id: '' },
+    ]);
+
+    const raw = catalogStoreMod.catalogStore.exportRawState();
+    const now = Math.floor(Date.now() / 1000);
+    for (const st of raw.streams) {
+      if (st.url.includes('stale_online')) {
+        st.online = 1;
+        st.checked_at = now - 3600; // expired TTL (> 5 min) -> treated as unknown
+      } else if (st.url.includes('fresh_online')) {
+        st.online = 1;
+        st.checked_at = now - 10; // fresh online
+      }
+    }
+    catalogStoreMod.catalogStore.hydrateRawState(raw);
+
+    const catRes = await api<{
+      channels: Array<{
+        name: string;
+        primaryUrl: string;
+        sourceId: string;
+        sourceName: string;
+        status: string;
+        streams_online: number;
+        streams_unknown: number;
+      }>;
+    }>('/api/catalog/channels?limit=50');
+    assert.equal(catRes.status, 200);
+    assert.equal(catRes.data.channels.length, 1);
+
+    const ch = catRes.data.channels[0];
+    assert.equal(ch.primaryUrl, 'https://cdn.example.com/fresh_online.m3u8');
+    assert.equal(ch.sourceId, String(srcFresh.catalogId));
+    assert.equal(ch.sourceName, 'Fresh Src');
+    assert.equal(ch.status, 'online');
+    assert.equal(ch.streams_online, 1);
+    assert.equal(ch.streams_unknown, 1);
+  });
+
+  test('14. Targeted /api/catalog/hydrate updates catalog slice and source catalogIds without wiping playlists or users', async () => {
+    resetTempWorkspace();
+
+    assert.equal((await api('/api/playlists', 'POST', { name: 'keep_user_pl' })).status, 200);
+    await api('/api/channels/save', 'POST', {
+      playlist: 'keep_user_pl',
+      channels: [{ name: 'KeptPlChannel', group: 'G', logo: '', url: 'https://example.com/kept_pl.m3u8' }],
+    });
+    await api('/api/users/save', 'POST', {
+      login: 'kept_viewer',
+      password: 'secret',
+      name: 'Kept Viewer',
+      playlists: ['keep_user_pl'],
+      enabled: true,
+    });
+
+    const hydrateRes = await api<{ ok: boolean; revision: number }>('/api/catalog/hydrate', 'POST', {
+      revision: 42,
+      sources: [
+        { id: 'src_9', name: 'Cloud Src 9', type: 'm3u', url: 'https://example.com/s9.m3u', enabled: true },
+      ],
+      catalog: {
+        nextChannelId: 10,
+        nextStreamId: 20,
+        nextSourceId: 10,
+        sources: [
+          {
+            id: 9,
+            stringId: 'src_9',
+            name: 'Cloud Src 9',
+            type: 'm3u',
+            url: 'https://example.com/s9.m3u',
+            enabled: 1,
+            created_at: 1700000000,
+          },
+        ],
+        channels: [
+          {
+            id: 7,
+            code: 'ID000007',
+            name: 'CloudSrcChannel',
+            logo: '',
+            tvg_id: 'ch7',
+            in_my_pl: 0,
+            used_in: [],
+            alt_names: [],
+            created_at: 1700000000,
+            updated_at: 1700000000,
+          },
+        ],
+        streams: [
+          {
+            id: 15,
+            channel_id: 7,
+            url: 'https://cdn.example.com/cloud7.m3u8',
+            source_id: 9,
+            source_name: 'Cloud Src 9',
+            source_type: 'm3u',
+            online: 1,
+            http_code: 200,
+            response_ms: 50,
+            checked_at: Math.floor(Date.now() / 1000),
+            added_at: 1700000000,
+          },
+        ],
+      },
+    });
+    assert.equal(hydrateRes.status, 200);
+    assert.equal(hydrateRes.data.ok, true);
+    assert.equal(hydrateRes.data.revision, 42);
+
+    // Playlists & users remain intact
+    const pls = (await api<{ playlists: string[] }>('/api/playlists')).data.playlists;
+    assert.deepEqual(pls, ['keep_user_pl']);
+    const users = (await api<{ users: Array<{ login: string }> }>('/api/users')).data.users;
+    assert.equal(users[0].login, 'kept_viewer');
+
+    // Catalog has both CloudSrcChannel (source catalogId 9 preserved!) and KeptPlChannel
+    const cat = (await api<{ channels: Array<{ name: string; sourceId: string }> }>('/api/catalog/channels?limit=50')).data.channels;
+    const cloudCh = cat.find((c) => c.name === 'CloudSrcChannel');
+    assert.ok(cloudCh);
+    assert.equal(cloudCh.sourceId, '9');
+    assert.ok(cat.some((c) => c.name === 'KeptPlChannel'));
+  });
+
+  test('15. Catalog aggregation via /api/catalog/aggregate does not truncate sources at 500 items and bumps revision', async () => {
+    resetTempWorkspace();
+
+    assert.equal(
+      (await api('/api/sources/save', 'POST', {
+        sources: [{ id: 'src_bulk', name: 'Bulk Source', type: 'm3u', url: 'https://example.com/bulk.m3u', enabled: true }],
+      })).status,
+      200
+    );
+
+    let m3uBody = '#EXTM3U\n';
+    for (let i = 1; i <= 550; i++) {
+      m3uBody += `#EXTINF:-1 tvg-id="tv${i}",BulkChannel ${i}\nhttps://cdn.example.com/bulk_${i}.m3u8\n`;
+    }
+
+    const origRefresh = streamParserMod.StreamParser.refreshAll;
+    const origFetch = streamParserMod.StreamParser.fetchTextWithSource;
+    streamParserMod.StreamParser.refreshAll = async () => ({ ok: true, total: 1, elapsed: 0, results: {} });
+    streamParserMod.StreamParser.fetchTextWithSource = async () => m3uBody;
+
+    try {
+      const aggRes = await api<{ ok: boolean; addedChannels: number; addedStreams: number; revision: number }>(
+        '/api/catalog/aggregate',
+        'POST',
+        {}
+      );
+      assert.equal(aggRes.status, 200);
+      assert.equal(aggRes.data.ok, true);
+      assert.equal(aggRes.data.addedChannels, 550);
+      assert.equal(aggRes.data.addedStreams, 550);
+      assert.ok(aggRes.data.revision > 1);
+
+      const stats = (await api<{ channels: number; streams: number }>('/api/catalog/stats')).data;
+      assert.equal(stats.channels, 550);
+      assert.equal(stats.streams, 550);
+    } finally {
+      streamParserMod.StreamParser.refreshAll = origRefresh;
+      streamParserMod.StreamParser.fetchTextWithSource = origFetch;
+    }
+  });
 });

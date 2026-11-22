@@ -492,6 +492,158 @@ export async function reconcileCatalogUnified(): Promise<UnifiedOpResult> {
   });
 }
 
+export async function aggregateCatalogFromSourcesUnified(): Promise<UnifiedOpResult> {
+  return withAsyncWriteLock(lockKey(), async () => {
+    const result = await catalogStore.aggregateFromSources();
+    if (!result.ok) {
+      return { ok: false, status: 500, error: result.error || 'Ошибка агрегации каталога' };
+    }
+    const pruned = channelHealth.pruneOrphanedIssues();
+    const meta = stateLifecycle.bumpRevision('reconcile', 'aggregate', {
+      addedChannels: result.addedChannels,
+      addedStreams: result.addedStreams,
+      prunedHealthIssues: pruned.removed,
+    });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
+    return {
+      ok: true,
+      status: 200,
+      addedChannels: result.addedChannels,
+      addedStreams: result.addedStreams,
+      output: `Aggregated ${result.addedChannels} channels and ${result.addedStreams} streams`,
+      revision: meta.revision,
+    };
+  });
+}
+
+export async function checkCatalogStreamsUnified(limit = 500): Promise<UnifiedOpResult> {
+  return withAsyncWriteLock(lockKey(), async () => {
+    const cleanLimit = Math.max(1, Math.min(5000, Number(limit) || 500));
+    const result = await catalogStore.checkStreams(cleanLimit);
+    if (!result.persisted) {
+      return { ok: false, status: 500, error: result.error || 'Не удалось сохранить результаты проверки' };
+    }
+    const meta = stateLifecycle.bumpRevision('reconcile', 'catalog_check', {
+      checked: result.checked,
+      online: result.online,
+      offline: result.offline,
+      unknown: result.unknown,
+    });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
+    return {
+      ok: true,
+      status: 200,
+      checked: result.checked,
+      online: result.online,
+      offline: result.offline,
+      unknown: result.unknown,
+      output: `Checked ${result.checked} streams: ${result.online} online, ${result.offline} offline, ${result.unknown} unknown`,
+      revision: meta.revision,
+    };
+  });
+}
+
+export async function hydrateCatalogSliceUnified(body: {
+  revision?: number | null;
+  sources?: SourceItem[];
+  sourceIndex?: Record<string, { items?: Array<{ name: string; url: string; logo: string; group: string; tvg_id: string; userAgent?: string; referer?: string; origin?: string }>; updatedAt?: number }>;
+  catalog?: Parameters<typeof catalogStore.hydrateRawState>[0];
+}): Promise<UnifiedOpResult> {
+  return withAsyncWriteLock(lockKey(), async () => {
+    if (!body || typeof body !== 'object' || !body.catalog || typeof body.catalog !== 'object') {
+      return { ok: false, status: 400, error: 'Отсутствуют данные каталога для гидратации' };
+    }
+
+    let sourcesHydrated = false;
+    if (Array.isArray(body.sources)) {
+      const catSources = Array.isArray(body.catalog.sources) ? body.catalog.sources : [];
+      const catByStr = new Map(
+        catSources.filter((cs) => cs.stringId).map((cs) => [String(cs.stringId), cs])
+      );
+      const catByUrl = new Map(
+        catSources.filter((cs) => cs.url).map((cs) => [String(cs.url), cs])
+      );
+      const mergedSources = body.sources.map((src) => {
+        const matched = catByStr.get(src.id) || catByUrl.get(src.url);
+        if (!matched) return src;
+        return {
+          ...src,
+          catalogId: src.catalogId || (Number(matched.id) > 0 ? Number(matched.id) : undefined),
+          created_at: src.created_at ?? matched.created_at,
+          last_run: src.last_run ?? matched.last_run,
+          last_status: src.last_status ?? matched.last_status,
+          total_found: src.total_found ?? matched.total_found,
+        };
+      });
+      if (!StreamParser.saveSources(mergedSources)) {
+        return {
+          ok: false,
+          status: 500,
+          error: StreamParser.getLastError() || 'Не удалось восстановить sources.json',
+        };
+      }
+      sourcesHydrated = true;
+    }
+
+    let indexesHydrated = 0;
+    if (body.sourceIndex && typeof body.sourceIndex === 'object') {
+      const idxRes = StreamParser.hydrateIndexData(body.sourceIndex, { replaceAll: true });
+      if (!idxRes.ok) {
+        return {
+          ok: false,
+          status: 500,
+          error: idxRes.error || 'Не удалось восстановить кеш индексов источников',
+        };
+      }
+      indexesHydrated = idxRes.count;
+    } else if (sourcesHydrated) {
+      StreamParser.pruneOrphanedIndexes();
+    }
+
+    const cRes = catalogStore.hydrateRawState(body.catalog);
+    if (!cRes.ok) {
+      return {
+        ok: false,
+        status: 500,
+        error: cRes.error || 'Не удалось восстановить catalog.json',
+      };
+    }
+
+    const currentMeta = stateLifecycle.getStateMeta();
+    const incomingRevision =
+      body.revision !== undefined && body.revision !== null && Number.isFinite(Number(body.revision))
+        ? Math.max(0, Math.floor(Number(body.revision)))
+        : null;
+    const targetRev = incomingRevision !== null
+      ? Math.max(currentMeta.revision, incomingRevision)
+      : currentMeta.revision;
+
+    let finalRevision = currentMeta.revision;
+    if (targetRev > 0) {
+      const meta = stateLifecycle.setRevisionAtLeast(targetRev, 'cloud_hydrate', 'catalog_slice', {
+        sourcesHydrated,
+        indexesHydrated,
+        removedChannels: cRes.reconcile?.removedChannels || 0,
+        removedStreams: cRes.reconcile?.removedStreams || 0,
+      });
+      const revisionFailure = revisionWriteFailure(meta);
+      if (revisionFailure) return revisionFailure;
+      finalRevision = meta.revision;
+    }
+
+    return {
+      ok: true,
+      status: 200,
+      revision: finalRevision,
+      sourcesHydrated,
+      indexesHydrated,
+      reconcile: cRes.reconcile,
+    };
+  });
+}
+
 export async function hydrateStateUnified(body: {
   revision?: number | null;
   force?: boolean;

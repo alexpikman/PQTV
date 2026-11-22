@@ -83,6 +83,14 @@ function isStreamStatusFresh(
   return stream.checked_at > 0 && now - stream.checked_at <= STREAM_STATUS_TTL_SECONDS[status];
 }
 
+function getStreamPriority(
+  stream: Pick<CatalogStream, 'online' | 'checked_at'>,
+  now = Math.floor(Date.now() / 1000)
+): number {
+  if (!isStreamStatusFresh(stream, now) || stream.online === 0) return 1;
+  return stream.online === 1 ? 2 : stream.online === -1 ? 0 : 1;
+}
+
 export async function checkStreamUrl(
   url: string,
   timeoutMs = 9000,
@@ -601,9 +609,8 @@ class CatalogStore {
     const enriched = this.channels.map((c) => {
       const usedIn = this.resolveLiveUsedIn(c, streamsByChannel, ownership);
       const channelStreams = (streamsByChannel.get(c.id) || []).slice()
-        .sort((a, b) => b.online - a.online || b.added_at - a.added_at);
+        .sort((a, b) => getStreamPriority(b, now) - getStreamPriority(a, now) || b.added_at - a.added_at || b.id - a.id);
       const primaryStream = channelStreams[0];
-      const sourceNames = [...new Set(channelStreams.map((stream) => String(stream.source_name || '').trim()).filter(Boolean))];
       const counts = streamCounts.get(c.id) || { total: 0, online: 0, offline: 0, unknown: 0 };
       const status = counts.online > 0
         ? 'online'
@@ -615,7 +622,7 @@ class CatalogStore {
         counts,
         primaryUrl: primaryStream?.url || '',
         sourceId: primaryStream?.source_id == null ? '' : String(primaryStream.source_id),
-        sourceName: sourceNames.join(', '),
+        sourceName: primaryStream?.source_name || '',
         status,
       };
     });
@@ -718,9 +725,10 @@ class CatalogStore {
     const ownership = this.buildLivePlaylistOwnershipMap();
     const streamsByChannel = this.buildStreamsByChannelMap();
     const usedIn = this.resolveLiveUsedIn(ch, streamsByChannel, ownership);
+    const now = Math.floor(Date.now() / 1000);
     const chStreams = (streamsByChannel.get(id) || [])
       .slice()
-      .sort((a, b) => b.online - a.online || b.added_at - a.added_at);
+      .sort((a, b) => getStreamPriority(b, now) - getStreamPriority(a, now) || b.added_at - a.added_at || b.id - a.id);
     return {
       ...ch,
       in_my_pl: usedIn.length > 0 ? 1 : 0,
@@ -1099,7 +1107,7 @@ class CatalogStore {
           StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
           continue;
         }
-        const items = StreamParser.parseSource(body, src).slice(0, 500);
+        const items = StreamParser.parseSource(body, src);
         const res = this.ingestSourceItems(src, items);
         addedChannels += res.addedChannels;
         addedStreams += res.addedStreams;

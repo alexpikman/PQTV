@@ -308,12 +308,17 @@ service cloud.firestore {
         && (sources.size() == 0 || (
           sources[0] is map
           && sources[0].keys().hasAll(['id', 'name', 'type', 'url', 'enabled', 'created_at'])
-          && sources[0].keys().hasOnly(['id', 'name', 'type', 'url', 'enabled', 'created_at', 'last_run', 'last_status', 'total_found'])
-          && sources[0].id is int
+          && sources[0].keys().hasOnly(['id', 'stringId', 'name', 'type', 'url', 'enabled', 'created_at', 'last_run', 'last_status', 'total_found'])
+          && sources[0].id is int && sources[0].id >= 1
+          && (!('stringId' in sources[0]) || (sources[0].stringId is string && sources[0].stringId.size() <= 64))
           && sources[0].name is string && sources[0].name.size() <= 120
           && sources[0].type is string && sources[0].type.size() <= 32
           && sources[0].url is string && sources[0].url.size() <= 1000
-          && sources[0].enabled is int
+          && sources[0].enabled is int && sources[0].enabled in [0, 1]
+          && sources[0].created_at is int && sources[0].created_at >= 0
+          && (!('last_run' in sources[0]) || (sources[0].last_run is int && sources[0].last_run >= 0))
+          && (!('last_status' in sources[0]) || (sources[0].last_status is string && sources[0].last_status.size() <= 32))
+          && (!('total_found' in sources[0]) || (sources[0].total_found is int && sources[0].total_found >= 0))
         ));
     }
 
@@ -338,14 +343,16 @@ service cloud.firestore {
           items[0] is map
           && items[0].keys().hasAll(['id', 'code', 'name', 'logo', 'tvg_id', 'in_my_pl', 'used_in', 'alt_names', 'created_at', 'updated_at'])
           && items[0].keys().hasOnly(['id', 'code', 'name', 'logo', 'tvg_id', 'in_my_pl', 'used_in', 'alt_names', 'created_at', 'updated_at'])
-          && items[0].id is int
+          && items[0].id is int && items[0].id >= 1
           && items[0].code is string && items[0].code.size() <= 32
           && items[0].name is string && items[0].name.size() <= 200
           && items[0].logo is string && items[0].logo.size() <= 1000
           && items[0].tvg_id is string && items[0].tvg_id.size() <= 160
-          && items[0].in_my_pl is int
+          && items[0].in_my_pl is int && items[0].in_my_pl in [0, 1]
           && items[0].used_in is list && items[0].used_in.size() <= 50
           && items[0].alt_names is list && items[0].alt_names.size() <= 30
+          && items[0].created_at is int && items[0].created_at >= 0
+          && items[0].updated_at is int && items[0].updated_at >= 0
         ));
     }
 
@@ -365,9 +372,17 @@ service cloud.firestore {
           items[0] is map
           && items[0].keys().hasAll(['id', 'channel_id', 'url', 'source_id', 'source_name', 'source_type', 'online', 'http_code', 'response_ms', 'checked_at', 'added_at'])
           && items[0].keys().hasOnly(['id', 'channel_id', 'url', 'source_id', 'source_name', 'source_type', 'online', 'http_code', 'response_ms', 'checked_at', 'added_at', 'diag_code', 'diag_reason', 'codec_warning'])
-          && items[0].id is int
-          && items[0].channel_id is int
+          && items[0].id is int && items[0].id >= 1
+          && items[0].channel_id is int && items[0].channel_id >= 1
           && items[0].url is string && items[0].url.size() <= 1500
+          && (items[0].source_id == null || items[0].source_id is int)
+          && (items[0].source_name == null || (items[0].source_name is string && items[0].source_name.size() <= 120))
+          && (items[0].source_type == null || (items[0].source_type is string && items[0].source_type.size() <= 32))
+          && items[0].online is int && items[0].online in [-1, 0, 1]
+          && items[0].http_code is int && items[0].http_code >= 0
+          && items[0].response_ms is int && items[0].response_ms >= 0
+          && items[0].checked_at is int && items[0].checked_at >= 0
+          && items[0].added_at is int && items[0].added_at >= 0
           && (!('diag_code' in items[0]) || (items[0].diag_code is string && items[0].diag_code.size() <= 32))
           && (!('diag_reason' in items[0]) || (items[0].diag_reason is string && items[0].diag_reason.size() <= 220))
           && (!('codec_warning' in items[0]) || (items[0].codec_warning is string && items[0].codec_warning.size() <= 220))

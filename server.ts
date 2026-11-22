@@ -55,6 +55,9 @@ import {
   deleteSourceUnified,
   deleteStreamUnified,
   reconcileCatalogUnified,
+  aggregateCatalogFromSourcesUnified,
+  checkCatalogStreamsUnified,
+  hydrateCatalogSliceUnified,
   hydrateStateUnified,
 } from './src/lifecycleCoordinator.js';
 
@@ -3535,6 +3538,22 @@ app.post('/api/alerts/delete', (req, res) => {
 });
 
 // Catalog endpoints (persistent disk-backed CatalogStore)
+app.get('/api/catalog/export', (_req, res) => {
+  noCacheJson(res, {
+    ok: true,
+    revision: stateLifecycle.getStateMeta().revision,
+    catalog: catalogStore.exportRawState(),
+    sources: StreamParser.getSources(),
+    sourceIndex: StreamParser.exportIndexData(),
+  });
+});
+
+app.post('/api/catalog/hydrate', async (req, res) => {
+  const rawBody = (req.body || {}) as Parameters<typeof hydrateCatalogSliceUnified>[0];
+  const out = await hydrateCatalogSliceUnified(rawBody);
+  noCacheJson(res, out, out.status);
+});
+
 app.get('/api/catalog/stats', (_req, res) => {
   noCacheJson(res, catalogStore.stats());
 });
@@ -3627,23 +3646,8 @@ app.post('/api/catalog/stream/delete', async (req, res) => {
 
 app.post('/api/catalog/check', async (req, res) => {
   const limit = Number(req.body?.limit) || 500;
-  const result = await catalogStore.checkStreams(limit);
-  if (!result.persisted) {
-    noCacheJson(res, { ok: false, error: result.error || 'Не удалось сохранить результаты проверки' }, 500);
-    return;
-  }
-  const meta = bumpRevisionForResponse(res, 'reconcile', 'catalog_check', {
-    checked: result.checked,
-    online: result.online,
-    offline: result.offline,
-    unknown: result.unknown,
-  });
-  if (!meta) return;
-  noCacheJson(res, {
-    ok: true,
-    output: `Checked ${result.checked} streams: ${result.online} online, ${result.offline} offline, ${result.unknown} unknown`,
-    revision: meta.revision,
-  });
+  const out = await checkCatalogStreamsUnified(limit);
+  noCacheJson(res, out, out.status);
 });
 
 app.post('/api/catalog/to-playlist', async (req, res) => {
@@ -3699,21 +3703,8 @@ app.post('/api/catalog/to-playlist', async (req, res) => {
 });
 
 app.post('/api/catalog/aggregate', async (_req, res) => {
-  const result = await catalogStore.aggregateFromSources();
-  if (!result.ok) {
-    noCacheJson(res, { ok: false, error: result.error || 'Ошибка агрегации каталога' }, 500);
-    return;
-  }
-  const meta = bumpRevisionForResponse(res, 'reconcile', 'aggregate', {
-    addedChannels: result.addedChannels,
-    addedStreams: result.addedStreams,
-  });
-  if (!meta) return;
-  noCacheJson(res, {
-    ok: true,
-    output: `Aggregated ${result.addedChannels} channels and ${result.addedStreams} streams`,
-    revision: meta.revision,
-  });
+  const out = await aggregateCatalogFromSourcesUnified();
+  noCacheJson(res, out, out.status);
 });
 
 app.post('/api/catalog/import', async (_req, res) => {
