@@ -966,10 +966,10 @@ document.addEventListener('DOMContentLoaded', () => {
               '</div>'
             : '';
 
+        const filterRow = options.showFilters === false ? '' : '<tr class="shared-table-filters">' + filters + '</tr>';
         container.innerHTML = (options.beforeHtml || '') +
             '<table class="ch-table shared-channel-table"><thead><tr>' + header +
-            '</tr><tr class="shared-table-filters">' + filters +
-            '</tr></thead><tbody>' + body + '</tbody></table>' + pagination;
+            '</tr>' + filterRow + '</thead><tbody>' + body + '</tbody></table>' + pagination;
 
         container.querySelectorAll('[data-shared-sort]').forEach((button) => {
             button.addEventListener('click', () => {
@@ -2608,9 +2608,11 @@ document.addEventListener('DOMContentLoaded', () => {
     let catalogOffset = 0;
     let catalogSearch = '';
     let catalogFilter = '';
+    let catalogSourceFilter = '';
+    let catalogPageSize = 100;
     let catalogSources = [];
-    let catalogPlaylists = [];      // доступные плейлисты из used_in
-    let catalogActivePL = [];       // выбранные (пусто = все)
+    let catalogPlaylists = [];
+    let catalogActivePL = [];
 
     async function loadCatalog() {
         if (cloudBootstrapPromise) {
@@ -2643,140 +2645,71 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function loadCatalogPlaylists() {
         const res = await apiRequest('/api/catalog/playlists');
-        if (res.error) {
-            console.error('playlists API error:', res.error);
-            catalogPlaylists = [];
-        } else {
-            catalogPlaylists = res.playlists || [];
-        }
-        renderCatalogPlFilter();
+        catalogPlaylists = res && Array.isArray(res.playlists) ? res.playlists : [];
+        const select = document.getElementById('catalog-playlist-filter');
+        if (!select) return;
+        const selected = catalogActivePL[0] || '';
+        select.innerHTML = '<option value="">Все собственные плейлисты</option>' +
+            catalogPlaylists.map((playlist) => {
+                const clean = String(playlist || '').replace(/\.m3u$/i, '');
+                return '<option value="' + escapeHtml(clean) + '">' + escapeHtml(clean) + '</option>';
+            }).join('');
+        select.value = selected;
     }
 
-    function renderCatalogPlFilter() {
-        const listEl = document.getElementById('pl-dropdown-list');
-        const labelEl = document.getElementById('pl-dropdown-label');
-        if (!listEl) return;
-
-        if (catalogPlaylists.length === 0) {
-            listEl.innerHTML = '<div style="padding:12px; text-align:center; color:var(--muted); font-size:12px;">Нет плейлистов</div>';
-            if (labelEl) labelEl.textContent = 'Все плейлисты';
-            return;
+    async function loadCatalogSources() {
+        const res = await apiRequest('/api/catalog/sources');
+        catalogSources = res && Array.isArray(res.sources) ? res.sources : [];
+        const select = document.getElementById('catalog-source-filter');
+        if (select) {
+            const selected = catalogSourceFilter;
+            const uniqueNames = [...new Set(catalogSources.map((source) => String(source.name || '').trim()).filter(Boolean))];
+            select.innerHTML = '<option value="">Все источники</option>' +
+                uniqueNames.map((name) => '<option value="' + escapeHtml(name) + '">' + escapeHtml(name) + '</option>').join('');
+            select.value = selected;
         }
-
-        let html = '';
-        catalogPlaylists.forEach(pl => {
-            const cleanPl = String(pl || '').replace(/\.m3u$/i, '');
-            const checked = catalogActivePL.includes(pl);
-            html += `<label class="pl-dropdown-item">
-                <input type="checkbox" value="${escapeHtml(pl)}" ${checked ? 'checked' : ''}>
-                <span class="pl-name">${escapeHtml(cleanPl)}</span>
-            </label>`;
-        });
-        listEl.innerHTML = html;
-
-        // Обновляем toggle-кнопку
-        if (window.__updateToggleBtn) window.__updateToggleBtn();
-
-        // Обновляем label в кнопке
-        if (labelEl) {
-            if (catalogActivePL.length === 0) {
-                labelEl.textContent = 'Все плейлисты';
-            } else if (catalogActivePL.length === 1) {
-                labelEl.textContent = String(catalogActivePL[0] || '').replace(/\.m3u$/i, '');
-            } else {
-                labelEl.textContent = 'Выбрано: ' + catalogActivePL.length;
-            }
-        }
-
-        // Обработчики чекбоксов (только визуальное обновление, БЕЗ загрузки)
-        listEl.querySelectorAll('input[type="checkbox"]').forEach(cb => {
-            cb.onchange = () => {
-                const pl = cb.value;
-                if (cb.checked) {
-                    if (!catalogActivePL.includes(pl)) catalogActivePL.push(pl);
-                } else {
-                    const i = catalogActivePL.indexOf(pl);
-                    if (i !== -1) catalogActivePL.splice(i, 1);
-                }
-                renderCatalogPlFilter();
-            };
-        });
+        renderCatalogStats();
     }
 
-    // Инициализация дропдауна
-    (function initPlDropdown() {
-        const dd = document.getElementById('pl-dropdown');
-        const toggle = document.getElementById('pl-dropdown-toggle');
-        const menu = document.getElementById('pl-dropdown-menu');
-        const btnToggleAll = document.getElementById('pl-dropdown-toggle-all');
-        if (!dd || !toggle || !menu) return;
-
-        toggle.onclick = (e) => {
-            e.stopPropagation();
-            dd.classList.toggle('active');
-            menu.classList.toggle('hidden');
-        };
-
-        document.addEventListener('click', (e) => {
-            if (!dd.contains(e.target)) {
-                dd.classList.remove('active');
-                menu.classList.add('hidden');
-            }
-        });
-
-        // Переключатель Все / Сбросить
-        function updateToggleBtn() {
-            if (!btnToggleAll) return;
-            const allSelected = catalogPlaylists.length > 0 && catalogActivePL.length === catalogPlaylists.length;
-            if (allSelected) {
-                btnToggleAll.textContent = 'Сбросить';
-                btnToggleAll.classList.add('all-active');
-            } else {
-                btnToggleAll.textContent = 'Выбрать все';
-                btnToggleAll.classList.remove('all-active');
-            }
-        }
-        window.__updateToggleBtn = updateToggleBtn;
-
-        if (btnToggleAll) {
-            btnToggleAll.onclick = () => {
-                const allSelected = catalogPlaylists.length > 0 && catalogActivePL.length === catalogPlaylists.length;
-                if (allSelected) {
-                    catalogActivePL = [];
-                } else {
-                    catalogActivePL = catalogPlaylists.slice();
-                }
-                renderCatalogPlFilter();
-                updateToggleBtn();
-            };
-        }
-    })();
-
-    // Кнопка "НАЙТИ" — применяет все фильтры
-    const findBtn = document.getElementById('catalog-find-btn');
-    if (findBtn) {
-        findBtn.onclick = () => {
-            catalogSearch = (document.getElementById('catalog-search') || {}).value || '';
-            catalogFilter = (document.getElementById('catalog-filter') || {}).value || '';
-            catalogOffset = 0;
-            resetSharedChannelTableOffset('catalog');
-            loadCatalogChannels();
-            // Закрыть дропдаун если открыт
-            const dd = document.getElementById('pl-dropdown');
-            if (dd) dd.classList.remove('active');
-            const m = document.getElementById('pl-dropdown-menu');
-            if (m) m.classList.add('hidden');
-        };
+    function applyCatalogControls() {
+        catalogSearch = (document.getElementById('catalog-search') || {}).value || '';
+        catalogFilter = (document.getElementById('catalog-filter') || {}).value || '';
+        catalogSourceFilter = (document.getElementById('catalog-source-filter') || {}).value || '';
+        const playlist = (document.getElementById('catalog-playlist-filter') || {}).value || '';
+        catalogActivePL = playlist ? [playlist] : [];
+        catalogOffset = 0;
+        resetSharedChannelTableOffset('catalog');
+        void loadCatalogChannels();
     }
 
-    // Enter в поле поиска — тоже найти
     const searchInput = document.getElementById('catalog-search');
     if (searchInput) {
-        searchInput.onkeydown = (e) => {
-            if (e.key === 'Enter') {
-                e.preventDefault();
-                if (findBtn) findBtn.click();
+        let searchTimer = null;
+        searchInput.oninput = () => {
+            clearTimeout(searchTimer);
+            searchTimer = setTimeout(applyCatalogControls, 250);
+        };
+        searchInput.onkeydown = (event) => {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                applyCatalogControls();
             }
+        };
+    }
+
+    ['catalog-source-filter', 'catalog-playlist-filter', 'catalog-filter'].forEach((id) => {
+        const control = document.getElementById(id);
+        if (control) control.onchange = applyCatalogControls;
+    });
+
+    const pageSizeSelect = document.getElementById('catalog-page-size');
+    if (pageSizeSelect) {
+        pageSizeSelect.onchange = () => {
+            catalogPageSize = Math.max(100, Math.min(300, Number(pageSizeSelect.value) || 100));
+            const state = getSharedChannelTableState('catalog', 'name');
+            state.pageSize = catalogPageSize;
+            state.offset = 0;
+            renderCatalogChannels();
         };
     }
 
@@ -2789,73 +2722,71 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderCatalogStats() {
         const el = document.getElementById('catalog-stats');
         if (!el) return;
+        const indexedChannels = catalogSources.reduce((total, source) => total + (Number(source.total_found) || 0), 0);
         el.innerHTML = `
             <div class="cat-stat-box">
-                <div class="cat-stat-label">Каналов всего</div>
+                <div class="cat-stat-label">Количество источников</div>
+                <div class="cat-stat-value">${catalogStats.sources || catalogSources.length || 0}</div>
+            </div>
+            <div class="cat-stat-box">
+                <div class="cat-stat-label">Каналов в индексе</div>
+                <div class="cat-stat-value">${indexedChannels}</div>
+            </div>
+            <div class="cat-stat-box">
+                <div class="cat-stat-label">Каналов в каталоге</div>
                 <div class="cat-stat-value accent">${catalogStats.channels || 0}</div>
             </div>
             <div class="cat-stat-box">
-                <div class="cat-stat-label">В моих плейлистах</div>
+                <div class="cat-stat-label">Каналов в плейлистах</div>
                 <div class="cat-stat-value">${catalogStats.in_my_pl || 0}</div>
             </div>
-            <div class="cat-stat-box">
-                <div class="cat-stat-label">Потоков</div>
-                <div class="cat-stat-value">${catalogStats.streams || 0}</div>
-            </div>
-            <div class="cat-stat-box">
-                <div class="cat-stat-label">Online</div>
-                <div class="cat-stat-value online">${catalogStats.streams_online || 0}</div>
-            </div>
-            <div class="cat-stat-box">
-                <div class="cat-stat-label">Источников</div>
-                <div class="cat-stat-value">${catalogStats.sources || 0}</div>
+            <div class="cat-stat-box cat-stat-online">
+                <div class="cat-stat-label">Каналов Online</div>
+                <button type="button" class="btn btn-secondary" id="catalog-dashboard-check">Проверить</button>
             </div>
         `;
+        const checkButton = document.getElementById('catalog-dashboard-check');
+        if (checkButton) checkButton.onclick = () => {
+            const action = document.getElementById('btn-catalog-check');
+            if (action) action.click();
+        };
     }
 
     async function loadCatalogChannels() {
         const tableState = getSharedChannelTableState('catalog', 'name');
+        const tableFilters = Object.assign({}, tableState.filters || {});
+        if (catalogSourceFilter) tableFilters.sourceName = catalogSourceFilter;
+        if (catalogFilter === 'unknown') tableFilters.status = 'unknown';
         const params = new URLSearchParams({
             limit: '200',
-            offset: catalogOffset,
+            offset: '0',
             search: catalogSearch,
-            filter: catalogFilter,
+            filter: catalogFilter === 'unknown' ? '' : catalogFilter,
             sortBy: tableState.sortKey || 'name',
             sortDir: tableState.sortDirection || 'asc',
-            tableFilters: JSON.stringify(tableState.filters || {}),
+            tableFilters: JSON.stringify(tableFilters),
         });
-        if (catalogActivePL.length > 0) {
-            params.set('playlists', catalogActivePL.join(','));
-        }
-        const res = await apiRequest('/api/catalog/channels?' + params.toString());
-        if (res.error) {
-            console.error('channels API error:', res.error);
-            const el = document.getElementById('catalog-list-container');
-            if (el) el.innerHTML = '<p class="placeholder-text">Ошибка загрузки: ' + escapeHtml(res.error) + '</p>';
-            return;
-        }
-        if (catalogOffset === 0) {
-            catalogData = res.channels || [];
-        } else {
-            catalogData = catalogData.concat(res.channels || []);
-        }
+        if (catalogActivePL.length > 0) params.set('playlists', catalogActivePL.join(','));
+
+        const allChannels = [];
+        let offset = 0;
+        let response;
+        do {
+            params.set('offset', String(offset));
+            response = await apiRequest('/api/catalog/channels?' + params.toString());
+            if (!response || response.error) {
+                console.error('channels API error:', response && response.error);
+                const el = document.getElementById('catalog-list-container');
+                if (el) el.innerHTML = '<p class="placeholder-text">Ошибка загрузки: ' + escapeHtml((response && response.error) || 'Не удалось загрузить каталог') + '</p>';
+                return;
+            }
+            const batch = Array.isArray(response.channels) ? response.channels : [];
+            allChannels.push(...batch);
+            offset += batch.length;
+        } while ((response.channels || []).length === 200);
+
+        catalogData = allChannels;
         renderCatalogChannels();
-
-        // Кнопка "Показать ещё"
-        const btn = document.getElementById('catalog-show-more');
-        if (btn) {
-            const hasMore = (res.channels || []).length >= 200;
-            btn.classList.toggle('hidden', !hasMore);
-        }
-    }
-
-    // Обработчик "Показать ещё"
-    const btnMore = document.getElementById('catalog-show-more');
-    if (btnMore) {
-        btnMore.onclick = () => {
-            catalogOffset += 200;
-            loadCatalogChannels();
-        };
     }
 
     function renderStatusBadge(online, total, offline, unknown) {
@@ -2878,9 +2809,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById('catalog-list-container');
         if (!el) return;
         if (catalogData.length === 0) {
-            el.innerHTML = '<p class="placeholder-text">Каталог пуст. Нажмите «Собрать из источников», чтобы загрузить каналы.</p>';
+            el.innerHTML = '<p class="placeholder-text">Каталог пока пуст. Используйте «Собрать из источников», чтобы наполнить список каналов.</p>';
+            renderCatalogStats();
             return;
         }
+        renderCatalogStats();
 
         const rows = catalogData.map((channel, index) => normalizeChannelRow(channel, 'catalog', index));
         renderSharedChannelTable(el, rows, [
@@ -2917,7 +2850,8 @@ document.addEventListener('DOMContentLoaded', () => {
         ], {
             key: 'catalog',
             defaultSort: 'name',
-            pageSize: 200,
+            pageSize: catalogPageSize,
+            showFilters: false,
             onChange: () => { catalogOffset = 0; void loadCatalogChannels(); },
             onPageChange: renderCatalogChannels,
             emptyText: 'Каналов по выбранным фильтрам не найдено',
@@ -3105,34 +3039,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function loadCatalogSources() {
-        const res = await apiRequest('/api/catalog/sources');
-        catalogSources = res.sources || [];
-    }
-
-    // Обработчики
-    const catSearch = document.getElementById('catalog-search');
-    if (catSearch) {
-        let t = null;
-        catSearch.oninput = () => {
-            clearTimeout(t);
-            t = setTimeout(() => {
-                catalogSearch = catSearch.value;
-                catalogOffset = 0;
-                resetSharedChannelTableOffset('catalog');
-                loadCatalogChannels();
-            }, 250);
-        };
-    }
-    const catFilter = document.getElementById('catalog-filter');
-    if (catFilter) {
-        catFilter.onchange = () => {
-            catalogFilter = catFilter.value;
-            catalogOffset = 0;
-            resetSharedChannelTableOffset('catalog');
-            loadCatalogChannels();
-        };
-    }
+    // Источники загружаются в loadCatalogSources выше и отображаются в общей строке фильтров.
 
     // Сброс всех фильтров
     (function initFilterReset() {
@@ -3144,11 +3051,15 @@ document.addEventListener('DOMContentLoaded', () => {
             catalogActivePL = [];
             catalogOffset = 0;
             resetSharedChannelTableOffset('catalog');
-            if (sharedChannelTableStates.catalog) sharedChannelTableStates.catalog.filters = {};
+            catalogSourceFilter = ''; if (sharedChannelTableStates.catalog) sharedChannelTableStates.catalog.filters = {};
             const s = document.getElementById('catalog-search');
             if (s) s.value = '';
             const f = document.getElementById('catalog-filter');
             if (f) f.value = '';
+            const source = document.getElementById('catalog-source-filter');
+            if (source) source.value = '';
+            const playlist = document.getElementById('catalog-playlist-filter');
+            if (playlist) playlist.value = '';
             renderCatalogPlFilter();
             loadCatalogChannels();
         };
