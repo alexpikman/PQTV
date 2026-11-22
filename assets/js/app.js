@@ -845,6 +845,8 @@ document.addEventListener('DOMContentLoaded', () => {
             sourceName: String(raw.source || raw.sourceName || ''),
             diagCode: String(raw.diagCode || ''),
             viewerErrors: Array.isArray(raw.viewerErrors) ? raw.viewerErrors.map((item) => String(item.reason || item.userName || item.userLogin || '')).join(' ') : String(raw.viewerErrors || ''),
+            viewerErrorCount: Number(raw.viewerErrorCount ?? (Array.isArray(raw.viewerErrors) ? raw.viewerErrors.length : 0)),
+            ms: Number(raw.ms || raw.response_ms || 0),
             hiddenForViewers: Boolean(raw.hiddenForViewers),
             stillBrokenAfterResolve: Boolean(raw.stillBrokenAfterResolve),
             raw,
@@ -856,6 +858,10 @@ document.addEventListener('DOMContentLoaded', () => {
             sharedChannelTableStates[key] = { sortKey: defaultSort || 'name', sortDirection: 'asc', filters: {}, offset: 0, pageSize: 100 };
         }
         return sharedChannelTableStates[key];
+    }
+
+    function resetSharedChannelTableOffset(key) {
+        if (sharedChannelTableStates[key]) sharedChannelTableStates[key].offset = 0;
     }
 
     function renderSharedChannelTable(container, rows, columns, options = {}) {
@@ -957,7 +963,9 @@ document.addEventListener('DOMContentLoaded', () => {
         container.querySelectorAll('[data-shared-page]').forEach((button) => {
             button.addEventListener('click', () => {
                 state.offset = Math.max(0, state.offset + Number(button.dataset.sharedPage || 0) * pageSize);
-                renderSharedChannelTable(container, rows, columns, options);
+                if (typeof options.onPageChange === 'function') options.onPageChange();
+                else if (typeof options.onChange === 'function') options.onChange();
+                else renderSharedChannelTable(container, rows, columns, options);
             });
         });
         if (typeof options.onRowClick === 'function') {
@@ -2695,6 +2703,7 @@ document.addEventListener('DOMContentLoaded', () => {
             catalogSearch = (document.getElementById('catalog-search') || {}).value || '';
             catalogFilter = (document.getElementById('catalog-filter') || {}).value || '';
             catalogOffset = 0;
+            resetSharedChannelTableOffset('catalog');
             loadCatalogChannels();
             // Закрыть дропдаун если открыт
             const dd = document.getElementById('pl-dropdown');
@@ -2847,6 +2856,7 @@ document.addEventListener('DOMContentLoaded', () => {
             key: 'catalog',
             defaultSort: 'name',
             onChange: () => { catalogOffset = 0; void loadCatalogChannels(); },
+            onPageChange: renderCatalogChannels,
             emptyText: 'Каналов по выбранным фильтрам не найдено',
         });
 
@@ -3045,6 +3055,7 @@ document.addEventListener('DOMContentLoaded', () => {
             t = setTimeout(() => {
                 catalogSearch = catSearch.value;
                 catalogOffset = 0;
+                resetSharedChannelTableOffset('catalog');
                 loadCatalogChannels();
             }, 250);
         };
@@ -3054,6 +3065,7 @@ document.addEventListener('DOMContentLoaded', () => {
         catFilter.onchange = () => {
             catalogFilter = catFilter.value;
             catalogOffset = 0;
+            resetSharedChannelTableOffset('catalog');
             loadCatalogChannels();
         };
     }
@@ -3067,6 +3079,7 @@ document.addEventListener('DOMContentLoaded', () => {
             catalogFilter = '';
             catalogActivePL = [];
             catalogOffset = 0;
+            resetSharedChannelTableOffset('catalog');
             const s = document.getElementById('catalog-search');
             if (s) s.value = '';
             const f = document.getElementById('catalog-filter');
@@ -4549,6 +4562,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     const sel = document.getElementById('health-filter-diag');
                     if (!sel) return;
                     sel.value = sel.value === btn.dataset.diagChip ? '' : btn.dataset.diagChip;
+                    resetSharedChannelTableOffset('health');
                     renderHealthView();
                 };
             });
@@ -4767,10 +4781,14 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const selDiag = document.getElementById('health-filter-diag');
         const inpSearch = document.getElementById('health-search');
 
-        if (selPl) selPl.onchange = renderHealthView;
-        if (selSt) selSt.onchange = renderHealthView;
-        if (selDiag) selDiag.onchange = renderHealthView;
-        if (inpSearch) inpSearch.oninput = renderHealthView;
+        const updateHealthFilters = () => {
+            resetSharedChannelTableOffset('health');
+            renderHealthView();
+        };
+        if (selPl) selPl.onchange = updateHealthFilters;
+        if (selSt) selSt.onchange = updateHealthFilters;
+        if (selDiag) selDiag.onchange = updateHealthFilters;
+        if (inpSearch) inpSearch.oninput = updateHealthFilters;
         if (btnRefresh) btnRefresh.onclick = loadHealthOverview;
 
         if (btnCheckAll) {
