@@ -574,7 +574,10 @@ class CatalogStore {
     offset = 0,
     search = '',
     filter = '',
-    playlists: string[] = []
+    playlists: string[] = [],
+    sortBy = 'name',
+    sortDirection: 'asc' | 'desc' = 'asc',
+    tableFilters: Record<string, string> = {}
   ) {
     this.ensureInit();
     const sLower = search.trim().toLowerCase();
@@ -597,41 +600,110 @@ class CatalogStore {
 
     const enriched = this.channels.map((c) => {
       const usedIn = this.resolveLiveUsedIn(c, streamsByChannel, ownership);
+      const channelStreams = (streamsByChannel.get(c.id) || []).slice()
+        .sort((a, b) => b.online - a.online || b.added_at - a.added_at);
+      const primaryStream = channelStreams[0];
+      const sourceNames = [...new Set(channelStreams.map((stream) => String(stream.source_name || '').trim()).filter(Boolean))];
+      const counts = streamCounts.get(c.id) || { total: 0, online: 0, offline: 0, unknown: 0 };
+      const status = counts.online > 0
+        ? 'online'
+        : counts.total > 0 && counts.offline === counts.total ? 'offline' : 'unknown';
       return {
         ch: c,
         usedIn,
         inMyPl: usedIn.length > 0 ? 1 : 0,
-        counts: streamCounts.get(c.id) || { total: 0, online: 0, offline: 0, unknown: 0 },
+        counts,
+        primaryUrl: primaryStream?.url || '',
+        sourceId: primaryStream?.source_id == null ? '' : String(primaryStream.source_id),
+        sourceName: sourceNames.join(', '),
+        status,
       };
     });
 
-    const filtered = enriched
-      .filter(({ ch, usedIn, counts }) => {
-        if (sLower) {
-          const hay = (ch.name + ' ' + ch.alt_names.join(' ')).toLowerCase();
-          if (!hay.includes(sLower)) return false;
-        }
-        if (filter === 'online' && counts.online === 0) return false;
-        if (filter === 'offline' && (counts.total === 0 || counts.offline !== counts.total)) return false;
-        if (filter === 'no_streams' && counts.total > 0) return false;
+    const filterEntries = Object.entries(tableFilters || {})
+      .filter(([key, value]) => value && [
+        'code', 'name', 'logo', 'url', 'tvgId', 'sourceName', 'altNames',
+        'status', 'sourceId', 'createdAt', 'updatedAt', 'playlists',
+        'streamCount', 'onlineCount', 'offlineCount', 'unknownCount',
+      ].includes(key));
 
-        if (cleanFilterPlaylists.length > 0) {
-          const hasMatch = cleanFilterPlaylists.some((pl) => usedIn.includes(pl));
-          if (!hasMatch) return false;
-        }
-        return true;
-      })
-      .sort((a, b) => {
-        if (b.inMyPl !== a.inMyPl) return b.inMyPl - a.inMyPl;
-        return a.ch.name.localeCompare(b.ch.name, 'ru');
+    const filtered = enriched.filter(({ ch, usedIn, counts, primaryUrl, sourceId, sourceName, status }) => {
+      if (sLower) {
+        const hay = (ch.name + ' ' + ch.alt_names.join(' ')).toLowerCase();
+        if (!hay.includes(sLower)) return false;
+      }
+      if (filter === 'online' && counts.online === 0) return false;
+      if (filter === 'offline' && (counts.total === 0 || counts.offline !== counts.total)) return false;
+      if (filter === 'no_streams' && counts.total > 0) return false;
+      if (cleanFilterPlaylists.length > 0 && !cleanFilterPlaylists.some((pl) => usedIn.includes(pl))) return false;
+
+      const values: Record<string, unknown> = {
+        code: ch.code,
+        name: ch.name,
+        logo: ch.logo,
+        url: primaryUrl,
+        tvgId: ch.tvg_id,
+        sourceName,
+        altNames: ch.alt_names.join(' '),
+        status,
+        sourceId,
+        createdAt: ch.created_at,
+        updatedAt: ch.updated_at,
+        playlists: usedIn.join(', '),
+        streamCount: counts.total,
+        onlineCount: counts.online,
+        offlineCount: counts.offline,
+        unknownCount: counts.unknown,
+      };
+      return filterEntries.every(([key, rawValue]) => {
+        const value = String(values[key] ?? '').toLocaleLowerCase('ru');
+        const expected = String(rawValue).trim().toLocaleLowerCase('ru');
+        return key === 'status' ? value === expected : value.includes(expected);
       });
+    });
 
-    return filtered.slice(offset, offset + limit).map(({ ch, usedIn, inMyPl, counts }) => ({
+    const sortValues = (item: typeof enriched[number]): string | number => {
+      const { ch, usedIn, counts } = item;
+      const values: Record<string, string | number> = {
+        code: ch.code,
+        name: ch.name,
+        logo: ch.logo,
+        url: item.primaryUrl,
+        tvgId: ch.tvg_id,
+        sourceName: item.sourceName,
+        altNames: ch.alt_names.join(' '),
+        status: item.status,
+        sourceId: item.sourceId,
+        createdAt: ch.created_at,
+        updatedAt: ch.updated_at,
+        playlists: usedIn.join(', '),
+        streamCount: counts.total,
+        onlineCount: counts.online,
+        offlineCount: counts.offline,
+        unknownCount: counts.unknown,
+      };
+      return values[sortBy] ?? ch.name;
+    };
+    const direction = sortDirection === 'desc' ? -1 : 1;
+    filtered.sort((a, b) => {
+      const left = sortValues(a);
+      const right = sortValues(b);
+      const compare = typeof left === 'number' && typeof right === 'number'
+        ? left - right
+        : String(left).localeCompare(String(right), 'ru', { numeric: true, sensitivity: 'base' });
+      return (compare || a.ch.id - b.ch.id) * direction;
+    });
+
+    return filtered.slice(offset, offset + limit).map(({ ch, usedIn, inMyPl, counts, primaryUrl, sourceId, sourceName, status }) => ({
       ...ch,
       in_my_pl: inMyPl,
       used_in: JSON.stringify(usedIn),
       used_in_list: usedIn,
       alt_names: JSON.stringify(ch.alt_names),
+      primaryUrl,
+      sourceId,
+      sourceName,
+      status,
       streams_count: counts.total,
       streams_online: counts.online,
       streams_offline: counts.offline,
