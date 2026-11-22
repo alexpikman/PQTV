@@ -2835,6 +2835,10 @@ document.addEventListener('DOMContentLoaded', () => {
             { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
             { key: 'sourceName', label: 'Источник', filterType: 'text' },
             { key: 'altNames', label: 'Альтернативные названия', filterType: 'text' },
+            { key: 'status', label: 'Статус', filterType: 'select' },
+            { key: 'sourceId', label: 'ID источника', filterType: 'text' },
+            { key: 'createdAt', label: 'Добавлен', filterType: 'text', render: (row) => row.createdAt ? new Date(row.createdAt * 1000).toLocaleString() : '—' },
+            { key: 'updatedAt', label: 'Изменён', filterType: 'text', render: (row) => row.updatedAt ? new Date(row.updatedAt * 1000).toLocaleString() : '—' },
             {
                 key: 'playlists', label: 'Собственные плейлисты', filterType: 'text',
                 render: (row) => row.playlists
