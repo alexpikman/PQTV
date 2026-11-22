@@ -3555,9 +3555,25 @@ app.get('/api/catalog/channels', (req, res) => {
         .map((p) => p.trim())
         .filter(Boolean)
     : [];
+  const sortBy = String(req.query.sortBy || 'name').slice(0, 32);
+  const sortDirection = String(req.query.sortDir || 'asc') === 'desc' ? 'desc' : 'asc';
+  let tableFilters: Record<string, string> = {};
+  try {
+    const parsed = JSON.parse(String(req.query.tableFilters || '{}'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      tableFilters = Object.fromEntries(
+        Object.entries(parsed as Record<string, unknown>)
+          .slice(0, 30)
+          .filter(([, value]) => typeof value === 'string')
+          .map(([key, value]) => [key.slice(0, 32), String(value).slice(0, 160)])
+      );
+    }
+  } catch {
+    tableFilters = {};
+  }
 
-  const channels = catalogStore.getChannels(limit, offset, search, filter, playlists);
-  noCacheJson(res, { channels, limit, offset });
+  const channels = catalogStore.getChannels(limit, offset, search, filter, playlists, sortBy, sortDirection, tableFilters);
+  noCacheJson(res, { channels, limit, offset, sortBy, sortDirection });
 });
 
 app.get('/api/catalog/channel', (req, res) => {
