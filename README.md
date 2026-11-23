@@ -69,6 +69,24 @@ curl -fsSL https://raw.githubusercontent.com/alexpikman/PQTV/main/install.sh | b
 
 ---
 
+## Как войти под администратором
+
+1. Откройте `http://SERVER_IP:3000/login` (или корень `http://SERVER_IP:3000/`).
+2. **Если установлен режим `postgres` или `local` (стандартно после `install.sh`):**
+   - Кнопка Google скрыта — используйте форму **«Логин или Email»** + **«Пароль»**.
+   - **Email / логин:** `ADMIN_EMAIL`, который вы задали при установке (по умолчанию `admin@example.com` при `--yes` или `alex.pikman@gmail.com` / `alexpqtr@gmail.com`).
+   - **Пароль:** пароль, заданный при установке (если оставили пустым — скрипт сгенерировал случайный пароль и показал его в конце установки).
+3. **Если включён режим `cloud` (Firebase):**
+   - Нажмите **«Войти через Google»** аккаунтом администратора (`alexpqtr@gmail.com`, `alex.pikman@gmail.com` или пользователем из коллекции `admins` в Firestore), либо войдите по `ADMIN_EMAIL` и паролю.
+4. **Смена или сброс пароля администратора:**
+   - Внутри админ-панели нажмите кнопку смены пароля в боковом меню (`Сменить пароль`).
+   - Если пароль утерян на сервере, обновите `ADMIN_EMAIL` / `ADMIN_PASSWORD_HASH` (или временно `ADMIN_PASSWORD`) в `/opt/pqtv/.env` и перезапустите сервер:
+     ```bash
+     cd /opt/pqtv && docker compose up -d pqtv
+     ```
+
+---
+
 ## Ручная установка с нуля (Docker Compose)
 
 Подробная инструкция также доступна в [docs/DEPLOYMENT_DOCKER.md](./docs/DEPLOYMENT_DOCKER.md).
