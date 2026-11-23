@@ -12,7 +12,7 @@ export const pool = new Pool({
 });
 pool.on('error', (error) => console.error('[postgres] Idle client error:', error));
 
-let initialization: Promise<void> | null = null;
+let initialization: Promise<boolean> | null = null;
 
 async function applyMigrations(): Promise<void> {
   await pool.query('CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW())');
@@ -37,10 +37,13 @@ async function applyMigrations(): Promise<void> {
   }
 }
 
-export async function initializeDatabase(): Promise<void> {
+export async function initializeDatabase(): Promise<boolean> {
+  if (!config.databaseUrl) {
+    console.log('[storage] DATABASE_URL is not configured; using local file / cloud persistence');
+    return false;
+  }
   if (initialization) return initialization;
   initialization = (async () => {
-    if (!config.databaseUrl) throw new Error('DATABASE_URL is required; PostgreSQL is the primary PQTV database.');
     await pool.query('SELECT 1');
     await applyMigrations();
     configurePersistencePool(pool);
@@ -48,6 +51,7 @@ export async function initializeDatabase(): Promise<void> {
     const loaded = await loadPersistentState(pool);
     activateDatabasePersistence();
     console.log(`[postgres] Ready. Imported ${imported} legacy JSON records; loaded ${loaded} database records.`);
+    return true;
   })().catch((error) => { initialization = null; throw error; });
   return initialization;
 }

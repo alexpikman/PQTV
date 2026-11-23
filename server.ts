@@ -122,7 +122,7 @@ app.use((req, res, next) => {
 
 app.use(
   session({
-    store: process.env.PQTV_NO_LISTEN === '1' ? undefined : new PostgresSessionStore(),
+    store: config.databaseUrl && process.env.PQTV_NO_LISTEN !== '1' ? new PostgresSessionStore() : undefined,
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
@@ -3951,6 +3951,13 @@ app.use((_req, res) => {
 });
 
 if (process.env.PQTV_NO_LISTEN !== '1') {
+  for (const dir of [config.dataDir, config.playlistDir, config.backupDir, config.cacheDir]) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      console.warn(`[storage] Could not ensure directory ${dir}:`, err);
+    }
+  }
   void initializeDatabase().then(() => {
     app.listen(config.port, '0.0.0.0', () => {
       console.log(`PQTV server listening on http://0.0.0.0:${config.port}`);
