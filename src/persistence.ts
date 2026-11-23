@@ -85,8 +85,9 @@ export async function loadPersistentState(pool: PersistencePool): Promise<number
 }
 
 export async function flushPersistence(): Promise<void> {
-  if (!databaseReady || !persistencePool || pendingWrites.size === 0) return;
+  if (!databaseReady || !persistencePool) return;
   if (flushPromise) return flushPromise;
+  if (pendingWrites.size === 0) return;
   flushPromise = (async () => {
     while (pendingWrites.size) {
       const batch = new Map(pendingWrites);
