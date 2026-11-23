@@ -241,17 +241,28 @@ document.addEventListener('DOMContentLoaded', () => {
         previewResumeDelayMs: 350,
         codecCheckDelaySec: 8,
     };
-    let serverUiSettings = { logoEnabled: true, logoOpacity: 40, logoPulseEnabled: false, logoPulseSpeedSec: 3 };
+    let serverUiSettings = {
+        logoEnabled: true,
+        logoOpacity: 40,
+        logoPulseEnabled: false,
+        logoPulseSpeedSec: 3,
+        logoPosition: 'bottom-left',
+        logoSizePercent: 100
+    };
 
     function sanitizeUiSettings(raw) {
         const obj = (raw && typeof raw === 'object') ? raw : {};
         const opRaw = Number(obj.logoOpacity);
         const spRaw = Number(obj.logoPulseSpeedSec);
+        const validPositions = ['bottom-left', 'bottom-right', 'top-left', 'top-right'];
+        const sizeRaw = Number(obj.logoSizePercent);
         return {
             logoEnabled: obj.logoEnabled !== undefined ? Boolean(obj.logoEnabled) : true,
             logoOpacity: Number.isFinite(opRaw) ? Math.max(0, Math.min(100, Math.round(opRaw))) : 40,
             logoPulseEnabled: obj.logoPulseEnabled !== undefined ? Boolean(obj.logoPulseEnabled) : false,
-            logoPulseSpeedSec: Number.isFinite(spRaw) ? Math.max(0, Math.min(10, Math.round(spRaw * 10) / 10)) : 3
+            logoPulseSpeedSec: Number.isFinite(spRaw) ? Math.max(0, Math.min(10, Math.round(spRaw * 10) / 10)) : 3,
+            logoPosition: validPositions.includes(obj.logoPosition) ? obj.logoPosition : 'bottom-left',
+            logoSizePercent: Number.isFinite(sizeRaw) ? Math.max(50, Math.min(200, Math.round(sizeRaw / 5) * 5)) : 100
         };
     }
 
@@ -263,6 +274,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!wm) return;
         const enabled = Boolean(serverUiSettings.logoEnabled);
         wm.classList.toggle('hidden', !enabled);
+        wm.classList.remove(
+            'logo-position-bottom-left',
+            'logo-position-bottom-right',
+            'logo-position-top-left',
+            'logo-position-top-right'
+        );
+        wm.classList.add('logo-position-' + serverUiSettings.logoPosition);
+        wm.style.setProperty('--wm-scale', String(serverUiSettings.logoSizePercent / 100));
         const op = Math.max(0, Math.min(1, serverUiSettings.logoOpacity / 100));
         wm.style.setProperty('--wm-opacity', String(op));
         const pulsing = Boolean(enabled && serverUiSettings.logoPulseEnabled && serverUiSettings.logoPulseSpeedSec > 0);
