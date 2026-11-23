@@ -21,6 +21,8 @@ COPY --from=build --chown=node:node /app/manifest.webmanifest ./manifest.webmani
 COPY --from=build --chown=node:node /app/sw.js ./sw.js
 COPY --from=build --chown=node:node /app/favicon.ico ./favicon.ico
 COPY --from=build --chown=node:node /app/playlist ./playlist
+COPY --from=build --chown=node:node /app/android-tv ./android-tv
+COPY --from=build --chown=node:node /app/.github/workflows ./.github/workflows
 COPY --from=build --chown=node:node /app/firebase-applet-config.json ./firebase-applet-config.json
 COPY --from=build --chown=node:node /app/firebase-blueprint.json ./firebase-blueprint.json
 RUN mkdir -p /app/data /app/data/cache /app/data/backups/playlist && chown -R node:node /app/data /app/playlist
