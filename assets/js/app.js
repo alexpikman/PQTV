@@ -6178,6 +6178,9 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const opacityRange = document.getElementById('ui-logo-opacity');
         const opacityVal = document.getElementById('ui-logo-opacity-val');
         const pulseGroup = document.getElementById('ui-pulse-enabled-group');
+        const positionGroup = document.getElementById('ui-logo-position-group');
+        const sizeRange = document.getElementById('ui-logo-size');
+        const sizeVal = document.getElementById('ui-logo-size-val');
         const pulseSpeedRow = document.getElementById('ui-pulse-speed-row');
         const pulseSpeedRange = document.getElementById('ui-pulse-speed');
         const pulseSpeedVal = document.getElementById('ui-pulse-speed-val');
@@ -6190,6 +6193,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             logoOpacity: 40,
             logoPulseEnabled: false,
             logoPulseSpeedSec: 3,
+            logoPosition: 'bottom-left',
+            logoSizePercent: 100,
         };
 
         function syncUiControlsAndPreview() {
@@ -6201,8 +6206,15 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 const isVal = btn.dataset.uiPulseEnabled === 'true';
                 btn.classList.toggle('active', isVal === Boolean(uiState.logoPulseEnabled));
             });
+            if (positionGroup) {
+                positionGroup.querySelectorAll('[data-ui-logo-position]').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.uiLogoPosition === uiState.logoPosition);
+                });
+            }
 
             opacityRange.value = String(uiState.logoOpacity);
+            if (sizeRange) sizeRange.value = String(uiState.logoSizePercent);
+            if (sizeVal) sizeVal.textContent = String(uiState.logoSizePercent) + '%';
             if (opacityVal) opacityVal.textContent = `${uiState.logoOpacity}%`;
 
             pulseSpeedRange.value = String(uiState.logoPulseSpeedSec);
@@ -6216,6 +6228,14 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
 
             if (previewMark) {
                 previewMark.classList.toggle('hidden', !uiState.logoEnabled);
+                previewMark.classList.remove(
+                    'logo-position-bottom-left',
+                    'logo-position-bottom-right',
+                    'logo-position-top-left',
+                    'logo-position-top-right'
+                );
+                previewMark.classList.add('logo-position-' + uiState.logoPosition);
+                previewMark.style.setProperty('--wm-scale', String(uiState.logoSizePercent / 100));
                 const op = Math.max(0, Math.min(1, uiState.logoOpacity / 100));
                 previewMark.style.setProperty('--wm-opacity', String(op));
                 const pulsing = Boolean(uiState.logoEnabled && uiState.logoPulseEnabled && uiState.logoPulseSpeedSec > 0);
@@ -6251,6 +6271,22 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 syncUiControlsAndPreview();
             };
         });
+
+        if (positionGroup) {
+            positionGroup.querySelectorAll('[data-ui-logo-position]').forEach(btn => {
+                btn.onclick = () => {
+                    uiState.logoPosition = btn.dataset.uiLogoPosition;
+                    syncUiControlsAndPreview();
+                };
+            });
+        }
+
+        if (sizeRange) {
+            sizeRange.addEventListener('input', () => {
+                uiState.logoSizePercent = Math.max(50, Math.min(200, Math.round(Number(sizeRange.value) / 5) * 5));
+                syncUiControlsAndPreview();
+            });
+        }
 
         opacityRange.addEventListener('input', () => {
             uiState.logoOpacity = Math.max(0, Math.min(100, Math.round(Number(opacityRange.value) || 0)));
