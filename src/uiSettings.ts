@@ -7,6 +7,8 @@ export interface UiSettings {
   logoOpacity: number;
   logoPulseEnabled: boolean;
   logoPulseSpeedSec: number;
+  logoPosition: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right';
+  logoSizePercent: number;
 }
 
 export const DEFAULT_UI_SETTINGS: UiSettings = {
@@ -14,6 +16,8 @@ export const DEFAULT_UI_SETTINGS: UiSettings = {
   logoOpacity: 40,
   logoPulseEnabled: false,
   logoPulseSpeedSec: 3,
+  logoPosition: 'bottom-left',
+  logoSizePercent: 100,
 };
 
 function getUiSettingsPath(): string {
@@ -45,11 +49,23 @@ export function sanitizeUiSettings(raw: unknown): UiSettings {
     ? Math.max(0, Math.min(10, Math.round(speedRaw * 10) / 10))
     : DEFAULT_UI_SETTINGS.logoPulseSpeedSec;
 
+  const validLogoPositions = ['bottom-left', 'bottom-right', 'top-left', 'top-right'] as const;
+  const logoPosition = validLogoPositions.includes(obj.logoPosition as (typeof validLogoPositions)[number])
+    ? (obj.logoPosition as (typeof validLogoPositions)[number])
+    : DEFAULT_UI_SETTINGS.logoPosition;
+
+  const sizeRaw = Number(obj.logoSizePercent);
+  const logoSizePercent = Number.isFinite(sizeRaw)
+    ? Math.max(50, Math.min(200, Math.round(sizeRaw / 5) * 5))
+    : DEFAULT_UI_SETTINGS.logoSizePercent;
+
   return {
     logoEnabled,
     logoOpacity,
     logoPulseEnabled,
     logoPulseSpeedSec,
+    logoPosition,
+    logoSizePercent,
   };
 }
 
