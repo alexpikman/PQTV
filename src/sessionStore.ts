@@ -14,7 +14,7 @@ export class PostgresSessionStore extends session.Store {
 
   set(sid: string, value: session.SessionData, callback?: (error?: any) => void): void {
     const maxAge = Number(value.cookie?.maxAge) || 30 * 24 * 60 * 60 * 1000;
-    const expires = value.cookie?.expires ? new Date(value.cookie.expires) : new Date(Date.now() + maxAge);
+    const expires = value.cookie?.expires ? new Date(value.cookie.expires.getTime()) : new Date(Date.now() + maxAge);
     void pool.query(
       'INSERT INTO pqtv_sessions (sid, sess, expire) VALUES ($1, $2::json, $3) ON CONFLICT (sid) DO UPDATE SET sess = EXCLUDED.sess, expire = EXCLUDED.expire',
       [sid, JSON.stringify(value), expires]
@@ -28,7 +28,7 @@ export class PostgresSessionStore extends session.Store {
     }).catch((error) => callback?.(error));
   }
 
-  touch(sid: string, value: session.SessionData, callback?: (error?: unknown) => void): void {
+  touch(sid: string, value: session.SessionData, callback?: (error?: any) => void): void {
     const maxAge = Number(value.cookie?.maxAge) || 30 * 24 * 60 * 60 * 1000;
     const expires = value.cookie?.expires ? new Date(value.cookie.expires) : new Date(Date.now() + maxAge);
     void pool.query('UPDATE pqtv_sessions SET expire = $2 WHERE sid = $1', [sid, expires])
