@@ -30,12 +30,12 @@ export class PostgresSessionStore extends session.Store {
 
   touch(sid: string, value: session.SessionData, callback?: (error?: any) => void): void {
     const maxAge = Number(value.cookie?.maxAge) || 30 * 24 * 60 * 60 * 1000;
-    const expires = value.cookie?.expires ? new Date(value.cookie.expires) : new Date(Date.now() + maxAge);
+    const expires = value.cookie?.expires ? new Date(value.cookie.expires.getTime()) : new Date(Date.now() + maxAge);
     void pool.query('UPDATE pqtv_sessions SET expire = $2 WHERE sid = $1', [sid, expires])
       .then(() => callback?.()).catch((error) => callback?.(error));
   }
 
-  destroy(sid: string, callback?: (error?: unknown) => void): void {
+  destroy(sid: string, callback?: (error?: any) => void): void {
     void pool.query('DELETE FROM pqtv_sessions WHERE sid = $1', [sid])
       .then(() => callback?.()).catch((error) => callback?.(error));
   }
