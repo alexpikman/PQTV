@@ -1317,7 +1317,7 @@
                             <div class="apk-panel">
                                 <h3>Отображение логотипа на экране пользователя</h3>
                                 <p style="font-size:12.5px; color:var(--muted); margin-bottom:18px; line-height:1.5;">
-                                    Полупрозрачный логотип «PQTV» отображается в нижнем левом углу на всех каналах в проигрывателе пользователя.
+                                    Полупрозрачный логотип «PQTV» отображается на всех каналах в выбранном углу проигрывателя пользователя.
                                 </p>
 
                                 <div class="ui-setting-row">
@@ -1343,6 +1343,36 @@
                                         <span class="ui-range-bound">0%</span>
                                         <input type="range" id="ui-logo-opacity" min="0" max="100" step="1" value="40">
                                         <span class="ui-range-bound">100%</span>
+                                    </div>
+                                </div>
+
+                                <div class="ui-setting-row ui-setting-row-col">
+                                    <div class="ui-setting-row-head">
+                                        <div class="ui-setting-label-wrap">
+                                            <span class="ui-setting-title">Положение</span>
+                                            <span class="ui-setting-hint">Выберите угол экрана для логотипа</span>
+                                        </div>
+                                    </div>
+                                    <div class="ui-yn-group" id="ui-logo-position-group" role="group" aria-label="Положение логотипа">
+                                        <button type="button" class="ui-yn-btn" data-ui-logo-position="top-left">СВЕРХУ СЛЕВА</button>
+                                        <button type="button" class="ui-yn-btn" data-ui-logo-position="top-right">СВЕРХУ СПРАВА</button>
+                                        <button type="button" class="ui-yn-btn" data-ui-logo-position="bottom-left">СНИЗУ СЛЕВА</button>
+                                        <button type="button" class="ui-yn-btn" data-ui-logo-position="bottom-right">СНИЗУ СПРАВА</button>
+                                    </div>
+                                </div>
+
+                                <div class="ui-setting-row ui-setting-row-col">
+                                    <div class="ui-setting-row-head">
+                                        <div class="ui-setting-label-wrap">
+                                            <span class="ui-setting-title">Размер</span>
+                                            <span class="ui-setting-hint">Масштаб логотипа относительно стандартного размера</span>
+                                        </div>
+                                        <span id="ui-logo-size-val" class="ui-range-badge">100%</span>
+                                    </div>
+                                    <div class="ui-range-wrap">
+                                        <span class="ui-range-bound">50%</span>
+                                        <input type="range" id="ui-logo-size" min="50" max="200" step="5" value="100">
+                                        <span class="ui-range-bound">200%</span>
                                     </div>
                                 </div>
 
@@ -1380,11 +1410,11 @@
                             <div class="apk-panel">
                                 <h3>Предпросмотр на экране пользователя</h3>
                                 <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px;">
-                                    Так логотип «PQTV» будет выглядеть в нижнем левом углу плеера.
+                                    Так логотип «PQTV» будет выглядеть в выбранном углу плеера.
                                 </p>
                                 <div class="ui-logo-preview-stage">
                                     <div class="ui-logo-preview-hint">Экран канала 16:9</div>
-                                    <div id="ui-logo-preview-mark" class="ui-logo-preview-mark">
+                                    <div id="ui-logo-preview-mark" class="ui-logo-preview-mark logo-position-bottom-left">
                                         <svg viewBox="0 0 320 180" xmlns="http://www.w3.org/2000/svg">
                                             <defs>
                                                 <linearGradient id="LGRAD_PREV" x1="0%" y1="0%" x2="100%" y2="100%">
