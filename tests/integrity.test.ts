@@ -910,4 +910,147 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     assert.equal(exported.playlistMeta.pl_renamed?.enabled, true);
     assert.equal(exported.playlistMeta.pl_hidden, undefined);
   });
+
+  test('18. Storage mode switching (local/cloud), /api/health, local categories CRUD, and snapshot export/hydrate', async () => {
+    resetTempWorkspace();
+    const storageSettingsMod = await import('../src/storageSettings.js');
+
+    // Public healthcheck endpoint works without authentication
+    const healthRes = await fetch(`${baseUrl}/api/health`);
+    assert.equal(healthRes.status, 200);
+    const healthData = (await healthRes.json()) as { ok: boolean; storageMode: string };
+    assert.equal(healthData.ok, true);
+    assert.ok(healthData.storageMode === 'local' || healthData.storageMode === 'cloud');
+
+    // Storage settings endpoint returns metadata & paths
+    const initialRes = await api<{
+      ok: boolean;
+      settings: { mode: string };
+      dataDir: string;
+      playlistDir: string;
+    }>('/api/settings/storage');
+    assert.equal(initialRes.status, 200);
+    assert.equal(initialRes.data.ok, true);
+    assert.equal(initialRes.data.dataDir, configMod.config.dataDir);
+    assert.equal(initialRes.data.playlistDir, configMod.config.playlistDir);
+
+    // Rejects invalid custom Firebase config
+    const invalidRes = await api<{ ok: boolean; error: string }>('/api/settings/storage', 'POST', {
+      mode: 'cloud',
+      useCustomFirebaseConfig: true,
+      firebaseConfig: {
+        projectId: 'invalid project id!',
+        apiKey: '',
+        appId: '',
+      },
+    });
+    assert.equal(invalidRes.status, 400);
+    assert.equal(invalidRes.data.ok, false);
+
+    // Switch to local mode
+    const localRes = await api<{
+      ok: boolean;
+      settings: { mode: string };
+      publicConfig: { mode: string; configured: boolean; firebaseConfig: unknown };
+    }>('/api/settings/storage', 'POST', {
+      mode: 'local',
+    });
+    assert.equal(localRes.status, 200);
+    assert.equal(localRes.data.ok, true);
+    assert.equal(localRes.data.publicConfig.mode, 'local');
+    assert.equal(localRes.data.publicConfig.configured, true);
+    assert.equal(localRes.data.publicConfig.firebaseConfig, null);
+    assert.equal(storageSettingsMod.getActiveFirebaseConfig(), null);
+
+    // /api/health reflects local mode and /login exposes PQTV_STORAGE_CONFIG
+    const healthLocal = (await (await fetch(`${baseUrl}/api/health`)).json()) as { ok: boolean; storageMode: string };
+    assert.equal(healthLocal.storageMode, 'local');
+    const loginHtml = await (await fetch(`${baseUrl}/login`)).text();
+    assert.ok(loginHtml.includes('window.PQTV_STORAGE_CONFIG'));
+    assert.ok(loginHtml.includes('"mode":"local"'));
+
+    // In local mode, Google login endpoint returns 403 clearly
+    const googleRes = await api<{ ok: boolean }>('/api/auth/unified-google-login', 'POST', { idToken: 'fake' });
+    assert.equal(googleRes.status, 403);
+
+    // In local mode, watch admin endpoints work without X-Firebase-ID-Token
+    const watchPlRes = await api<{ playlists: string[] }>('/watch/api/admin/playlists');
+    assert.equal(watchPlRes.status, 200);
+    assert.ok(Array.isArray(watchPlRes.data.playlists));
+
+    const watchUserSaveRes = await api<{ ok: boolean; user: { login: string } }>(
+      '/watch/api/admin/users/save',
+      'POST',
+      {
+        login: 'local_only_viewer',
+        password: 'secret',
+        name: 'Local Viewer',
+        playlists: [],
+        enabled: true,
+      }
+    );
+    assert.equal(watchUserSaveRes.status, 200);
+    assert.equal(watchUserSaveRes.data.user.login, 'local_only_viewer');
+
+    // Local categories CRUD + snapshot export/hydrate
+    const catCreate = await api<{ ok: boolean; category: { id: string; name: string } }>(
+      '/api/categories/create',
+      'POST',
+      { name: 'Документальные' }
+    );
+    assert.equal(catCreate.status, 200);
+    assert.equal(catCreate.data.ok, true);
+    const catId = catCreate.data.category.id;
+
+    const catDup = await api<{ ok: boolean }>('/api/categories/create', 'POST', { name: 'документальные' });
+    assert.equal(catDup.status, 400);
+
+    const catList = await api<{ ok: boolean; categories: Array<{ id: string; name: string }> }>('/api/categories');
+    assert.equal(catList.status, 200);
+    assert.equal(catList.data.categories.length, 1);
+    assert.equal(catList.data.categories[0].name, 'Документальные');
+
+    const snapshotRes = await api<{
+      ok: boolean;
+      categories: Array<{ id: string; name: string }>;
+      users: Array<{ login: string }>;
+    }>('/api/cloud/export');
+    assert.equal(snapshotRes.status, 200);
+    assert.equal(snapshotRes.data.categories.length, 1);
+    assert.equal(snapshotRes.data.users.some((u) => u.login === 'local_only_viewer'), true);
+
+    const catDel = await api<{ ok: boolean; removed: boolean }>('/api/categories/delete', 'POST', { id: catId });
+    assert.equal(catDel.status, 200);
+    assert.equal(catDel.data.removed, true);
+    assert.equal((await api<{ categories: unknown[] }>('/api/categories')).data.categories.length, 0);
+
+    const hydrateRes = await api<{ ok: boolean }>('/api/cloud/hydrate', 'POST', {
+      categories: snapshotRes.data.categories,
+      force: true,
+    });
+    assert.equal(hydrateRes.status, 200);
+    const catAfterHydrate = await api<{ categories: Array<{ name: string }> }>('/api/categories');
+    assert.deepEqual(catAfterHydrate.data.categories.map((c) => c.name), ['Документальные']);
+
+    // Switch to cloud mode with custom Firebase project credentials
+    const cloudCustomRes = await api<{
+      ok: boolean;
+      publicConfig: { mode: string; configured: boolean; firebaseConfig: { projectId: string } | null };
+    }>('/api/settings/storage', 'POST', {
+      mode: 'cloud',
+      useCustomFirebaseConfig: true,
+      firebaseConfig: {
+        projectId: 'my-own-server-tv',
+        apiKey: 'AIzaTestCustomServerKey12345',
+        appId: '1:999888777:web:abcdef123456',
+        firestoreDatabaseId: '(default)',
+      },
+    });
+    assert.equal(cloudCustomRes.status, 200);
+    assert.equal(cloudCustomRes.data.publicConfig.mode, 'cloud');
+    assert.equal(cloudCustomRes.data.publicConfig.configured, true);
+    assert.equal(cloudCustomRes.data.publicConfig.firebaseConfig?.projectId, 'my-own-server-tv');
+    assert.equal(storageSettingsMod.getActiveFirebaseConfig()?.projectId, 'my-own-server-tv');
+  });
 });
+

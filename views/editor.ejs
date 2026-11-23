@@ -170,6 +170,10 @@
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
                                 <span>Android TV APK</span>
                             </button>
+                            <button id="nav-btn-storage" class="nav-item" data-settings-target="storage">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6a8 3 0 0 1 16 0v12a8 3 0 0 1-16 0Z"/><path d="M4 6a8 3 0 0 0 16 0"/><path d="M4 12a8 3 0 0 0 16 0"/></svg>
+                                <span>Хранение информации</span>
+                            </button>
                         </div>
                     </section>
                     <div class="nav-section nav-standalone">
@@ -808,6 +812,10 @@
                             <h3>Android TV APK</h3>
                             <p>Сборка, релизы и обновление приложения на телевизорах.</p>
                         </button>
+                        <button type="button" class="apk-panel settings-dashboard-card" data-settings-target="storage">
+                            <h3>Хранение информации</h3>
+                            <p>Выбор локальной базы сервера или собственного проекта Firebase, экспорт и импорт снимка.</p>
+                        </button>
                     </div>
                 </div>
 
@@ -1052,6 +1060,116 @@
                                     </label>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- SCREEN: ХРАНЕНИЕ ИНФОРМАЦИИ -->
+                <div id="screen-storage" class="hidden">
+                    <div class="col-header">
+                        <h2>Хранение информации</h2>
+                        <div class="header-actions">
+                            <button type="button" class="btn btn-secondary" data-settings-back>К настройкам</button>
+                            <button type="button" id="btn-storage-save" class="btn btn-primary">Сохранить настройки</button>
+                        </div>
+                    </div>
+                    <div id="storage-settings-scroll">
+                        <div class="apk-panel" style="margin-bottom:16px;">
+                            <h3>Режим хранения данных</h3>
+                            <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px; line-height:1.5;">
+                                Эти настройки сохраняются только на текущем сервере и не перезаписываются при синхронизации из облака. При переносе проекта на собственный сервер выберите локальное хранение или укажите параметры своего проекта Firebase.
+                            </p>
+                            <div class="storage-mode-grid" id="storage-mode-grid">
+                                <button type="button" class="storage-mode-card" data-storage-mode="local">
+                                    <span class="storage-mode-title">Локальное хранение (файлы сервера)</span>
+                                    <span class="storage-mode-desc">Все плейлисты, каталог каналов, категории, пользователи и настройки хранятся локально в каталогах сервера. Работает полностью автономно без Firebase и Google-входа.</span>
+                                </button>
+                                <button type="button" class="storage-mode-card" data-storage-mode="cloud">
+                                    <span class="storage-mode-title">Облачное хранение (Firebase Firestore)</span>
+                                    <span class="storage-mode-desc">Синхронизация базы с Firestore и вход через Google. Можно использовать встроенный проект или указать собственный.</span>
+                                </button>
+                            </div>
+                            <div id="storage-status-strip" class="storage-status-strip">
+                                Определение текущей конфигурации...
+                            </div>
+                        </div>
+
+                        <div id="storage-firebase-panel" class="apk-panel" style="margin-bottom:16px;">
+                            <h3>Параметры проекта Firebase</h3>
+                            <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+                                <input type="checkbox" id="storage-use-custom-fb">
+                                <label for="storage-use-custom-fb" style="margin:0; cursor:pointer; color:var(--text);">
+                                    Использовать собственные параметры Firebase (для переноса на свой сервер)
+                                </label>
+                            </div>
+
+                            <div id="storage-custom-fb-fields">
+                                <div class="form-group">
+                                    <label for="storage-cfg-paste">Быстрая вставка конфигурации из Firebase Console (JSON или объект firebaseConfig)</label>
+                                    <textarea id="storage-cfg-paste" rows="4" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","firestoreDatabaseId":"(default)","appId":"..."}'></textarea>
+                                    <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+                                        <button type="button" id="btn-storage-parse-cfg" class="btn btn-secondary">Распознать параметры</button>
+                                        <button type="button" id="btn-storage-reset-fb" class="btn btn-secondary">Сбросить к проекту по умолчанию</button>
+                                    </div>
+                                </div>
+
+                                <div class="stream-row-2">
+                                    <div class="form-group">
+                                        <label for="storage-fb-project-id">Project ID</label>
+                                        <input type="text" id="storage-fb-project-id" placeholder="my-pqtv-project" autocomplete="off">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="storage-fb-db-id">Firestore Database ID</label>
+                                        <input type="text" id="storage-fb-db-id" placeholder="(default)" autocomplete="off">
+                                    </div>
+                                </div>
+                                <div class="stream-row-2">
+                                    <div class="form-group">
+                                        <label for="storage-fb-api-key">Web API Key</label>
+                                        <input type="text" id="storage-fb-api-key" placeholder="AIza..." autocomplete="off">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="storage-fb-auth-domain">Auth Domain</label>
+                                        <input type="text" id="storage-fb-auth-domain" placeholder="project.firebaseapp.com" autocomplete="off">
+                                    </div>
+                                </div>
+                                <div class="stream-row-2">
+                                    <div class="form-group">
+                                        <label for="storage-fb-app-id">App ID</label>
+                                        <input type="text" id="storage-fb-app-id" placeholder="1:123456:web:abcdef" autocomplete="off">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="storage-fb-bucket">Storage Bucket (необязательно)</label>
+                                        <input type="text" id="storage-fb-bucket" placeholder="project.firebasestorage.app" autocomplete="off">
+                                    </div>
+                                </div>
+                                <div class="form-group">
+                                    <label for="storage-fb-sender-id">Messaging Sender ID (необязательно)</label>
+                                    <input type="text" id="storage-fb-sender-id" placeholder="1234567890" autocomplete="off">
+                                </div>
+
+                                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px;">
+                                    <button type="button" id="btn-storage-test-fb" class="btn btn-secondary">Проверить подключение к Firestore</button>
+                                    <span id="storage-test-result" style="font-size:12.5px; color:var(--muted);"></span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="apk-panel">
+                            <h3>Перенос базы и резервный снимок</h3>
+                            <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px; line-height:1.5;">
+                                Выгрузите полную базу проекта (плейлисты, каталог каналов, источники, категории, пользователей и настройки) в один JSON-файл или загрузите снимок на новом сервере.
+                            </p>
+                            <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:16px;">
+                                <button type="button" id="btn-storage-export" class="btn btn-secondary">Экспортировать снимок (.json)</button>
+                                <button type="button" id="btn-storage-import" class="btn btn-secondary">Импортировать снимок (.json)</button>
+                                <input type="file" id="storage-import-file" accept=".json,application/json" class="hidden">
+                            </div>
+                            <ol class="storage-checklist">
+                                <li>На текущем сервере нажмите <strong>«Экспортировать снимок (.json)»</strong>, чтобы сохранить полную копию базы.</li>
+                                <li>На новом сервере задайте <code>PQTV_STORAGE_MODE=local</code> в <code>.env</code> или выберите здесь режим <strong>«Локальное хранение»</strong>.</li>
+                                <li>Откройте админку нового сервера и загрузите сохранённый файл через <strong>«Импортировать снимок (.json)»</strong>.</li>
+                            </ol>
                         </div>
                     </div>
                 </div>
@@ -1771,6 +1889,7 @@
     <div id="pqtv-toast-stack" class="pqtv-toast-stack"></div>
 
     <script>
+        window.PQTV_STORAGE_CONFIG = <%- safeJsonForScript(publicStorageConfig) %>;
         window.CSRF_TOKEN = <%- JSON.stringify(csrfToken) %>;
         window.ADMIN_TOKEN = <%- JSON.stringify(typeof adminToken === 'string' ? adminToken : '') %>;
         try {

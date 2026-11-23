@@ -1817,6 +1817,13 @@ document.addEventListener('DOMContentLoaded', () => {
     let tvFirebaseAlertsCache = [];
     let tvFirebaseSubscribed = false;
 
+    function isCloudStorageEnabled() {
+        const cfg = window.PQTV_STORAGE_CONFIG;
+        if (cfg && cfg.mode === 'local') return false;
+        if (cfg && cfg.mode === 'cloud' && cfg.configured === false) return false;
+        return Boolean(window.PQTVFirebase && typeof window.PQTVFirebase.isEnabled === 'function' ? window.PQTVFirebase.isEnabled() : true);
+    }
+
     async function apiAdmin(url, method, body) {
         const methodUpper = String(method || 'GET').toUpperCase();
         const opts = {
@@ -1824,7 +1831,7 @@ document.addEventListener('DOMContentLoaded', () => {
             credentials: 'same-origin',
             headers: Object.assign({}, authHeaders())
         };
-        if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(methodUpper)) {
+        if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(methodUpper) && isCloudStorageEnabled()) {
             if (!window.PQTVFirebase || typeof window.PQTVFirebase.getAdminIdToken !== 'function') {
                 throw new Error('Firebase admin authentication is unavailable');
             }
@@ -1854,7 +1861,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function ensureTvFirebaseAdminSync() {
-        if (!window.IS_ADMIN_VIEWER || tvFirebaseSubscribed) return;
+        if (!isCloudStorageEnabled() || !window.IS_ADMIN_VIEWER || tvFirebaseSubscribed) return;
         if (!window.PQTVFirebase || typeof window.PQTVFirebase.isSignedInAdmin !== 'function') return;
         const ok = await window.PQTVFirebase.isSignedInAdmin().catch(() => false);
         if (!ok) return;
@@ -2653,7 +2660,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ===== PING =====
     function sendPing() {
         fetch('/watch/api/ping', { credentials: 'same-origin', headers: authHeaders() }).catch(()=>{});
-        if (window.PQTVFirebase && typeof window.PQTVFirebase.pingViewerPresence === 'function') {
+        if (isCloudStorageEnabled() && window.PQTVFirebase && typeof window.PQTVFirebase.pingViewerPresence === 'function') {
             window.PQTVFirebase.pingViewerPresence().catch(()=>{});
         }
     }
@@ -2663,7 +2670,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ===== CLOUD VIEWER HYDRATION =====
     let viewerCloudHydrated = false;
     function initViewerCloudHydration() {
-        if (!window.PQTVFirebase || typeof window.PQTVFirebase.onAuthChange !== 'function') return;
+        if (!isCloudStorageEnabled() || !window.PQTVFirebase || typeof window.PQTVFirebase.onAuthChange !== 'function') return;
         window.PQTVFirebase.onAuthChange(async (info) => {
             if (!info || !info.signedIn || viewerCloudHydrated) return;
             viewerCloudHydrated = true;

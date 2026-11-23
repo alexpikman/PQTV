@@ -572,6 +572,7 @@
     </div>
 
     <script>
+        window.PQTV_STORAGE_CONFIG = <%- safeJsonForScript(publicStorageConfig) %>;
         window.USER_NAME = <%- JSON.stringify(uName) %>;
         window.USER_LOGIN = <%- JSON.stringify(uLogin) %>;
         window.IS_ADMIN_VIEWER = <%- JSON.stringify(Boolean(isAdminViewer)) %>;

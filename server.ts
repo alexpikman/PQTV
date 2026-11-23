@@ -46,6 +46,8 @@ import {
 import { getStreamingSettings, trySaveStreamingSettings } from './src/streamingSettings.js';
 import { getUiSettings, trySaveUiSettings } from './src/uiSettings.js';
 import { stateLifecycle } from './src/stateLifecycle.js';
+import * as storageSettings from './src/storageSettings.js';
+import { categoriesStore } from './src/categoriesStore.js';
 import {
   createPlaylistUnified,
   updatePlaylistUnified,
@@ -210,6 +212,21 @@ function noCacheJson(res: Response, data: unknown, status = 200): void {
   res.setHeader('Expires', '0');
   res.json(data);
 }
+
+function safeJsonForScript(value: unknown): string {
+  return JSON.stringify(value)
+    .replace(/</g, '\\u003c')
+    .replace(/>/g, '\\u003e')
+    .replace(/&/g, '\\u0026')
+    .replace(/\u2028/g, '\\u2028')
+    .replace(/\u2029/g, '\\u2029');
+}
+
+app.use((_req, res, next) => {
+  res.locals.publicStorageConfig = storageSettings.getPublicStorageClientConfig();
+  res.locals.safeJsonForScript = safeJsonForScript;
+  next();
+});
 
 function bumpRevisionForResponse(
   res: Response,
@@ -442,24 +459,13 @@ function checkAdminPassword(pass: string): boolean {
 }
 
 // Authoritative server-side Firestore REST helpers (authenticated using user's own verified ID Token, zero IAM needed)
-let cachedFirebaseCfg: { projectId: string; firestoreDatabaseId: string } | null = null;
 function getFirebaseCfg(): { projectId: string; firestoreDatabaseId: string } | null {
-  if (cachedFirebaseCfg) return cachedFirebaseCfg;
-  try {
-    const raw = JSON.parse(
-      fs.readFileSync(path.join(rootDir, 'firebase-applet-config.json'), 'utf-8')
-    ) as { projectId?: string; firestoreDatabaseId?: string };
-    if (raw.projectId) {
-      cachedFirebaseCfg = {
-        projectId: raw.projectId,
-        firestoreDatabaseId: raw.firestoreDatabaseId || '(default)',
-      };
-      return cachedFirebaseCfg;
-    }
-  } catch {
-    // ignore
-  }
-  return null;
+  const active = storageSettings.getActiveFirebaseConfig();
+  if (!active?.projectId) return null;
+  return {
+    projectId: active.projectId,
+    firestoreDatabaseId: active.firestoreDatabaseId || '(default)',
+  };
 }
 
 async function fetchFirestoreAdminFlag(uid: string, idToken: string): Promise<boolean> {
@@ -668,6 +674,14 @@ function isSafeExternalApkUrl(rawUrl: string): boolean {
     return false;
   }
 }
+
+// Lightweight liveness endpoint for Docker / reverse-proxy healthchecks
+app.get('/api/health', (_req, res) => {
+  noCacheJson(res, {
+    ok: true,
+    storageMode: storageSettings.getStorageMode(),
+  });
+});
 
 // ============ PUBLIC APK OTA UPDATE & DOWNLOAD ROUTES ============
 app.get('/api/app/version', (req, res) => {
@@ -976,6 +990,14 @@ app.post('/watch/login', (req, res, next) => {
 
 // Unified Google Login API (auto-routes Admins -> /editor, Viewers -> /watch)
 app.post('/api/auth/unified-google-login', async (req, res) => {
+  if (storageSettings.getStorageMode() === 'local') {
+    noCacheJson(
+      res,
+      { error: 'Включён локальный режим хранения — вход через Google отключён. Используйте логин и пароль.' },
+      403
+    );
+    return;
+  }
   const authHeader = String(req.headers.authorization || '');
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   if (!token) {
@@ -1101,6 +1123,14 @@ app.post('/api/auth/unified-google-login', async (req, res) => {
 
 // Keep legacy endpoint aliases compatible
 app.post('/api/auth/firebase-login', async (req, res) => {
+  if (storageSettings.getStorageMode() === 'local') {
+    noCacheJson(
+      res,
+      { error: 'Включён локальный режим хранения — вход через Google отключён. Используйте логин и пароль.' },
+      403
+    );
+    return;
+  }
   const authHeader = String(req.headers.authorization || '');
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   if (!token) {
@@ -1167,6 +1197,14 @@ app.all(['/watch', '/watch/login'], (req, res) => {
 });
 
 app.post('/watch/api/firebase-session', async (req, res) => {
+  if (storageSettings.getStorageMode() === 'local') {
+    noCacheJson(
+      res,
+      { error: 'Включён локальный режим хранения — вход через Google отключён.' },
+      403
+    );
+    return;
+  }
   const authHeader = String(req.headers.authorization || '');
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
   if (!token) {
@@ -1526,7 +1564,7 @@ async function requireAdminViewer(req: Request, res: Response, next: NextFunctio
     return;
   }
 
-  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method)) {
+  if (['POST', 'PUT', 'DELETE', 'PATCH'].includes(req.method) && storageSettings.getStorageMode() === 'cloud') {
     const firebaseIdToken = typeof req.headers['x-firebase-id-token'] === 'string'
       ? req.headers['x-firebase-id-token']
       : '';
@@ -2471,6 +2509,93 @@ app.post('/api/settings/ui', (req, res) => {
   noCacheJson(res, { ok: true, settings: saved.settings, revision: meta.revision });
 });
 
+// Storage mode settings (server-local only, never overwritten by cloud snapshots)
+app.get('/api/settings/storage', (_req, res) => {
+  const settings = storageSettings.loadStorageSettings();
+  const bundledConfig = storageSettings.getBundledFirebaseConfig();
+  const publicConfig = storageSettings.getPublicStorageClientConfig();
+  const envMode = (process.env.PQTV_STORAGE_MODE || '').trim().toLowerCase();
+  const hasEnvFb = Boolean(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_API_KEY);
+  const effectiveSource =
+    settings.mode === 'local'
+      ? 'local_files'
+      : settings.useCustomFirebaseConfig
+        ? 'custom_firebase'
+        : hasEnvFb
+          ? 'env_firebase'
+          : bundledConfig
+            ? 'bundled_firebase'
+            : 'unconfigured';
+
+  noCacheJson(res, {
+    ok: true,
+    settings,
+    bundledConfig,
+    publicConfig,
+    effectiveSource,
+    envModeOverride: envMode === 'local' || envMode === 'cloud' ? envMode : '',
+    dataDir: path.resolve(config.dataDir),
+    playlistDir: path.resolve(config.playlistDir),
+  });
+});
+
+app.post('/api/settings/storage', (req, res) => {
+  const saved = storageSettings.saveStorageSettings((req.body || {}) as {
+    mode?: unknown;
+    useCustomFirebaseConfig?: unknown;
+    firebaseConfig?: unknown;
+  });
+  if (!saved.ok || !saved.settings) {
+    const errMsg = saved.error || 'Не удалось сохранить настройки хранения';
+    const isServerWriteErr = errMsg.includes('storage_settings.json') || errMsg.includes('запис');
+    noCacheJson(res, { ok: false, error: errMsg }, isServerWriteErr ? 500 : 400);
+    return;
+  }
+  noCacheJson(res, {
+    ok: true,
+    settings: saved.settings,
+    publicConfig: storageSettings.getPublicStorageClientConfig(),
+  });
+});
+
+// Global channel categories (local file store, synced with cloud when active)
+app.get('/api/categories', (_req, res) => {
+  noCacheJson(res, { ok: true, categories: categoriesStore.list() });
+});
+
+app.post('/api/categories/create', (req, res) => {
+  const name = String(req.body?.name || '').trim();
+  const id = typeof req.body?.id === 'string' ? req.body.id : undefined;
+  const created = categoriesStore.create(name, id);
+  if (!created.ok || !created.category) {
+    noCacheJson(
+      res,
+      { ok: false, error: created.error || 'Не удалось создать категорию' },
+      categoriesStore.getLastError() ? 500 : 400
+    );
+    return;
+  }
+  const meta = bumpRevisionForResponse(res, 'playlist_save', created.category.id, { action: 'category_create' });
+  if (!meta) return;
+  noCacheJson(res, { ok: true, category: created.category, categories: categoriesStore.list(), revision: meta.revision });
+});
+
+app.post('/api/categories/delete', (req, res) => {
+  const id = String(req.body?.id || '').trim();
+  const resDel = categoriesStore.remove(id);
+  if (!resDel.ok) {
+    noCacheJson(
+      res,
+      { ok: false, error: resDel.error || 'Не удалось удалить категорию' },
+      categoriesStore.getLastError() ? 500 : 400
+    );
+    return;
+  }
+  const meta = bumpRevisionForResponse(res, 'playlist_save', id, { action: 'category_delete' });
+  if (!meta) return;
+  noCacheJson(res, { ok: true, removed: Boolean(resDel.removed), categories: categoriesStore.list(), revision: meta.revision });
+});
+
 function findMatchingPlaylistsForChannel(name: string, url: string): {
   playlists: string[];
   allPlaylists: string[];
@@ -2583,6 +2708,7 @@ app.get('/api/cloud/export', (_req, res) => {
     sources: StreamParser.getSources(),
     sourceIndex: StreamParser.exportIndexData(),
     epgSources: EpgParser.getSources(),
+    categories: categoriesStore.list(),
     catalog: catalogStore.exportRawState(),
     streamingSettings: getStreamingSettings(),
     uiSettings: getUiSettings(),
@@ -2613,6 +2739,13 @@ app.post('/api/cloud/hydrate', async (req, res) => {
   if (!out.ok) {
     noCacheJson(res, out, out.status);
     return;
+  }
+
+  if (Array.isArray(rawBody.categories)) {
+    if (!categoriesStore.hydrate(rawBody.categories)) {
+      noCacheJson(res, { ok: false, error: categoriesStore.getLastError() || 'Не удалось восстановить категории' }, 500);
+      return;
+    }
   }
 
   if (Array.isArray(rawBody.invites)) {

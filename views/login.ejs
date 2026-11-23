@@ -20,6 +20,10 @@
         <% } %>
         <div id="unified-auth-msg" class="error-msg hidden"></div>
 
+        <div id="local-storage-login-note" class="hidden" style="margin-bottom:14px; font-size:12.5px; color:var(--muted); text-align:center;">
+            Локальный режим хранения — вход по логину и паролю
+        </div>
+
         <button type="button" id="btn-google-unified-login" class="btn btn-primary" style="width: 100%; padding: 13px; font-size: 14px;" tabindex="1">
             <svg viewBox="0 0 24 24" width="17" height="17" fill="currentColor" aria-hidden="true">
                 <path d="M21.35 11.1h-9.17v2.73h6.51c-.33 3.81-3.5 5.44-6.5 5.44C8.36 19.27 5 16.25 5 12c0-4.1 3.2-7.27 7.2-7.27 3.09 0 4.9 1.97 4.9 1.97L19 4.72S16.56 2 12.1 2C6.42 2 2.03 6.8 2.03 12c0 5.05 4.13 10 10.22 10 5.35 0 9.25-3.67 9.25-9.09 0-1.15-.15-1.81-.15-1.81Z"/>
@@ -33,7 +37,7 @@
             </a>
         </div>
 
-        <div class="login-divider"><span>или по логину и паролю</span></div>
+        <div id="login-google-divider" class="login-divider"><span>или по логину и паролю</span></div>
 
         <form action="/login" method="POST">
             <div class="form-group">
@@ -73,10 +77,22 @@
         </form>
     </div>
 
+    <script>
+        window.PQTV_STORAGE_CONFIG = <%- safeJsonForScript(publicStorageConfig) %>;
+    </script>
     <script src="/assets/js/firebase-users.js?v=<%= assetVersion('/assets/js/firebase-users.js') %>"></script>
     <script>
         (function () {
             const btnGoogle = document.getElementById('btn-google-unified-login');
+            const googleDivider = document.getElementById('login-google-divider');
+            const localNote = document.getElementById('local-storage-login-note');
+            const storageCfg = window.PQTV_STORAGE_CONFIG || { mode: 'cloud', configured: true };
+            const googleEnabled = storageCfg.mode === 'cloud' && storageCfg.configured !== false;
+            if (!googleEnabled) {
+                if (btnGoogle) btnGoogle.classList.add('hidden');
+                if (googleDivider) googleDivider.classList.add('hidden');
+                if (localNote) localNote.classList.remove('hidden');
+            }
             const msgBox = document.getElementById('unified-auth-msg');
             const newTabHint = document.getElementById('auth-newtab-hint');
             const adminForm = document.getElementById('admin-token-form');

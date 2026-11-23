@@ -159,6 +159,12 @@ document.addEventListener('DOMContentLoaded', () => {
     let cloudSyncRunning = false;
     let cloudBootstrapPromise = null;
 
+    function isCloudStorageMode() {
+        const cfg = window.PQTV_STORAGE_CONFIG;
+        if (cfg && cfg.mode === 'local') return false;
+        return true;
+    }
+
     const NON_SYNC_POST_PREFIXES = [
         '/api/cloud/hydrate',
         '/api/catalog/hydrate',
@@ -167,6 +173,8 @@ document.addEventListener('DOMContentLoaded', () => {
         '/api/stream/parse',
         '/api/health/probe-candidates',
         '/api/github/token/test',
+        '/api/settings/storage',
+        '/api/categories/',
     ];
 
     let cloudSyncQueue = Promise.resolve(true);
@@ -394,13 +402,23 @@ document.addEventListener('DOMContentLoaded', () => {
     async function apiRequest(url, method = 'GET', body = null, reqOpts = null) {
         const methodUpper = String(method || 'GET').toUpperCase();
         const isMutation = ['POST', 'PUT', 'DELETE', 'PATCH'].includes(methodUpper);
-        const skipSync = Boolean(reqOpts && reqOpts.skipCloudSync) ||
+        const cloudMode = isCloudStorageMode();
+        const isStorageSettingsRoute = url.startsWith('/api/settings/storage');
+        const skipSync = !cloudMode ||
+            Boolean(reqOpts && reqOpts.skipCloudSync) ||
             NON_SYNC_POST_PREFIXES.some(prefix => url.startsWith(prefix));
-        const requiresCloudWrite = !skipSync && (
+        const requiresCloudWrite = cloudMode && !skipSync && (
             isMutation || (methodUpper === 'GET' && url.startsWith('/api/source/rebuild'))
         );
 
-        if (isMutation && !fbAdminConnected && !url.startsWith('/api/cloud/hydrate') && !url.startsWith('/api/catalog/hydrate')) {
+        if (
+            cloudMode &&
+            isMutation &&
+            !fbAdminConnected &&
+            !isStorageSettingsRoute &&
+            !url.startsWith('/api/cloud/hydrate') &&
+            !url.startsWith('/api/catalog/hydrate')
+        ) {
             return {
                 ok: false,
                 _httpStatus: 503,
@@ -419,14 +437,16 @@ document.addEventListener('DOMContentLoaded', () => {
         const adminToken = getAdminToken();
         if (adminToken) opts.headers['X-Admin-Token'] = adminToken;
         if (isMutation) {
-            if (!window.PQTVFirebase || typeof window.PQTVFirebase.getAdminIdToken !== 'function') {
-                return { ok: false, _httpStatus: 503, error: 'Firebase admin authentication is unavailable' };
+            if (cloudMode && !isStorageSettingsRoute) {
+                if (!window.PQTVFirebase || typeof window.PQTVFirebase.getAdminIdToken !== 'function') {
+                    return { ok: false, _httpStatus: 503, error: 'Firebase admin authentication is unavailable' };
+                }
+                const firebaseIdToken = await window.PQTVFirebase.getAdminIdToken();
+                if (!firebaseIdToken) {
+                    return { ok: false, _httpStatus: 401, error: 'Требуется авторизация администратора Firebase' };
+                }
+                opts.headers['X-Firebase-ID-Token'] = firebaseIdToken;
             }
-            const firebaseIdToken = await window.PQTVFirebase.getAdminIdToken();
-            if (!firebaseIdToken) {
-                return { ok: false, _httpStatus: 401, error: 'Требуется авторизация администратора Firebase' };
-            }
-            opts.headers['X-Firebase-ID-Token'] = firebaseIdToken;
             opts.headers['X-CSRF-Token'] = window.CSRF_TOKEN || '';
         }
         if (body) {
@@ -731,7 +751,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('[data-settings-target]').forEach((button) => {
         button.addEventListener('click', () => {
             const target = button.dataset.settingsTarget;
-            if (!['streaming', 'ui-settings', 'apk'].includes(target)) return;
+            if (!['streaming', 'ui-settings', 'apk', 'storage'].includes(target)) return;
             showScreen(target);
             setNavActive(target);
             if (target === 'streaming' && typeof window.__refreshStreamingControls === 'function') {
@@ -739,6 +759,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (target === 'ui-settings' && typeof window.__refreshUiSettings === 'function') {
                 void window.__refreshUiSettings();
+            }
+            if (target === 'storage' && typeof window.__refreshStorageSettings === 'function') {
+                void window.__refreshStorageSettings();
             }
             if (target === 'apk') loadApkReleases();
         });
@@ -779,7 +802,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     '#playlists-list-container, #channels-container, #parse-results-container, ' +
                     '#sources-list-container, #epg-list-container, #users-screen-scroll, ' +
                     '#catalog-list-container, #health-list-container, #apk-screen-scroll, ' +
-                    '#ui-settings-scroll, #streaming-settings-scroll, .ui-settings-grid'
+                    '#ui-settings-scroll, #streaming-settings-scroll, #storage-settings-scroll, .ui-settings-grid'
                 ).forEach((child) => { child.scrollTop = 0; });
             }
         } catch {}
@@ -796,6 +819,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const screenStreaming = document.getElementById('screen-streaming');
         const screenUiSettings = document.getElementById('screen-ui-settings');
         const screenApk = document.getElementById('screen-apk');
+        const screenStorage = document.getElementById('screen-storage');
         const screensMap = {
             playlists: screenPlaylists,
             editor: screenEditor,
@@ -809,6 +833,7 @@ document.addEventListener('DOMContentLoaded', () => {
             streaming: screenStreaming,
             'ui-settings': screenUiSettings,
             apk: screenApk,
+            storage: screenStorage,
         };
         Object.values(screensMap).forEach((s) => s && s.classList.add('hidden'));
         const targetScreen = screensMap[name] || null;
@@ -1022,9 +1047,27 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function refreshCloudCategories() {
-        if (!window.PQTVFirebase || typeof window.PQTVFirebase.listCategoriesFromCloud !== 'function') return;
-        try { cloudCategories = await window.PQTVFirebase.listCategoriesFromCloud(); }
-        catch (err) { console.error('Failed to load channel categories:', err); cloudCategories = []; }
+        try {
+            const localRes = await apiRequest('/api/categories');
+            let list = Array.isArray(localRes && localRes.categories) ? localRes.categories : [];
+            if (isCloudStorageMode() && fbAdminConnected && window.PQTVFirebase && typeof window.PQTVFirebase.listCategoriesFromCloud === 'function') {
+                const cloudList = await window.PQTVFirebase.listCategoriesFromCloud().catch(() => null);
+                if (Array.isArray(cloudList)) {
+                    const seen = new Set(list.map(c => String(c.name || '').toLocaleLowerCase('ru')));
+                    for (const item of cloudList) {
+                        const norm = String(item.name || '').toLocaleLowerCase('ru');
+                        if (!norm || seen.has(norm)) continue;
+                        seen.add(norm);
+                        list.push(item);
+                    }
+                    list.sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'ru'));
+                }
+            }
+            cloudCategories = list;
+        } catch (err) {
+            console.error('Failed to load channel categories:', err);
+            cloudCategories = [];
+        }
     }
 
     // ===== RENDER CHANNELS =====
@@ -1321,7 +1364,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const select = channelsContainer.querySelector('#playlist-bulk-category');
             const group = select ? select.value : '';
             const urls = Array.from(selectedChannelUrls);
-            if (!fbAdminConnected) { showToast('Подключите Firestore под учётной записью администратора', 'err'); return; }
+            if (isCloudStorageMode() && !fbAdminConnected) { showToast('Подключите Firestore под учётной записью администратора', 'err'); return; }
             if (!group) { showToast('Выберите категорию', 'err'); return; }
             if (!urls.length) { showToast('Выберите каналы', 'err'); return; }
             applyCategory.disabled = true;
@@ -2355,10 +2398,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const statusEl = document.getElementById('fb-status-text');
         const btnConnect = document.getElementById('btn-fb-connect');
         const btnSync = document.getElementById('btn-fb-sync');
-        if (!window.PQTVFirebase) {
-            if (statusEl) statusEl.textContent = 'Firebase SDK недоступен (локальный режим)';
+        if (!isCloudStorageMode() || !window.PQTVFirebase || (typeof window.PQTVFirebase.isEnabled === 'function' && !window.PQTVFirebase.isEnabled())) {
+            fbAdminConnected = false;
+            if (statusEl) {
+                statusEl.textContent = isCloudStorageMode()
+                    ? 'Firebase не настроен (укажите параметры в «Настройки → Хранение информации»)'
+                    : 'Локальное хранение активно (файлы сервера)';
+            }
+            if (btnConnect) btnConnect.classList.add('hidden');
+            if (btnSync) btnSync.classList.add('hidden');
+            void loadUsers();
+            void loadAdminAlerts();
             return;
         }
+        if (btnConnect) btnConnect.classList.remove('hidden');
 
         let currentSignedIn = false;
         let cloudBootstrapStarted = false;
@@ -2540,7 +2593,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.getElementById('popup-user-email').value = email || '';
         document.getElementById('popup-user-email').disabled = Boolean(lockMode && mode === 'invite');
         document.getElementById('popup-user-login').value = login || '';
-        document.getElementById('popup-user-login').disabled = Boolean(id && !fbAdminConnected);
+        document.getElementById('popup-user-login').disabled = Boolean(id && isCloudStorageMode() && !fbAdminConnected);
         document.getElementById('popup-user-password').value = '';
         document.getElementById('popup-user-password').required = (mode === 'password' && !id);
         document.getElementById('popup-user-pwd-hint').textContent = id ? '(оставьте пустым, чтобы не менять)' : '(минимум 4 символа)';
@@ -2722,25 +2775,32 @@ document.addEventListener('DOMContentLoaded', () => {
                         showUserFormError(res.error || 'Ошибка сохранения приглашения');
                         return;
                     }
-                    let syncedCloud = false;
-                    if (fbAdminConnected && window.PQTVFirebase) {
-                        syncedCloud = await syncTargetedCloudUpdate(
-                            res.revision,
-                            () => window.PQTVFirebase.saveInviteAdmin({
-                                email,
-                                name,
-                                playlists,
-                                enabled
-                            })
-                        );
-                    }
-                    if (!syncedCloud) {
-                        showUserFormError('Firestore не подтвердил сохранение приглашения. Изменения не приняты.');
-                        return;
+                    if (isCloudStorageMode()) {
+                        let syncedCloud = false;
+                        if (fbAdminConnected && window.PQTVFirebase) {
+                            syncedCloud = await syncTargetedCloudUpdate(
+                                res.revision,
+                                () => window.PQTVFirebase.saveInviteAdmin({
+                                    email,
+                                    name,
+                                    playlists,
+                                    enabled
+                                })
+                            );
+                        }
+                        if (!syncedCloud) {
+                            showUserFormError('Firestore не подтвердил сохранение приглашения. Изменения не приняты.');
+                            return;
+                        }
                     }
                     closeUserPopup();
                     await loadUsers();
-                    showToast(`Приглашение для ${email} сохранено в Firestore`, 'ok');
+                    showToast(
+                        isCloudStorageMode()
+                            ? `Приглашение для ${email} сохранено в Firestore`
+                            : `Приглашение для ${email} сохранено локально`,
+                        'ok'
+                    );
                     return;
                 }
 
@@ -2761,35 +2821,37 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
                 const targetId = id || (res.user && res.user.id) || '';
-                let syncedCloud = false;
-                if (fbAdminConnected && targetId && window.PQTVFirebase) {
-                    syncedCloud = await syncTargetedCloudUpdate(
-                        res.revision,
-                        async () => {
-                            await window.PQTVFirebase.saveUserAdmin({
-                                id: targetId,
-                                login: payload.login,
-                                name: payload.name || payload.login,
-                                playlists: payload.playlists,
-                                enabled: payload.enabled,
-                                role: (existing && existing.role === 'admin') ? 'admin' : 'user'
-                            });
-                            if (res.cloudCred && typeof window.PQTVFirebase.saveLocalUserCredentialsToCloud === 'function') {
-                                await window.PQTVFirebase.saveLocalUserCredentialsToCloud([res.cloudCred], false);
-                            }
-                        },
-                        res.cloudCred ? { addLocalUserId: res.cloudCred.id } : undefined
-                    );
-                }
+                if (isCloudStorageMode()) {
+                    let syncedCloud = false;
+                    if (fbAdminConnected && targetId && window.PQTVFirebase) {
+                        syncedCloud = await syncTargetedCloudUpdate(
+                            res.revision,
+                            async () => {
+                                await window.PQTVFirebase.saveUserAdmin({
+                                    id: targetId,
+                                    login: payload.login,
+                                    name: payload.name || payload.login,
+                                    playlists: payload.playlists,
+                                    enabled: payload.enabled,
+                                    role: (existing && existing.role === 'admin') ? 'admin' : 'user'
+                                });
+                                if (res.cloudCred && typeof window.PQTVFirebase.saveLocalUserCredentialsToCloud === 'function') {
+                                    await window.PQTVFirebase.saveLocalUserCredentialsToCloud([res.cloudCred], false);
+                                }
+                            },
+                            res.cloudCred ? { addLocalUserId: res.cloudCred.id } : undefined
+                        );
+                    }
 
-                if (!syncedCloud) {
-                    showUserFormError('Firestore не подтвердил сохранение пользователя. Изменения не приняты.');
-                    return;
+                    if (!syncedCloud) {
+                        showUserFormError('Firestore не подтвердил сохранение пользователя. Изменения не приняты.');
+                        return;
+                    }
                 }
                 closeUserPopup();
                 await loadUsers();
                 loadPlaylists();
-                showToast('Пользователь сохранён в Firestore', 'ok');
+                showToast(isCloudStorageMode() ? 'Пользователь сохранён в Firestore' : 'Пользователь сохранён локально', 'ok');
             } catch (err) {
                 showUserFormError((err && err.message) ? err.message : 'Ошибка сохранения');
             }
@@ -5412,11 +5474,21 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             : '<p class="placeholder-text">Категорий пока нет</p>';
         list.querySelectorAll('[data-delete-category]').forEach((button) => {
             button.addEventListener('click', async () => {
-                if (!window.PQTVFirebase || !(await uiConfirm('Удалить категорию из справочника? Названия групп у каналов останутся без изменений.'))) return;
+                if (!(await uiConfirm('Удалить категорию из справочника? Названия групп у каналов останутся без изменений.'))) return;
                 try {
-                    await window.PQTVFirebase.deleteCategoryFromCloud(button.dataset.deleteCategory);
-                    await loadCategoryManager(); renderChannels();
-                } catch (err) { showToast(err && err.message ? err.message : 'Не удалось удалить категорию', 'err'); }
+                    const catId = button.dataset.deleteCategory;
+                    const res = await apiRequest('/api/categories/delete', 'POST', { id: catId }, { skipCloudSync: true });
+                    if (!res || !res.ok) {
+                        throw new Error((res && res.error) || 'Не удалось удалить категорию');
+                    }
+                    if (isCloudStorageMode() && fbAdminConnected && window.PQTVFirebase && typeof window.PQTVFirebase.deleteCategoryFromCloud === 'function') {
+                        await window.PQTVFirebase.deleteCategoryFromCloud(catId).catch(() => {});
+                    }
+                    await loadCategoryManager();
+                    renderChannels();
+                } catch (err) {
+                    showToast(err && err.message ? err.message : 'Не удалось удалить категорию', 'err');
+                }
             });
         });
         renderChannels();
@@ -5435,13 +5507,26 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         if (close) close.addEventListener('click', closeModal);
         if (backdrop) backdrop.addEventListener('click', closeModal);
         if (add && input) add.addEventListener('click', async () => {
-            if (!window.PQTVFirebase || typeof window.PQTVFirebase.createCategoryInCloud !== 'function') { showToast('Firebase не подключён', 'err'); return; }
+            const rawName = input.value.trim();
+            if (!rawName) return;
             add.disabled = true;
             try {
-                await window.PQTVFirebase.createCategoryInCloud(input.value.trim());
-                input.value = ''; await loadCategoryManager(); renderChannels(); showToast('Категория добавлена', 'ok');
-            } catch (err) { showToast(err && err.message ? err.message : 'Не удалось добавить категорию', 'err'); }
-            finally { add.disabled = false; }
+                const res = await apiRequest('/api/categories/create', 'POST', { name: rawName }, { skipCloudSync: true });
+                if (!res || !res.ok || !res.category) {
+                    throw new Error((res && res.error) || 'Не удалось добавить категорию');
+                }
+                if (isCloudStorageMode() && fbAdminConnected && window.PQTVFirebase && typeof window.PQTVFirebase.createCategoryInCloud === 'function') {
+                    await window.PQTVFirebase.createCategoryInCloud(rawName).catch(() => {});
+                }
+                input.value = '';
+                await loadCategoryManager();
+                renderChannels();
+                showToast('Категория добавлена', 'ok');
+            } catch (err) {
+                showToast(err && err.message ? err.message : 'Не удалось добавить категорию', 'err');
+            } finally {
+                add.disabled = false;
+            }
         });
     })();
 
@@ -5720,12 +5805,350 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         fillForm(currentStreamingSettings);
     })();
 
-    // ===== СТАРТ: открываем каталог по умолчанию =====
+    // ===== ХРАНЕНИЕ ИНФОРМАЦИИ (ЛОКАЛЬНОЕ / ОБЛАЧНОЕ) =====
+    (function initStorageSettingsScreen() {
+        const screen = document.getElementById('screen-storage');
+        if (!screen) return;
+
+        const modeButtons = screen.querySelectorAll('[data-storage-mode]');
+        const statusStrip = document.getElementById('storage-status-strip');
+        const firebasePanel = document.getElementById('storage-firebase-panel');
+        const customCheck = document.getElementById('storage-use-custom-fb');
+        const customFieldsWrap = document.getElementById('storage-custom-fb-fields');
+        const pasteInput = document.getElementById('storage-cfg-paste');
+        const btnParse = document.getElementById('btn-storage-parse-cfg');
+        const btnResetFb = document.getElementById('btn-storage-reset-fb');
+        const btnTestFb = document.getElementById('btn-storage-test-fb');
+        const testResultEl = document.getElementById('storage-test-result');
+        const btnSave = document.getElementById('btn-storage-save');
+        const btnExport = document.getElementById('btn-storage-export');
+        const btnImport = document.getElementById('btn-storage-import');
+        const importFileInput = document.getElementById('storage-import-file');
+
+        const fbInputs = {
+            projectId: document.getElementById('storage-fb-project-id'),
+            firestoreDatabaseId: document.getElementById('storage-fb-db-id'),
+            apiKey: document.getElementById('storage-fb-api-key'),
+            authDomain: document.getElementById('storage-fb-auth-domain'),
+            appId: document.getElementById('storage-fb-app-id'),
+            storageBucket: document.getElementById('storage-fb-bucket'),
+            messagingSenderId: document.getElementById('storage-fb-sender-id'),
+        };
+
+        let state = {
+            mode: isCloudStorageMode() ? 'cloud' : 'local',
+            useCustomFirebaseConfig: false,
+            firebaseConfig: {},
+            bundledConfig: null,
+            effectiveSource: '',
+            dataDir: '',
+            playlistDir: '',
+        };
+
+        function readFbInputs() {
+            return {
+                projectId: fbInputs.projectId ? fbInputs.projectId.value.trim() : '',
+                firestoreDatabaseId: (fbInputs.firestoreDatabaseId ? fbInputs.firestoreDatabaseId.value.trim() : '') || '(default)',
+                apiKey: fbInputs.apiKey ? fbInputs.apiKey.value.trim() : '',
+                authDomain: fbInputs.authDomain ? fbInputs.authDomain.value.trim() : '',
+                appId: fbInputs.appId ? fbInputs.appId.value.trim() : '',
+                storageBucket: fbInputs.storageBucket ? fbInputs.storageBucket.value.trim() : '',
+                messagingSenderId: fbInputs.messagingSenderId ? fbInputs.messagingSenderId.value.trim() : '',
+            };
+        }
+
+        function writeFbInputs(cfg) {
+            const c = cfg || {};
+            if (fbInputs.projectId) fbInputs.projectId.value = c.projectId || '';
+            if (fbInputs.firestoreDatabaseId) fbInputs.firestoreDatabaseId.value = c.firestoreDatabaseId || '(default)';
+            if (fbInputs.apiKey) fbInputs.apiKey.value = c.apiKey || '';
+            if (fbInputs.authDomain) fbInputs.authDomain.value = c.authDomain || '';
+            if (fbInputs.appId) fbInputs.appId.value = c.appId || '';
+            if (fbInputs.storageBucket) fbInputs.storageBucket.value = c.storageBucket || '';
+            if (fbInputs.messagingSenderId) fbInputs.messagingSenderId.value = c.messagingSenderId || '';
+        }
+
+        function parseFirebaseConfigSnippet(rawText) {
+            const text = String(rawText || '').trim();
+            if (!text) return null;
+            try {
+                const parsed = JSON.parse(text);
+                if (parsed && typeof parsed === 'object') return parsed;
+            } catch {}
+
+            const keys = [
+                'apiKey',
+                'authDomain',
+                'projectId',
+                'firestoreDatabaseId',
+                'databaseId',
+                'storageBucket',
+                'messagingSenderId',
+                'appId',
+                'measurementId',
+            ];
+            const out = {};
+            let matched = 0;
+            for (const key of keys) {
+                const re = new RegExp(`["']?${key}["']?\\s*:\\s*["']([^"']+)["']`, 'i');
+                const m = text.match(re);
+                if (m && m[1]) {
+                    const targetKey = key === 'databaseId' ? 'firestoreDatabaseId' : key;
+                    out[targetKey] = m[1].trim();
+                    matched++;
+                }
+            }
+            return matched >= 2 ? out : null;
+        }
+
+        function syncStorageUi() {
+            modeButtons.forEach((btn) => {
+                btn.classList.toggle('active', btn.dataset.storageMode === state.mode);
+            });
+            const isCloud = state.mode === 'cloud';
+            if (firebasePanel) firebasePanel.classList.toggle('hidden', !isCloud);
+            if (customCheck) customCheck.checked = Boolean(state.useCustomFirebaseConfig);
+            if (customFieldsWrap) {
+                customFieldsWrap.classList.toggle('is-disabled', !Boolean(state.useCustomFirebaseConfig));
+            }
+            if (statusStrip) {
+                const sourceLabels = {
+                    local_files: 'Файлы сервера',
+                    custom_firebase: 'Свой проект Firebase',
+                    env_firebase: 'Переменные окружения FIREBASE_*',
+                    bundled_firebase: 'Встроенный firebase-applet-config.json',
+                    unconfigured: 'Firebase не настроен',
+                };
+                const srcText = sourceLabels[state.effectiveSource] || 'Не определено';
+                if (state.mode === 'local') {
+                    statusStrip.textContent =
+                        `Активен локальный режим (${srcText}) · Данные: ${state.dataDir || './data'} · Плейлисты: ${state.playlistDir || './playlist'}`;
+                } else {
+                    const curFb = readFbInputs();
+                    statusStrip.textContent =
+                        `Активен облачный режим (${srcText}) · Проект: ${curFb.projectId || 'не указан'} · База: ${curFb.firestoreDatabaseId || '(default)'}`;
+                }
+            }
+        }
+
+        async function refreshStorageSettings() {
+            const res = await apiRequest('/api/settings/storage');
+            if (!res || !res.ok || !res.settings) return;
+            state.mode = res.settings.mode === 'local' ? 'local' : 'cloud';
+            state.useCustomFirebaseConfig = Boolean(res.settings.useCustomFirebaseConfig);
+            state.firebaseConfig = res.settings.firebaseConfig || {};
+            state.bundledConfig = res.bundledConfig || null;
+            state.effectiveSource = res.effectiveSource || '';
+            state.dataDir = res.dataDir || '';
+            state.playlistDir = res.playlistDir || '';
+            writeFbInputs(state.firebaseConfig);
+            syncStorageUi();
+        }
+
+        window.__refreshStorageSettings = refreshStorageSettings;
+
+        modeButtons.forEach((btn) => {
+            btn.addEventListener('click', () => {
+                state.mode = btn.dataset.storageMode === 'local' ? 'local' : 'cloud';
+                syncStorageUi();
+            });
+        });
+
+        if (customCheck) {
+            customCheck.addEventListener('change', () => {
+                state.useCustomFirebaseConfig = Boolean(customCheck.checked);
+                syncStorageUi();
+            });
+        }
+
+        if (btnParse && pasteInput) {
+            btnParse.addEventListener('click', () => {
+                const parsed = parseFirebaseConfigSnippet(pasteInput.value);
+                if (!parsed) {
+                    showToast('Не удалось распознать параметры Firebase. Вставьте JSON или объект firebaseConfig.', 'err');
+                    return;
+                }
+                if (customCheck) customCheck.checked = true;
+                state.useCustomFirebaseConfig = true;
+                writeFbInputs(Object.assign(readFbInputs(), parsed));
+                syncStorageUi();
+                showToast('Параметры Firebase заполнены в форму', 'ok');
+            });
+        }
+
+        if (btnResetFb) {
+            btnResetFb.addEventListener('click', () => {
+                state.useCustomFirebaseConfig = false;
+                if (customCheck) customCheck.checked = false;
+                if (state.bundledConfig) {
+                    writeFbInputs(state.bundledConfig);
+                }
+                if (testResultEl) {
+                    testResultEl.textContent = '';
+                    testResultEl.style.color = '';
+                }
+                syncStorageUi();
+                showToast('Восстановлены встроенные параметры Firebase', 'ok');
+            });
+        }
+
+        if (btnTestFb) {
+            btnTestFb.addEventListener('click', async () => {
+                if (!window.PQTVFirebase || typeof window.PQTVFirebase.probeFirebaseConfig !== 'function') {
+                    showToast('Модуль проверки Firebase не загружен', 'err');
+                    return;
+                }
+                const cfg = readFbInputs();
+                btnTestFb.disabled = true;
+                if (testResultEl) {
+                    testResultEl.textContent = 'Проверка подключения к Firestore...';
+                    testResultEl.style.color = 'var(--muted)';
+                }
+                try {
+                    const out = await window.PQTVFirebase.probeFirebaseConfig(cfg);
+                    if (testResultEl) {
+                        testResultEl.textContent = out.message;
+                        testResultEl.style.color = out.ok ? '#34d399' : '#fca5a5';
+                    }
+                    showToast(out.message, out.ok ? 'ok' : 'err');
+                } catch (err) {
+                    const msg = err && err.message ? err.message : 'Ошибка проверки Firestore';
+                    if (testResultEl) {
+                        testResultEl.textContent = msg;
+                        testResultEl.style.color = '#fca5a5';
+                    }
+                    showToast(msg, 'err');
+                } finally {
+                    btnTestFb.disabled = false;
+                }
+            });
+        }
+
+        if (btnSave) {
+            btnSave.addEventListener('click', async () => {
+                btnSave.disabled = true;
+                const orig = btnSave.textContent;
+                btnSave.textContent = 'Сохранение...';
+                try {
+                    const payload = {
+                        mode: state.mode,
+                        useCustomFirebaseConfig: state.useCustomFirebaseConfig,
+                        firebaseConfig: readFbInputs(),
+                    };
+                    const res = await apiRequest('/api/settings/storage', 'POST', payload, { skipCloudSync: true });
+                    if (!res || !res.ok) {
+                        showToast((res && res.error) || 'Не удалось сохранить настройки хранения', 'err');
+                        return;
+                    }
+                    try {
+                        sessionStorage.setItem('pqtv_reopen_screen', 'storage');
+                        sessionStorage.setItem(
+                            'pqtv_storage_saved_toast',
+                            state.mode === 'local'
+                                ? 'Включено локальное хранение (файлы сервера)'
+                                : 'Настройки облачного хранения применены'
+                        );
+                    } catch {}
+                    window.location.reload();
+                } finally {
+                    btnSave.disabled = false;
+                    btnSave.textContent = orig || 'Сохранить настройки';
+                }
+            });
+        }
+
+        if (btnExport) {
+            btnExport.addEventListener('click', async () => {
+                btnExport.disabled = true;
+                try {
+                    const snapshot = await apiRequest('/api/cloud/export');
+                    if (!snapshot || !snapshot.ok) {
+                        showToast((snapshot && snapshot.error) || 'Не удалось выгрузить снимок базы', 'err');
+                        return;
+                    }
+                    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    const dateStr = new Date().toISOString().slice(0, 10);
+                    a.href = url;
+                    a.download = `pqtv-backup-${dateStr}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                    showToast('Снимок базы выгружен в JSON-файл', 'ok');
+                } finally {
+                    btnExport.disabled = false;
+                }
+            });
+        }
+
+        if (btnImport && importFileInput) {
+            btnImport.addEventListener('click', () => {
+                importFileInput.value = '';
+                importFileInput.click();
+            });
+            importFileInput.addEventListener('change', async () => {
+                const file = importFileInput.files && importFileInput.files[0];
+                if (!file) return;
+                if (!(await uiConfirm(`Импортировать снимок «${file.name}» и заменить текущую локальную базу на этом сервере?`))) {
+                    return;
+                }
+                btnImport.disabled = true;
+                try {
+                    const rawText = await file.text();
+                    const parsed = JSON.parse(rawText);
+                    if (!parsed || typeof parsed !== 'object') {
+                        throw new Error('Некорректный JSON-файл снимка');
+                    }
+                    const res = await apiRequest(
+                        '/api/cloud/hydrate',
+                        'POST',
+                        Object.assign({}, parsed, { force: true }),
+                        { skipCloudSync: true }
+                    );
+                    if (!res || !res.ok) {
+                        throw new Error((res && res.error) || 'Не удалось импортировать снимок');
+                    }
+                    await refreshAdminAfterCloudHydrate();
+                    if (isCloudStorageMode() && fbAdminConnected) {
+                        await syncCloudDatabase().catch(() => {});
+                    }
+                    showToast('Снимок базы успешно импортирован', 'ok');
+                } catch (err) {
+                    showToast((err && err.message) ? err.message : 'Ошибка импорта снимка', 'err');
+                } finally {
+                    btnImport.disabled = false;
+                }
+            });
+        }
+
+        void refreshStorageSettings();
+    })();
+
+    // ===== СТАРТ: открываем каталог по умолчанию (или экран после перезагрузки настроек) =====
     try {
-        showScreen('catalog');
-        setNavActive('catalog');
+        let initialScreen = 'catalog';
+        try {
+            const reopen = sessionStorage.getItem('pqtv_reopen_screen');
+            if (reopen) {
+                initialScreen = reopen;
+                sessionStorage.removeItem('pqtv_reopen_screen');
+            }
+            const toastMsg = sessionStorage.getItem('pqtv_storage_saved_toast');
+            if (toastMsg) {
+                sessionStorage.removeItem('pqtv_storage_saved_toast');
+                showToast(toastMsg, 'ok');
+            }
+        } catch {}
+
+        showScreen(initialScreen);
+        setNavActive(initialScreen);
         loadCatalog();
         loadUsers().catch(() => {});
+        if (initialScreen === 'storage' && typeof window.__refreshStorageSettings === 'function') {
+            void window.__refreshStorageSettings();
+        }
     } catch (e) {
         console.error('boot catalog:', e);
     }
