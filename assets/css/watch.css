@@ -781,16 +781,43 @@
 }
 .player-watermark {
     position: absolute;
-    left: max(22px, env(safe-area-inset-left));
-    bottom: max(22px, env(safe-area-inset-bottom));
     z-index: 8;
     width: 84px;
     height: 48px;
+    scale: var(--wm-scale, 1);
     pointer-events: none;
     user-select: none;
     opacity: var(--wm-opacity, 0.4);
     filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.65));
     transition: opacity 0.25s ease;
+}
+.player-watermark.logo-position-bottom-left {
+    left: max(22px, env(safe-area-inset-left));
+    bottom: max(22px, env(safe-area-inset-bottom));
+    right: auto;
+    top: auto;
+    transform-origin: bottom left;
+}
+.player-watermark.logo-position-bottom-right {
+    right: max(22px, env(safe-area-inset-right));
+    bottom: max(22px, env(safe-area-inset-bottom));
+    left: auto;
+    top: auto;
+    transform-origin: bottom right;
+}
+.player-watermark.logo-position-top-left {
+    left: max(22px, env(safe-area-inset-left));
+    top: max(22px, env(safe-area-inset-top));
+    right: auto;
+    bottom: auto;
+    transform-origin: top left;
+}
+.player-watermark.logo-position-top-right {
+    right: max(22px, env(safe-area-inset-right));
+    top: max(22px, env(safe-area-inset-top));
+    left: auto;
+    bottom: auto;
+    transform-origin: top right;
 }
 .player-watermark.hidden { display: none !important; }
 .player-watermark svg {
@@ -804,8 +831,22 @@
 html.is-tv .player-watermark {
     width: 104px;
     height: 58px;
+}
+html.is-tv .player-watermark.logo-position-bottom-left {
     left: max(28px, env(safe-area-inset-left));
     bottom: max(26px, env(safe-area-inset-bottom));
+}
+html.is-tv .player-watermark.logo-position-bottom-right {
+    right: max(28px, env(safe-area-inset-right));
+    bottom: max(26px, env(safe-area-inset-bottom));
+}
+html.is-tv .player-watermark.logo-position-top-left {
+    left: max(28px, env(safe-area-inset-left));
+    top: max(26px, env(safe-area-inset-top));
+}
+html.is-tv .player-watermark.logo-position-top-right {
+    right: max(28px, env(safe-area-inset-right));
+    top: max(26px, env(safe-area-inset-top));
 }
 @keyframes pqtvWatermarkPulse {
     0%, 100% {
