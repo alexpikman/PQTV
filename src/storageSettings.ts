@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, readJsonSync } from './persistence.js';
 
 export type StorageMode = 'local' | 'cloud';
 
@@ -111,7 +111,8 @@ export function loadStorageSettings(): StorageSettings {
           : 'local';
 
   const filePath = getSettingsPath();
-  if (!fs.existsSync(filePath)) {
+  const stored = readJsonSync<Partial<StorageSettings> | null>(filePath, null);
+  if (!stored) {
     return {
       mode: defaultMode,
       useCustomFirebaseConfig: Boolean(envCfg),
@@ -121,7 +122,7 @@ export function loadStorageSettings(): StorageSettings {
   }
 
   try {
-    const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<StorageSettings>;
+    const raw = stored;
     const mode: StorageMode = raw.mode === 'local' ? 'local' : raw.mode === 'cloud' ? 'cloud' : defaultMode;
     const useCustom = Boolean(raw.useCustomFirebaseConfig);
     const fb = normalizeFirebaseConfig(raw.firebaseConfig, defaultCfg);

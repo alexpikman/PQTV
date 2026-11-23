@@ -1,8 +1,7 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { config } from './config.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, hasJsonStateSync, readJsonSync } from './persistence.js';
 
 export type LifecycleAction =
   | 'playlist_create'
@@ -65,9 +64,9 @@ class StateLifecycleManager {
   getStateMeta(): StateMeta {
     if (this.metaCache) return { ...this.metaCache };
     const file = this.getMetaPath();
-    if (fs.existsSync(file)) {
+    if (hasJsonStateSync(file)) {
       try {
-        const raw = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<StateMeta>;
+        const raw = readJsonSync<Partial<StateMeta>>(file, {});
         const meta: StateMeta = {
           revision: Math.max(0, Math.floor(Number(raw.revision) || 0)),
           updatedAt: Number(raw.updatedAt) || 0,
@@ -156,9 +155,9 @@ class StateLifecycleManager {
 
   getLogs(limit = 100): LifecycleLogEntry[] {
     const file = this.getLogPath();
-    if (!fs.existsSync(file)) return [];
+    if (!hasJsonStateSync(file)) return [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const parsed = readJsonSync<unknown>(file, null);
       if (!Array.isArray(parsed)) return [];
       const max = Math.max(1, Math.min(MAX_LOG_ENTRIES, Number(limit) || 100));
       return (parsed as LifecycleLogEntry[]).slice(0, max);

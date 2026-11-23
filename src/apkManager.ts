@@ -3,7 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { config } from './config.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, hasJsonStateSync, readJsonSync } from './persistence.js';
 
 export type VersionBumpType = 'patch' | 'minor' | 'major';
 export type ApkBlockMode = 'hard' | 'soft';
@@ -279,11 +279,11 @@ function normalizePolicy(
 
 function loadRegistry(): ApkRegistryFile {
   const file = getRegistryPath();
-  if (!fs.existsSync(file)) {
+  if (!hasJsonStateSync(file)) {
     return { policy: createDefaultPolicy(), releases: [] };
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as Partial<ApkRegistryFile>;
+    const parsed = readJsonSync<Partial<ApkRegistryFile>>(file, {});
     const releases = Array.isArray(parsed.releases)
       ? parsed.releases
           .map((r) => normalizeRelease(r))

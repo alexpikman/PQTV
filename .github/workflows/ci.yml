@@ -28,5 +28,7 @@ jobs:
         run: bun run build
       - name: Integrity tests
         run: bun run test
+      - name: PostgreSQL persistence tests
+        run: bun run test:postgres
       - name: Firestore Rules tests
         run: npx --yes firebase-tools@latest emulators:exec --only firestore --project demo-pqtv "bun run test:rules"

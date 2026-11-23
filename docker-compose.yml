@@ -1,4 +1,21 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: pqtv-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pqtv}
+      POSTGRES_USER: ${POSTGRES_USER:-pqtv}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pqtv_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"${POSTGRES_USER}\" -d \"${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
   pqtv:
     build:
       context: .
@@ -14,11 +31,15 @@ services:
       PORT: 3000
       PLAYLIST_DIR: /app/playlist
       BACKUP_DIR: /app/data/backups/playlist
+      DATABASE_URL: postgresql://${POSTGRES_USER:-pqtv}:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-pqtv}
     ports:
       - "${PQTV_PORT:-3000}:3000"
     volumes:
       - pqtv_data:/app/data
       - pqtv_playlists:/app/playlist
+    depends_on:
+      postgres:
+        condition: service_healthy
     healthcheck:
       test:
         - CMD
@@ -29,6 +50,8 @@ services:
       timeout: 5s
       retries: 3
       start_period: 30s
+
 volumes:
   pqtv_data:
   pqtv_playlists:
+  pqtv_postgres_data:

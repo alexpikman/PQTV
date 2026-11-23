@@ -6,6 +6,9 @@ import https from 'node:https';
 import { PassThrough } from 'node:stream';
 import express, { Request, Response, NextFunction } from 'express';
 import session from 'express-session';
+import { initializeDatabase } from './src/database.js';
+import { PostgresSessionStore } from './src/sessionStore.js';
+import { atomicWriteJsonSync, flushPersistence, isDatabasePersistenceActive, readJsonSync } from './src/persistence.js';
 import { config, hashPassword, verifyPassword } from './src/config.js';
 import { storage } from './src/storage.js';
 import { parseM3uFile, generateM3u, Channel } from './src/m3uParser.js';
@@ -117,6 +120,7 @@ app.use((req, res, next) => {
 
 app.use(
   session({
+    store: process.env.PQTV_NO_LISTEN === '1' ? undefined : new PostgresSessionStore(),
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,
@@ -128,6 +132,35 @@ app.use(
     },
   })
 );
+
+app.use((_req, res, next) => {
+  const originalEnd = res.end.bind(res);
+  let ending = false;
+  res.end = ((...args: any[]) => {
+    if (ending) return res;
+    ending = true;
+    if (!isDatabasePersistenceActive()) {
+      originalEnd(...args as any);
+      return res;
+    }
+    void flushPersistence().then(() => {
+      originalEnd(...args as any);
+    }).catch((error) => {
+      console.error('[postgres] Request persistence failed:', error);
+      if (!res.headersSent) {
+        res.statusCode = 503;
+        res.removeHeader('Content-Length');
+        res.removeHeader('ETag');
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        originalEnd(JSON.stringify({ ok: false, error: 'Не удалось сохранить данные в PostgreSQL' }));
+      } else {
+        originalEnd(...args as any);
+      }
+    });
+    return res;
+  }) as typeof res.end;
+  next();
+});
 
 app.use((req, _res, next) => {
   const isHttps = req.secure || req.headers['x-forwarded-proto'] === 'https';
@@ -387,22 +420,15 @@ const adminAuthFile = path.join(config.dataDir, 'admin_auth.json');
 
 function getAdminPasswordHashOverride(): string {
   try {
-    if (!fs.existsSync(adminAuthFile)) return '';
-    const raw = JSON.parse(fs.readFileSync(adminAuthFile, 'utf-8')) as { passwordHash?: string };
-    return typeof raw.passwordHash === 'string' ? raw.passwordHash : '';
+    const raw = readJsonSync<{ passwordHash?: string } | null>(adminAuthFile, null);
+    return typeof raw?.passwordHash === 'string' ? raw.passwordHash : '';
   } catch {
     return '';
   }
 }
 
 function saveAdminPasswordHashOverride(passwordHash: string): boolean {
-  try {
-    fs.mkdirSync(path.dirname(adminAuthFile), { recursive: true });
-    fs.writeFileSync(adminAuthFile, JSON.stringify({ passwordHash }, null, 2), 'utf-8');
-    return true;
-  } catch {
-    return false;
-  }
+  return atomicWriteJsonSync(adminAuthFile, { passwordHash }, 2).ok;
 }
 
 function checkAdminPassword(pass: string): boolean {
@@ -3792,7 +3818,12 @@ app.use((_req, res) => {
 });
 
 if (process.env.PQTV_NO_LISTEN !== '1') {
-  app.listen(config.port, '0.0.0.0', () => {
-    console.log(`PQTV server listening on http://0.0.0.0:${config.port}`);
+  void initializeDatabase().then(() => {
+    app.listen(config.port, '0.0.0.0', () => {
+      console.log(`PQTV server listening on http://0.0.0.0:${config.port}`);
+    });
+  }).catch((error) => {
+    console.error('[postgres] Database initialization failed; PQTV will not start:', error);
+    process.exitCode = 1;
   });
 }

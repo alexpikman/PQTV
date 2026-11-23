@@ -1,8 +1,7 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { config, hashPassword, verifyPassword } from './config.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, readJsonSync } from './persistence.js';
 
 export interface UserRecord {
   id: string;
@@ -86,10 +85,9 @@ export class UserAuth {
   }
 
   all(): UserRecord[] {
-    if (!fs.existsSync(this.usersFile)) return [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.usersFile, 'utf-8'));
-      return Array.isArray(parsed) ? parsed : [];
+      const parsed = readJsonSync<unknown>(this.usersFile, null);
+      return Array.isArray(parsed) ? parsed as UserRecord[] : [];
     } catch {
       return [];
     }
@@ -297,10 +295,9 @@ export class UserAuth {
   }
 
   getSessions(): Record<string, UserSessionInfo> {
-    if (!fs.existsSync(this.sessionsFile)) return {};
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.sessionsFile, 'utf-8'));
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+      const parsed = readJsonSync<unknown>(this.sessionsFile, null);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, UserSessionInfo> : {};
     } catch {
       return {};
     }
@@ -308,10 +305,9 @@ export class UserAuth {
 
   // ===== GOOGLE EMAIL INVITES =====
   allInvites(): InviteRecord[] {
-    if (!fs.existsSync(this.invitesFile)) return [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.invitesFile, 'utf-8'));
-      return Array.isArray(parsed) ? parsed : [];
+      const parsed = readJsonSync<unknown>(this.invitesFile, null);
+      return Array.isArray(parsed) ? parsed as InviteRecord[] : [];
     } catch {
       return [];
     }
@@ -626,10 +622,9 @@ export class UserAuth {
 
   // ===== UNAVAILABLE CHANNEL ALERTS =====
   allAlerts(): ChannelAlertRecord[] {
-    if (!fs.existsSync(this.alertsFile)) return [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.alertsFile, 'utf-8'));
-      const list = Array.isArray(parsed) ? (parsed as ChannelAlertRecord[]) : [];
+      const parsed = readJsonSync<unknown>(this.alertsFile, null);
+      const list = Array.isArray(parsed) ? parsed as ChannelAlertRecord[] : [];
       return list.sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0));
     } catch {
       return [];

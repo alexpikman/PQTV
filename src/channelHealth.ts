@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { Channel, parseM3uFile } from './m3uParser.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, hasJsonStateSync, readJsonSync } from './persistence.js';
 import { storage } from './storage.js';
 import { StreamParser } from './streamParser.js';
 import { checkStreamDeep, DeepCheckResult, DiagCode } from './streamChecker.js';
@@ -102,9 +102,9 @@ class ChannelHealthManager {
   private ensureLoaded(): void {
     if (this.loaded) return;
     this.loaded = true;
-    if (!fs.existsSync(this.filePath)) return;
+    if (!hasJsonStateSync(this.filePath)) return;
     try {
-      const raw = JSON.parse(fs.readFileSync(this.filePath, 'utf-8')) as Partial<ChannelHealthState>;
+      const raw = readJsonSync<Partial<ChannelHealthState>>(this.filePath, {});
       if (raw.urlDiagnostics && typeof raw.urlDiagnostics === 'object') {
         this.urlDiagnostics = raw.urlDiagnostics;
       }

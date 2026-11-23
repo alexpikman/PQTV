@@ -1,7 +1,6 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, readJsonSync } from './persistence.js';
 
 export interface UiSettings {
   logoEnabled: boolean;
@@ -56,11 +55,9 @@ export function sanitizeUiSettings(raw: unknown): UiSettings {
 
 export function getUiSettings(): UiSettings {
   const file = getUiSettingsPath();
-  if (!fs.existsSync(file)) {
-    return { ...DEFAULT_UI_SETTINGS };
-  }
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const parsed = readJsonSync<unknown>(file, null);
+    if (parsed === null) return { ...DEFAULT_UI_SETTINGS };
     return sanitizeUiSettings(parsed);
   } catch {
     return { ...DEFAULT_UI_SETTINGS };

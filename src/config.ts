@@ -15,6 +15,7 @@ export interface AppConfig {
   githubToken: string;
   githubRepo: string;
   githubBranch: string;
+  databaseUrl: string;
 }
 
 const rootDir = process.cwd();
@@ -35,6 +36,7 @@ export const config: AppConfig = {
   githubToken: process.env.GITHUB_TOKEN || '',
   githubRepo: process.env.GITHUB_REPO || '',
   githubBranch: process.env.GITHUB_BRANCH || 'main',
+  databaseUrl: process.env.DATABASE_URL || '',
 };
 
 export function verifyPassword(password: string, hash: string): boolean {

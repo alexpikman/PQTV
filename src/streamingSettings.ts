@@ -1,7 +1,6 @@
-import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, readJsonSync } from './persistence.js';
 
 export type StreamDeliveryMode =
   | 'auto_proxy_first'
@@ -299,11 +298,9 @@ export function sanitizeStreamingSettings(raw: unknown): StreamingSettings {
 
 export function getStreamingSettings(): StreamingSettings {
   const file = getSettingsPath();
-  if (!fs.existsSync(file)) {
-    return { ...DEFAULT_STREAMING_SETTINGS };
-  }
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    const parsed = readJsonSync<unknown>(file, null);
+    if (parsed === null) return { ...DEFAULT_STREAMING_SETTINGS };
     return sanitizeStreamingSettings(parsed);
   } catch {
     return { ...DEFAULT_STREAMING_SETTINGS };

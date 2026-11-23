@@ -3,7 +3,7 @@ import path from 'node:path';
 import { config } from './config.js';
 import { parseM3uContent } from './m3uParser.js';
 
-import { atomicWriteFileSync, atomicWriteJsonSync, safeUnlinkSync } from './persistence.js';
+import { atomicWriteFileSync, atomicWriteJsonSync, hasJsonStateSync, readJsonSync, safeUnlinkSync } from './persistence.js';
 import { fetchBytesWithNode, buildOutboundHeaders } from './streamChecker.js';
 
 export interface SourceItem {
@@ -184,9 +184,9 @@ export class StreamParser {
 
   static getSources(): SourceItem[] {
     const file = this.getSourcesFile();
-    if (!fs.existsSync(file)) return [];
+    if (!hasJsonStateSync(file)) return [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const parsed = readJsonSync<unknown>(file, null);
       if (!Array.isArray(parsed)) return [];
       const { list, changed } = this.ensureSourceIds(parsed as SourceItem[]);
       if (changed) {

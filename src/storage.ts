@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { Channel, generateM3u, parseM3uContent } from './m3uParser.js';
-import { atomicWriteFileSync, safeUnlinkSync } from './persistence.js';
+import { atomicWriteFileSync, atomicWriteJsonSync, readJsonSync, safeUnlinkSync } from './persistence.js';
 
 export interface PlaylistBackupInfo {
   filename: string;
@@ -32,9 +32,8 @@ export class Storage {
   }
 
   private readPlaylistMetaRaw(): Record<string, { enabled?: boolean }> {
-    if (!fs.existsSync(this.playlistMetaFile)) return {};
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.playlistMetaFile, 'utf-8'));
+      const parsed = readJsonSync<unknown>(this.playlistMetaFile, null);
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? (parsed as Record<string, { enabled?: boolean }>)
         : {};
@@ -44,12 +43,7 @@ export class Storage {
   }
 
   private writePlaylistMetaRaw(meta: Record<string, { enabled: boolean }>): boolean {
-    const dir = path.dirname(this.playlistMetaFile);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-    const content = JSON.stringify(meta, null, 2);
-    const res = atomicWriteFileSync(this.playlistMetaFile, content);
+    const res = atomicWriteJsonSync(this.playlistMetaFile, meta, 2);
     if (!res.ok) {
       this.lastError = res.error || 'Ошибка сохранения метаданных плейлистов';
       return false;

@@ -3,7 +3,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { config } from './config.js';
 import { normalizeChannelName } from './streamParser.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, hasJsonStateSync, readJsonSync } from './persistence.js';
 
 export interface EpgSource {
   id: string;
@@ -76,9 +76,9 @@ export class EpgParser {
 
   static getSources(): EpgSource[] {
     const file = this.getEpgFile();
-    if (!fs.existsSync(file)) return [];
+    if (!hasJsonStateSync(file)) return [];
     try {
-      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const parsed = readJsonSync<unknown>(file, null);
       return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];

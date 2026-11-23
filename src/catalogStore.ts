@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { parseM3uFile } from './m3uParser.js';
-import { atomicWriteJsonSync } from './persistence.js';
+import { atomicWriteJsonSync, hasJsonStateSync, readJsonSync } from './persistence.js';
 import { storage } from './storage.js';
 import { normalizeChannelName, SourceItem, StreamParser } from './streamParser.js';
 
@@ -178,9 +178,9 @@ class CatalogStore {
   }
 
   private loadFromDisk(): boolean {
-    if (!fs.existsSync(this.catalogFile)) return false;
+    if (!hasJsonStateSync(this.catalogFile)) return false;
     try {
-      const raw = JSON.parse(fs.readFileSync(this.catalogFile, 'utf-8')) as {
+      const raw = readJsonSync<unknown>(this.catalogFile, null) as {
         channels?: CatalogChannel[];
         streams?: CatalogStream[];
         sources?: CatalogSource[];

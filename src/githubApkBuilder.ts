@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import { config } from './config.js';
+import { atomicWriteJsonSync, hasJsonStateSync, readJsonSync } from './persistence.js';
 import { apkManager, isValidApkBuffer, type ApkRelease, type VersionBumpType } from './apkManager.js';
 import { stateLifecycle } from './stateLifecycle.js';
 
@@ -122,9 +123,9 @@ function maskToken(token: string): string {
 
 function loadStoredConfig(): GithubConfigStored | null {
   const file = getConfigPath();
-  if (!fs.existsSync(file)) return null;
+  if (!hasJsonStateSync(file)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as GithubConfigStored;
+    const parsed = readJsonSync<GithubConfigStored | null>(file, null);
     if (parsed && parsed.owner && parsed.repo && parsed.token) {
       return parsed;
     }
@@ -366,16 +367,9 @@ export async function saveAndVerifyGithubConfig(input: {
     updatedAt: Math.floor(Date.now() / 1000),
   };
 
-  fs.mkdirSync(config.dataDir, { recursive: true });
   const cfgPath = getConfigPath();
-  const tmp = `${cfgPath}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 });
-  fs.renameSync(tmp, cfgPath);
-  try {
-    fs.chmodSync(cfgPath, 0o600);
-  } catch {
-    // ignore chmod failures on filesystems without POSIX permissions
-  }
+  const writeResult = atomicWriteJsonSync(cfgPath, stored, 2);
+  if (!writeResult.ok) throw new Error(writeResult.error || 'Не удалось сохранить настройки GitHub');
 
   return getPublicGithubConfig();
 }
@@ -630,20 +624,17 @@ export async function syncAndroidProjectToGithub(): Promise<{
 
 function loadBuildState(): GithubBuildState | null {
   const file = getBuildStatePath();
-  if (!fs.existsSync(file)) return null;
+  if (!hasJsonStateSync(file)) return null;
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf-8')) as GithubBuildState;
+    return readJsonSync<GithubBuildState | null>(file, null);
   } catch {
     return null;
   }
 }
 
 function saveBuildState(state: GithubBuildState): void {
-  fs.mkdirSync(config.dataDir, { recursive: true });
-  const file = getBuildStatePath();
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
-  fs.renameSync(tmp, file);
+  const result = atomicWriteJsonSync(getBuildStatePath(), state, 2);
+  if (!result.ok) throw new Error(result.error || 'Не удалось сохранить состояние GitHub-сборки');
 }
 
 // Extract the first .apk entry from a ZIP buffer using Central Directory offsets (supports streaming data descriptors)
