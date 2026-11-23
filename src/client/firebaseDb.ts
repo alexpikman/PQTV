@@ -104,6 +104,8 @@ export interface CloudUiSettings {
   logoOpacity: number;
   logoPulseEnabled: boolean;
   logoPulseSpeedSec: number;
+  logoPosition: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right';
+  logoSizePercent: number;
 }
 
 export interface CloudApkRelease {
@@ -1151,6 +1153,14 @@ export async function saveUiSettingsToCloud(
   const logoPulseSpeedSec = Number.isFinite(speedRaw)
     ? Math.max(0, Math.min(10, Math.round(speedRaw * 10) / 10))
     : 3;
+  const validLogoPositions = ['bottom-left', 'bottom-right', 'top-left', 'top-right'] as const;
+  const logoPosition = validLogoPositions.includes(settings.logoPosition as (typeof validLogoPositions)[number])
+    ? (settings.logoPosition as (typeof validLogoPositions)[number])
+    : 'bottom-left';
+  const sizeRaw = Number(settings.logoSizePercent);
+  const logoSizePercent = Number.isFinite(sizeRaw)
+    ? Math.max(50, Math.min(200, Math.round(sizeRaw / 5) * 5))
+    : 100;
   await upsertDoc(
     doc(db, 'app_settings', 'ui'),
     {
@@ -1159,8 +1169,10 @@ export async function saveUiSettingsToCloud(
       logoOpacity,
       logoPulseEnabled,
       logoPulseSpeedSec,
+      logoPosition,
+      logoSizePercent,
     },
-    ['logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec']
+    ['logoEnabled', 'logoOpacity', 'logoPulseEnabled', 'logoPulseSpeedSec', 'logoPosition', 'logoSizePercent']
   );
 }
 
@@ -1171,11 +1183,21 @@ export async function fetchUiSettingsFromCloud(): Promise<CloudUiSettings | null
     const d = snap.data();
     const opacityRaw = Number(d.logoOpacity);
     const speedRaw = Number(d.logoPulseSpeedSec);
+    const validLogoPositions = ['bottom-left', 'bottom-right', 'top-left', 'top-right'] as const;
+    const logoPosition = validLogoPositions.includes(d.logoPosition as (typeof validLogoPositions)[number])
+      ? (d.logoPosition as (typeof validLogoPositions)[number])
+      : 'bottom-left';
+    const sizeRaw = Number(d.logoSizePercent);
+    const logoSizePercent = Number.isFinite(sizeRaw)
+      ? Math.max(50, Math.min(200, Math.round(sizeRaw / 5) * 5))
+      : 100;
     return {
       logoEnabled: d.logoEnabled !== undefined ? Boolean(d.logoEnabled) : true,
       logoOpacity: Number.isFinite(opacityRaw) ? Math.max(0, Math.min(100, Math.round(opacityRaw))) : 40,
       logoPulseEnabled: d.logoPulseEnabled !== undefined ? Boolean(d.logoPulseEnabled) : false,
       logoPulseSpeedSec: Number.isFinite(speedRaw) ? Math.max(0, Math.min(10, Math.round(speedRaw * 10) / 10)) : 3,
+      logoPosition,
+      logoSizePercent,
     };
   } catch {
     return null;
