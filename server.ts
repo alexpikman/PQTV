@@ -6,7 +6,12 @@ import https from 'node:https';
 import { PassThrough } from 'node:stream';
 import express, { Request, Response, NextFunction } from 'express';
 import session from 'express-session';
-import { initializeDatabase } from './src/database.js';
+import {
+  activateRuntimePostgres,
+  deactivateRuntimePostgres,
+  initializeDatabase,
+  testPostgresConnection,
+} from './src/database.js';
 import { PostgresSessionStore } from './src/sessionStore.js';
 import { atomicWriteJsonSync, flushPersistence, isDatabasePersistenceActive, readJsonSync } from './src/persistence.js';
 import { config, hashPassword, verifyPassword } from './src/config.js';
@@ -64,6 +69,7 @@ import {
   aggregateCatalogFromSourcesUnified,
   clearCatalogUnified,
   checkCatalogStreamsUnified,
+  checkCatalogChannelStreamsUnified,
   hydrateCatalogSliceUnified,
   hydrateStateUnified,
 } from './src/lifecycleCoordinator.js';
@@ -1392,16 +1398,47 @@ app.get('/watch/api/channels', (req, res) => {
       }
 
       excludedMap.delete(key);
-      const item: Channel = {
+      const ranked = catalogStore.getRankedStreamsForChannel(
+        name,
+        ch.url || '',
+        ch.tvg_id || '',
+        {
+          userAgent: ch.userAgent,
+          referer: ch.referer,
+          origin: ch.origin,
+          source: `Плейлист ${pl}`,
+        }
+      );
+      const best = ranked[0];
+      const item: Channel & {
+        source?: string;
+        backupStreams?: Array<{
+          url: string;
+          source?: string;
+          userAgent?: string;
+          referer?: string;
+          origin?: string;
+        }>;
+      } = {
         name,
         group: ch.group || '',
         logo: ch.logo || '',
-        url: ch.url || '',
+        url: (best && best.url) || ch.url || '',
         tvg_id: ch.tvg_id || '',
       };
-      if (ch.userAgent) item.userAgent = ch.userAgent;
-      if (ch.referer) item.referer = ch.referer;
-      if (ch.origin) item.origin = ch.origin;
+      if (best?.userAgent || ch.userAgent) item.userAgent = best?.userAgent || ch.userAgent;
+      if (best?.referer || ch.referer) item.referer = best?.referer || ch.referer;
+      if (best?.origin || ch.origin) item.origin = best?.origin || ch.origin;
+      if (best?.source) item.source = best.source;
+      if (ranked.length > 1) {
+        item.backupStreams = ranked.slice(1).map((cand) => ({
+          url: cand.url,
+          ...(cand.source ? { source: cand.source } : {}),
+          ...(cand.userAgent ? { userAgent: cand.userAgent } : {}),
+          ...(cand.referer ? { referer: cand.referer } : {}),
+          ...(cand.origin ? { origin: cand.origin } : {}),
+        }));
+      }
       availableMap.set(key, item);
     }
   }
@@ -2511,39 +2548,53 @@ app.post('/api/settings/ui', (req, res) => {
 
 // Storage mode settings (server-local only, never overwritten by cloud snapshots)
 app.get('/api/settings/storage', (_req, res) => {
-  const settings = storageSettings.loadStorageSettings();
+  const settings = storageSettings.getMaskedStorageSettings();
   const bundledConfig = storageSettings.getBundledFirebaseConfig();
   const publicConfig = storageSettings.getPublicStorageClientConfig();
   const envMode = (process.env.PQTV_STORAGE_MODE || '').trim().toLowerCase();
   const hasEnvFb = Boolean(process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_API_KEY);
+  const postgresActive = isDatabasePersistenceActive();
   const effectiveSource =
     settings.mode === 'local'
       ? 'local_files'
-      : settings.useCustomFirebaseConfig
-        ? 'custom_firebase'
-        : hasEnvFb
-          ? 'env_firebase'
-          : bundledConfig
-            ? 'bundled_firebase'
-            : 'unconfigured';
+      : settings.mode === 'postgres'
+        ? postgresActive
+          ? 'postgres_connected'
+          : 'postgres_disconnected'
+        : settings.useCustomFirebaseConfig
+          ? 'custom_firebase'
+          : hasEnvFb
+            ? 'env_firebase'
+            : bundledConfig
+              ? 'bundled_firebase'
+              : 'unconfigured';
 
   noCacheJson(res, {
     ok: true,
     settings,
     bundledConfig,
     publicConfig,
+    postgresActive,
     effectiveSource,
-    envModeOverride: envMode === 'local' || envMode === 'cloud' ? envMode : '',
+    envModeOverride: envMode === 'local' || envMode === 'postgres' || envMode === 'cloud' ? envMode : '',
     dataDir: path.resolve(config.dataDir),
     playlistDir: path.resolve(config.playlistDir),
   });
 });
 
-app.post('/api/settings/storage', (req, res) => {
+app.post('/api/settings/storage/test-postgres', async (req, res) => {
+  const resolved = storageSettings.resolvePostgresInputConfig(req.body?.postgresConfig ?? req.body);
+  const result = await testPostgresConnection(resolved);
+  noCacheJson(res, result, result.ok ? 200 : 400);
+});
+
+app.post('/api/settings/storage', async (req, res) => {
+  const previous = storageSettings.loadStorageSettings();
   const saved = storageSettings.saveStorageSettings((req.body || {}) as {
     mode?: unknown;
     useCustomFirebaseConfig?: unknown;
     firebaseConfig?: unknown;
+    postgresConfig?: unknown;
   });
   if (!saved.ok || !saved.settings) {
     const errMsg = saved.error || 'Не удалось сохранить настройки хранения';
@@ -2551,10 +2602,39 @@ app.post('/api/settings/storage', (req, res) => {
     noCacheJson(res, { ok: false, error: errMsg }, isServerWriteErr ? 500 : 400);
     return;
   }
+
+  let postgresSync: { imported?: number; loaded?: number } | null = null;
+  if (saved.settings.mode === 'postgres') {
+    const pgRes = await activateRuntimePostgres(saved.settings.postgresConfig);
+    if (!pgRes.ok) {
+      storageSettings.saveStorageSettings(previous);
+      noCacheJson(
+        res,
+        {
+          ok: false,
+          error: `Не удалось подключиться к PostgreSQL: ${pgRes.error || 'ошибка соединения'}`,
+        },
+        400
+      );
+      return;
+    }
+    postgresSync = { imported: pgRes.imported, loaded: pgRes.loaded };
+    catalogStore.reloadFromDisk();
+    channelHealth.reloadFromDisk();
+    EpgParser.clearCache();
+  } else if (isDatabasePersistenceActive()) {
+    await deactivateRuntimePostgres();
+    catalogStore.reloadFromDisk();
+    channelHealth.reloadFromDisk();
+    EpgParser.clearCache();
+  }
+
   noCacheJson(res, {
     ok: true,
-    settings: saved.settings,
+    settings: storageSettings.getMaskedStorageSettings(),
     publicConfig: storageSettings.getPublicStorageClientConfig(),
+    postgresActive: isDatabasePersistenceActive(),
+    ...(postgresSync ? { postgresSync } : {}),
   });
 });
 
@@ -3776,7 +3856,7 @@ app.get('/api/catalog/playlists', (_req, res) => {
 });
 
 app.get('/api/catalog/channels', (req, res) => {
-  const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 100));
+  const limit = Math.max(1, Math.min(5000, Number(req.query.limit) || 500));
   const offset = Math.max(0, Number(req.query.offset) || 0);
   const search = String(req.query.search || '').trim();
   const filter = String(req.query.filter || '').trim();
@@ -3863,6 +3943,34 @@ app.post('/api/catalog/check', async (req, res) => {
   noCacheJson(res, out, out.status);
 });
 
+app.post('/api/catalog/channel/check', async (req, res) => {
+  const channelId = Number(req.body?.channel_id ?? req.body?.id) || 0;
+  if (!channelId) {
+    noCacheJson(res, { ok: false, error: 'Не указан ID канала' }, 400);
+    return;
+  }
+  const out = await checkCatalogChannelStreamsUnified(channelId, true);
+  noCacheJson(res, out, out.status);
+});
+
+app.post('/api/catalog/stream/check', async (req, res) => {
+  const url = String(req.body?.url || '').trim();
+  const channelId = Number(req.body?.channel_id) || 0;
+  if (!url) {
+    noCacheJson(res, { ok: false, error: 'Не указан URL потока' }, 400);
+    return;
+  }
+  const result = await catalogStore.checkStream(url, true, false);
+  const saved = catalogStore.saveToDisk();
+  noCacheJson(res, {
+    ok: saved.ok,
+    url,
+    result,
+    ...(channelId ? { channel: catalogStore.getChannel(channelId) } : {}),
+    ...(saved.error ? { error: saved.error } : {}),
+  }, saved.ok ? 200 : 500);
+});
+
 app.post('/api/catalog/to-playlist', async (req, res) => {
   const channelId = Number(req.body?.channel_id) || 0;
   const playlist = String(req.body?.playlist || '').trim();
@@ -3913,6 +4021,10 @@ app.post('/api/catalog/to-playlist', async (req, res) => {
     return;
   }
   noCacheJson(res, { ok: true, name: ch.name, revision: saved.revision });
+});
+
+app.get('/api/catalog/aggregate/status', (_req, res) => {
+  noCacheJson(res, { ok: true, progress: catalogStore.getAggregateProgress() });
 });
 
 app.post('/api/catalog/aggregate', async (_req, res) => {

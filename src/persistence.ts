@@ -20,14 +20,22 @@ const DATABASE_STATE_FILES = new Set([
   'admin_auth.json', 'auto_refresh.json', 'catalog.json', 'categories.json',
   'channel_alerts.json', 'channel_health.json', 'epg.json',
   'github_build_state.json', 'github_config.json', 'invites.json',
-  'lifecycle_log.json', 'playlist_meta.json', 'sources.json', 'state_meta.json',
-  'storage_settings.json', 'streaming_settings.json', 'ui_settings.json',
+  'lifecycle_log.json', 'playlist_meta.json', 'playlists_snapshot.json',
+  'sources.json', 'state_meta.json',
+  'streaming_settings.json', 'ui_settings.json',
   'user_sessions.json', 'users.json', 'apk/releases.json',
 ]);
 
-export function configurePersistencePool(pool: PersistencePool): void { persistencePool = pool; }
+export function configurePersistencePool(pool: PersistencePool | null): void { persistencePool = pool; }
 export function activateDatabasePersistence(): void { databaseReady = true; }
+export function deactivateDatabasePersistence(): void {
+  databaseReady = false;
+  persistencePool = null;
+  stateCache.clear();
+  pendingWrites.clear();
+}
 export function isDatabasePersistenceActive(): boolean { return databaseReady; }
+export function hasStateCacheKey(key: string): boolean { return stateCache.has(key); }
 
 function stateKey(targetPath: string): string | null {
   const root = path.resolve(config.dataDir);
@@ -82,6 +90,21 @@ export async function loadPersistentState(pool: PersistencePool): Promise<number
     }
     return stateCache.size;
   } finally { client.release(); }
+}
+
+/**
+ * Mirrors active PostgreSQL app_state back onto local disk JSON files so switching
+ * back to Local mode keeps all recent database mutations intact.
+ */
+export function exportStateCacheToDisk(): number {
+  let written = 0;
+  for (const [key, value] of stateCache.entries()) {
+    if (!DATABASE_STATE_FILES.has(key)) continue;
+    const targetPath = path.join(config.dataDir, ...key.split('/'));
+    const res = atomicWriteFileSync(targetPath, JSON.stringify(value, null, 2));
+    if (res.ok) written++;
+  }
+  return written;
 }
 
 export async function flushPersistence(): Promise<void> {

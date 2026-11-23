@@ -91,6 +91,74 @@ function getStreamPriority(
   return stream.online === 1 ? 2 : stream.online === -1 ? 0 : 1;
 }
 
+export interface AggregateProgress {
+  running: boolean;
+  phase: 'idle' | 'indexing' | 'aggregating' | 'reconciling' | 'done' | 'error';
+  totalSources: number;
+  completedSources: number;
+  currentSourceName: string;
+  totalChannelsFound: number;
+  addedChannels: number;
+  addedStreams: number;
+  startedAt: number;
+  finishedAt: number;
+  error?: string;
+}
+
+export interface RankedStreamCandidate {
+  url: string;
+  name: string;
+  source: string;
+  online: number;
+  status: StreamCheckStatus;
+  http_code: number;
+  response_ms: number;
+  codec_warning?: string;
+  diag_code?: string;
+  diag_reason?: string;
+  userAgent?: string;
+  referer?: string;
+  origin?: string;
+  score: number;
+  isBest?: boolean;
+}
+
+export function scoreStreamCandidate(
+  s: {
+    online?: number;
+    checked_at?: number;
+    response_ms?: number;
+    codec_warning?: string;
+    url?: string;
+    isPrimary?: boolean;
+  },
+  now = Math.floor(Date.now() / 1000)
+): number {
+  const onlineVal = Number(s.online) || 0;
+  const checkedAt = Number(s.checked_at) || 0;
+  const fresh = checkedAt > 0 && isStreamStatusFresh({ online: onlineVal, checked_at: checkedAt }, now);
+
+  // Fresh online > unknown/stale > fresh offline
+  let score = !fresh || onlineVal === 0 ? 5000 : onlineVal === 1 ? 10000 : 0;
+
+  if (!s.codec_warning) score += 1000;
+
+  const ms = Number(s.response_ms) || 0;
+  if (ms > 0) {
+    score -= Math.min(2000, ms);
+  }
+
+  if (typeof s.url === 'string' && s.url.trim().toLowerCase().startsWith('https://')) {
+    score += 100;
+  }
+
+  if (s.isPrimary) {
+    score += 50;
+  }
+
+  return score;
+}
+
 export async function checkStreamUrl(
   url: string,
   timeoutMs = 9000,
@@ -110,7 +178,13 @@ export async function checkStreamUrl(
   });
 }
 
-function toCatalogSource(src: SourceItem): CatalogSource {
+function toCatalogSource(src: SourceItem, indexedCount?: number): CatalogSource {
+  const resolvedTotal =
+    src.total_found !== undefined
+      ? src.total_found
+      : indexedCount !== undefined && indexedCount > 0
+        ? indexedCount
+        : undefined;
   return {
     id: Number(src.catalogId) || 1,
     stringId: src.id,
@@ -121,7 +195,7 @@ function toCatalogSource(src: SourceItem): CatalogSource {
     created_at: Number(src.created_at) || Math.floor(Date.now() / 1000),
     ...(src.last_run !== undefined ? { last_run: src.last_run } : {}),
     ...(src.last_status !== undefined ? { last_status: src.last_status } : {}),
-    ...(src.total_found !== undefined ? { total_found: src.total_found } : {}),
+    ...(resolvedTotal !== undefined ? { total_found: resolvedTotal } : {}),
   };
 }
 
@@ -134,6 +208,28 @@ class CatalogStore {
   private cleared = false;
   private saveTimer: ReturnType<typeof setTimeout> | null = null;
   private lastSaveError = '';
+  private ownershipCache: {
+    sig: string;
+    builtAt: number;
+    data: {
+      allPlaylists: string[];
+      byUrl: Map<string, Set<string>>;
+      byLowerName: Map<string, Set<string>>;
+      byNormName: Map<string, Set<string>>;
+    };
+  } | null = null;
+  private aggregateProgress: AggregateProgress = {
+    running: false,
+    phase: 'idle',
+    totalSources: 0,
+    completedSources: 0,
+    currentSourceName: '',
+    totalChannelsFound: 0,
+    addedChannels: 0,
+    addedStreams: 0,
+    startedAt: 0,
+    finishedAt: 0,
+  };
 
   private get catalogFile(): string {
     return path.join(config.dataDir, 'catalog.json');
@@ -141,6 +237,14 @@ class CatalogStore {
 
   getLastSaveError(): string {
     return this.lastSaveError;
+  }
+
+  getAggregateProgress(): AggregateProgress {
+    return { ...this.aggregateProgress };
+  }
+
+  invalidateOwnershipCache(): void {
+    this.ownershipCache = null;
   }
 
   isCleared(): boolean {
@@ -160,6 +264,7 @@ class CatalogStore {
     this.initialized = false;
     this.cleared = false;
     this.lastSaveError = '';
+    this.ownershipCache = null;
   }
 
   reloadFromDisk(): void {
@@ -171,8 +276,6 @@ class CatalogStore {
     if (this.initialized) return;
     this.initialized = true;
     if (!this.loadFromDisk()) {
-      this.reconcile({ save: true });
-    } else {
       this.reconcile({ save: true });
     }
   }
@@ -476,6 +579,19 @@ class CatalogStore {
     return name.replace(/\.m3u$/i, '').trim();
   }
 
+  private computePlaylistsSignature(rawPlaylists: string[]): string {
+    const parts: string[] = [];
+    for (const pl of rawPlaylists) {
+      try {
+        const st = fs.statSync(storage.getPlaylistPath(pl));
+        parts.push(`${pl}:${Math.floor(st.mtimeMs)}:${st.size}`);
+      } catch {
+        parts.push(`${pl}:0:0`);
+      }
+    }
+    return parts.join('|');
+  }
+
   private buildLivePlaylistOwnershipMap(): {
     allPlaylists: string[];
     byUrl: Map<string, Set<string>>;
@@ -483,6 +599,12 @@ class CatalogStore {
     byNormName: Map<string, Set<string>>;
   } {
     const rawPlaylists = storage.getPlaylists();
+    const sig = this.computePlaylistsSignature(rawPlaylists);
+    const nowMs = Date.now();
+    if (this.ownershipCache && this.ownershipCache.sig === sig && nowMs - this.ownershipCache.builtAt < 30000) {
+      return this.ownershipCache.data;
+    }
+
     const allPlaylists: string[] = [];
     const byUrl = new Map<string, Set<string>>();
     const byLowerName = new Map<string, Set<string>>();
@@ -520,7 +642,9 @@ class CatalogStore {
     }
 
     allPlaylists.sort((a, b) => a.localeCompare(b, 'ru'));
-    return { allPlaylists, byUrl, byLowerName, byNormName };
+    const data = { allPlaylists, byUrl, byLowerName, byNormName };
+    this.ownershipCache = { sig, builtAt: nowMs, data };
+    return data;
   }
 
   private resolveLiveUsedIn(
@@ -576,6 +700,12 @@ class CatalogStore {
     const ownership = this.buildLivePlaylistOwnershipMap();
     const streamsByChannel = this.buildStreamsByChannelMap();
     const authSources = this.getSources();
+    const indexStatuses = StreamParser.getIndexStatus().filter(
+      (s): s is NonNullable<typeof s> => Boolean(s)
+    );
+    const indexedChannels = indexStatuses
+      .filter((s) => s.enabled !== false)
+      .reduce((sum, s) => sum + (Number(s.indexed) || 0), 0);
     let inMyPlCount = 0;
     const now = Math.floor(Date.now() / 1000);
     for (const c of this.channels) {
@@ -590,6 +720,7 @@ class CatalogStore {
       streams_online: this.streams.filter((s) => s.online === 1 && isStreamStatusFresh(s, now)).length,
       sources: authSources.length,
       sources_enabled: authSources.filter((s) => s.enabled === 1).length,
+      indexed_channels: indexedChannels,
     };
   }
 
@@ -807,19 +938,42 @@ class CatalogStore {
     const streamsByChannel = this.buildStreamsByChannelMap();
     const usedIn = this.resolveLiveUsedIn(ch, streamsByChannel, ownership);
     const now = Math.floor(Date.now() / 1000);
-    const chStreams = (streamsByChannel.get(id) || [])
-      .slice()
-      .sort((a, b) => getStreamPriority(b, now) - getStreamPriority(a, now) || b.added_at - a.added_at || b.id - a.id);
+
+    // Deduplicate streams with identical clean URLs (keeping highest-scored metadata & collecting source labels)
+    const dedupMap = new Map<string, CatalogStream & { _score: number }>();
+    for (const stream of streamsByChannel.get(id) || []) {
+      const cleanUrl = (stream.url || '').trim();
+      if (!cleanUrl) continue;
+      const key = cleanUrl.toLowerCase();
+      const score = scoreStreamCandidate(stream, now);
+      const prev = dedupMap.get(key);
+      if (!prev || score > prev._score || (score === prev._score && stream.id > prev.id)) {
+        dedupMap.set(key, {
+          ...stream,
+          url: cleanUrl,
+          source_name: stream.source_name || prev?.source_name || null,
+          _score: score,
+        });
+      } else if (stream.source_name && !prev.source_name) {
+        prev.source_name = stream.source_name;
+      }
+    }
+
+    const chStreams = Array.from(dedupMap.values())
+      .sort((a, b) => b._score - a._score || b.added_at - a.added_at || b.id - a.id);
+
     return {
       ...ch,
       in_my_pl: usedIn.length > 0 ? 1 : 0,
       used_in: JSON.stringify(usedIn),
       used_in_list: usedIn,
       alt_names: JSON.stringify(ch.alt_names),
-      streams: chStreams.map((stream) => {
-        const fresh = isStreamStatusFresh(stream);
+      streams: chStreams.map(({ _score, ...stream }, idx) => {
+        const fresh = isStreamStatusFresh(stream, now);
         return {
           ...stream,
+          source_name: stream.source_name || (stream.source_type === 'playlist' ? 'Плейлист' : 'Источник'),
+          is_best: idx === 0 && chStreams.length > 0,
           status:
             !fresh || stream.online === 0
               ? 'unknown'
@@ -837,8 +991,13 @@ class CatalogStore {
    * DEF-08: Always reflects authoritative StreamParser (`data/sources.json`).
    */
   getSources(): CatalogSource[] {
+    const idxById = new Map(
+      StreamParser.getIndexStatus()
+        .filter((st): st is NonNullable<typeof st> => Boolean(st))
+        .map((st) => [st.id, st.indexed])
+    );
     return StreamParser.getSources()
-      .map(toCatalogSource)
+      .map((s) => toCatalogSource(s, idxById.get(s.id)))
       .sort((a, b) => b.id - a.id);
   }
 
@@ -1071,6 +1230,231 @@ class CatalogStore {
     };
   }
 
+  async checkChannelStreams(
+    channelId: number,
+    force = true
+  ): Promise<{
+    ok: boolean;
+    notFound?: boolean;
+    checked: number;
+    online: number;
+    offline: number;
+    unknown: number;
+    persisted: boolean;
+    channel?: ReturnType<CatalogStore['getChannel']>;
+    error?: string;
+  }> {
+    this.ensureInit();
+    const ch = this.channels.find((c) => c.id === channelId);
+    if (!ch) {
+      return {
+        ok: false,
+        notFound: true,
+        checked: 0,
+        online: 0,
+        offline: 0,
+        unknown: 0,
+        persisted: true,
+        error: 'Канал не найден',
+      };
+    }
+
+    const uniqueUrls = Array.from(
+      new Set(
+        this.streams
+          .filter((s) => s.channel_id === channelId)
+          .map((s) => (s.url || '').trim())
+          .filter(Boolean)
+      )
+    );
+
+    let onlineCount = 0;
+    let offlineCount = 0;
+    let unknownCount = 0;
+    const batchSize = 4;
+
+    for (let i = 0; i < uniqueUrls.length; i += batchSize) {
+      const batch = uniqueUrls.slice(i, i + batchSize);
+      const results = await Promise.all(batch.map((url) => this.checkStream(url, force, false)));
+      for (const res of results) {
+        if (res.status === 'online') onlineCount++;
+        else if (res.status === 'offline') offlineCount++;
+        else unknownCount++;
+      }
+    }
+
+    const saveRes = uniqueUrls.length > 0 ? this.saveToDisk() : { ok: true };
+    return {
+      ok: saveRes.ok,
+      checked: uniqueUrls.length,
+      online: onlineCount,
+      offline: offlineCount,
+      unknown: unknownCount,
+      persisted: saveRes.ok,
+      channel: this.getChannel(channelId),
+      ...(saveRes.error ? { error: saveRes.error } : {}),
+    };
+  }
+
+  getRankedStreamsForChannel(
+    channelName: string,
+    primaryUrl = '',
+    tvgId = '',
+    primaryMeta: { userAgent?: string; referer?: string; origin?: string; source?: string } = {}
+  ): RankedStreamCandidate[] {
+    this.ensureInit();
+    const now = Math.floor(Date.now() / 1000);
+    const cleanPrimary = (primaryUrl || '').trim();
+    const qLower = channelName.trim().toLowerCase();
+    const qNorm = normalizeChannelName(channelName);
+    const cleanTvg = tvgId.trim().toLowerCase();
+
+    // Lookup known catalog stream diagnostics by exact URL
+    const healthByUrl = new Map<string, CatalogStream>();
+    for (const s of this.streams) {
+      const u = (s.url || '').trim();
+      if (!u) continue;
+      const key = u.toLowerCase();
+      const prev = healthByUrl.get(key);
+      if (!prev || scoreStreamCandidate(s, now) > scoreStreamCandidate(prev, now)) {
+        healthByUrl.set(key, s);
+      }
+    }
+
+    const candidates = new Map<string, RankedStreamCandidate>();
+
+    const upsert = (
+      entry: Omit<RankedStreamCandidate, 'score' | 'status'> & { checked_at?: number; isPrimary?: boolean }
+    ) => {
+      const cleanUrl = (entry.url || '').trim();
+      if (!cleanUrl) return;
+      const key = cleanUrl.toLowerCase();
+      const known = healthByUrl.get(key);
+      const mergedOnline =
+        known && isStreamStatusFresh(known, now) ? known.online : (entry.online ?? known?.online ?? 0);
+      const checkedAt = entry.checked_at ?? known?.checked_at ?? 0;
+      const fresh = checkedAt > 0 && isStreamStatusFresh({ online: mergedOnline, checked_at: checkedAt }, now);
+      const status: StreamCheckStatus =
+        !fresh || mergedOnline === 0
+          ? 'unknown'
+          : mergedOnline === 1
+            ? 'online'
+            : mergedOnline === -1
+              ? 'offline'
+              : 'unknown';
+      const responseMs = Number(entry.response_ms || known?.response_ms) || 0;
+      const httpCode = Number(entry.http_code || known?.http_code) || 0;
+      const codecWarning = entry.codec_warning || known?.codec_warning;
+      const diagCode = entry.diag_code || known?.diag_code;
+      const diagReason = entry.diag_reason || known?.diag_reason;
+
+      const score = scoreStreamCandidate(
+        {
+          online: mergedOnline,
+          checked_at: checkedAt,
+          response_ms: responseMs,
+          codec_warning: codecWarning,
+          url: cleanUrl,
+          isPrimary: entry.isPrimary,
+        },
+        now
+      );
+
+      const prev = candidates.get(key);
+      if (!prev || score > prev.score) {
+        candidates.set(key, {
+          url: cleanUrl,
+          name: entry.name || prev?.name || channelName,
+          source: entry.source || prev?.source || known?.source_name || 'Источник',
+          online: mergedOnline,
+          status,
+          http_code: httpCode,
+          response_ms: responseMs,
+          ...(codecWarning ? { codec_warning: codecWarning } : {}),
+          ...(diagCode ? { diag_code: diagCode } : {}),
+          ...(diagReason ? { diag_reason: diagReason } : {}),
+          userAgent: entry.userAgent || prev?.userAgent,
+          referer: entry.referer || prev?.referer,
+          origin: entry.origin || prev?.origin,
+          score,
+        });
+      } else {
+        if (!prev.userAgent && entry.userAgent) prev.userAgent = entry.userAgent;
+        if (!prev.referer && entry.referer) prev.referer = entry.referer;
+        if (!prev.origin && entry.origin) prev.origin = entry.origin;
+      }
+    };
+
+    if (cleanPrimary) {
+      upsert({
+        url: cleanPrimary,
+        name: channelName,
+        source: primaryMeta.source || 'Плейлист',
+        online: 0,
+        http_code: 0,
+        response_ms: 0,
+        userAgent: primaryMeta.userAgent,
+        referer: primaryMeta.referer,
+        origin: primaryMeta.origin,
+        isPrimary: true,
+      });
+    }
+
+    for (const ch of this.channels) {
+      const nameMatch =
+        (qLower && ch.name.trim().toLowerCase() === qLower) ||
+        (qNorm && normalizeChannelName(ch.name) === qNorm) ||
+        (cleanTvg && ch.tvg_id.trim().toLowerCase() === cleanTvg) ||
+        ch.alt_names.some(
+          (a) => (qLower && a.trim().toLowerCase() === qLower) || (qNorm && normalizeChannelName(a) === qNorm)
+        );
+      if (!nameMatch) continue;
+      for (const s of this.streams) {
+        if (s.channel_id !== ch.id) continue;
+        upsert({
+          url: s.url,
+          name: ch.name,
+          source: s.source_name || 'Каталог',
+          online: s.online,
+          http_code: s.http_code,
+          response_ms: s.response_ms,
+          checked_at: s.checked_at,
+          codec_warning: s.codec_warning,
+          diag_code: s.diag_code,
+          diag_reason: s.diag_reason,
+          isPrimary: Boolean(cleanPrimary && s.url.trim().toLowerCase() === cleanPrimary.toLowerCase()),
+        });
+      }
+    }
+
+    for (const item of StreamParser.getAllIndexedStreams()) {
+      const itemNorm = normalizeChannelName(item.name || '');
+      const itemTvg = (item.tvg_id || '').trim().toLowerCase();
+      const match =
+        (qLower && (item.name || '').trim().toLowerCase() === qLower) ||
+        (qNorm && itemNorm === qNorm) ||
+        (cleanTvg && itemTvg === cleanTvg);
+      if (!match) continue;
+      upsert({
+        url: item.url,
+        name: item.name,
+        source: item.source || 'Источник',
+        online: 0,
+        http_code: 0,
+        response_ms: 0,
+        userAgent: item.userAgent,
+        referer: item.referer,
+        origin: item.origin,
+      });
+    }
+
+    const sorted = Array.from(candidates.values()).sort((a, b) => b.score - a.score);
+    if (sorted.length > 0) {
+      sorted[0].isBest = true;
+    }
+    return sorted;
+  }
+
   findAlternativeStreams(
     channelName: string,
     tvgId = '',
@@ -1086,177 +1470,147 @@ class CatalogStore {
     origin?: string;
   }> {
     this.ensureInit();
-    const excluded = new Set(excludeUrls.map((u) => u.trim()).filter(Boolean));
-    const qLower = channelName.trim().toLowerCase();
-    const qNorm = normalizeChannelName(channelName);
-    const cleanTvg = tvgId.trim().toLowerCase();
-    const byUrl = new Map<
-      string,
-      {
-        url: string;
-        name: string;
-        source: string;
-        online: number;
-        diagCode?: string;
-        userAgent?: string;
-        referer?: string;
-        origin?: string;
-      }
-    >();
-
-    for (const ch of this.channels) {
-      const nameMatch =
-        ch.name.trim().toLowerCase() === qLower ||
-        (qNorm && normalizeChannelName(ch.name) === qNorm) ||
-        (cleanTvg && ch.tvg_id.trim().toLowerCase() === cleanTvg) ||
-        ch.alt_names.some(
-          (a) => a.trim().toLowerCase() === qLower || (qNorm && normalizeChannelName(a) === qNorm)
-        );
-      if (!nameMatch) continue;
-      for (const s of this.streams) {
-        if (s.channel_id !== ch.id) continue;
-        const u = (s.url || '').trim();
-        if (!u || excluded.has(u) || byUrl.has(u)) continue;
-        byUrl.set(u, {
-          url: u,
-          name: ch.name,
-          source: s.source_name || 'Каталог',
-          online: s.online,
-          diagCode: s.diag_code,
-        });
-      }
-    }
-
-    for (const item of StreamParser.getAllIndexedStreams()) {
-      const u = (item.url || '').trim();
-      if (!u || excluded.has(u) || byUrl.has(u)) continue;
-      const itemNorm = normalizeChannelName(item.name || '');
-      const itemTvg = (item.tvg_id || '').trim().toLowerCase();
-      const match =
-        (item.name || '').trim().toLowerCase() === qLower ||
-        (qNorm && itemNorm === qNorm) ||
-        (cleanTvg && itemTvg === cleanTvg);
-      if (!match) continue;
-      byUrl.set(u, {
-        url: u,
-        name: item.name,
-        source: item.source || 'Источник',
-        online: 0,
-        userAgent: item.userAgent,
-        referer: item.referer,
-        origin: item.origin,
-      });
-    }
-
-    if (byUrl.size === 0 && qNorm && qNorm.length >= 3) {
-      for (const item of StreamParser.getAllIndexedStreams()) {
-        const u = (item.url || '').trim();
-        if (!u || excluded.has(u) || byUrl.has(u)) continue;
-        const itemNorm = normalizeChannelName(item.name || '');
-        if (itemNorm.includes(qNorm) || qNorm.includes(itemNorm)) {
-          byUrl.set(u, {
-            url: u,
-            name: item.name,
-            source: item.source || 'Источник',
-            online: 0,
-            userAgent: item.userAgent,
-            referer: item.referer,
-            origin: item.origin,
-          });
-          if (byUrl.size >= 15) break;
-        }
-      }
-    }
-
-    return Array.from(byUrl.values()).sort((a, b) => b.online - a.online);
+    const excluded = new Set(excludeUrls.map((u) => u.trim().toLowerCase()).filter(Boolean));
+    return this.getRankedStreamsForChannel(channelName, '', tvgId)
+      .filter((c) => !excluded.has(c.url.trim().toLowerCase()))
+      .map((c) => ({
+        url: c.url,
+        name: c.name,
+        source: c.source,
+        online: c.online,
+        ...(c.diag_code ? { diagCode: c.diag_code } : {}),
+        ...(c.userAgent ? { userAgent: c.userAgent } : {}),
+        ...(c.referer ? { referer: c.referer } : {}),
+        ...(c.origin ? { origin: c.origin } : {}),
+      }));
   }
 
   async aggregateFromSources(): Promise<{
     ok: boolean;
     addedChannels: number;
     addedStreams: number;
+    totalFound?: number;
     error?: string;
   }> {
     this.ensureInit();
     this.cleared = false;
-    await StreamParser.refreshAll();
     let addedChannels = 0;
     let addedStreams = 0;
+    let totalChannelsFound = 0;
     const now = Math.floor(Date.now() / 1000);
     const parserSources = StreamParser.getSources();
+    const enabledSources = parserSources.filter((s) => s.enabled && s.catalogId);
 
-    const enabledCatalogIds = new Set(
-      parserSources.filter((s) => s.enabled && s.catalogId).map((s) => Number(s.catalogId))
-    );
-    this.streams = this.streams.filter(
-      (s) => s.source_id === null || s.source_id === undefined || enabledCatalogIds.has(Number(s.source_id))
-    );
+    this.aggregateProgress = {
+      running: true,
+      phase: 'indexing',
+      totalSources: enabledSources.length,
+      completedSources: 0,
+      currentSourceName: enabledSources[0]?.name || '',
+      totalChannelsFound: 0,
+      addedChannels: 0,
+      addedStreams: 0,
+      startedAt: now,
+      finishedAt: 0,
+    };
 
-    for (const src of parserSources) {
-      if (!src.enabled || !src.catalogId) continue;
-      try {
-        const body = await StreamParser.fetchTextWithSource(src.url, src, 20000);
-        if (!body) {
-          StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
-          continue;
-        }
-        const prevHealthByUrl = new Map<
-          string,
-          Pick<
-            CatalogStream,
-            'online' | 'http_code' | 'response_ms' | 'checked_at' | 'diag_code' | 'diag_reason' | 'codec_warning'
-          >
-        >();
-        for (const existingStream of this.streams) {
-          if (existingStream.source_id === src.catalogId && existingStream.checked_at > 0) {
-            prevHealthByUrl.set(existingStream.url, {
-              online: existingStream.online,
-              http_code: existingStream.http_code,
-              response_ms: existingStream.response_ms,
-              checked_at: existingStream.checked_at,
-              diag_code: existingStream.diag_code,
-              diag_reason: existingStream.diag_reason,
-              codec_warning: existingStream.codec_warning,
-            });
+    try {
+      const enabledCatalogIds = new Set(enabledSources.map((s) => Number(s.catalogId)));
+      this.streams = this.streams.filter(
+        (s) => s.source_id === null || s.source_id === undefined || enabledCatalogIds.has(Number(s.source_id))
+      );
+
+      for (const src of enabledSources) {
+        if (!src.catalogId) continue;
+        this.aggregateProgress.phase = 'aggregating';
+        this.aggregateProgress.currentSourceName = src.name || src.url;
+        try {
+          const body = await StreamParser.fetchTextWithSource(src.url, src, 25000);
+          if (!body) {
+            StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
+            this.aggregateProgress.completedSources++;
+            continue;
           }
-        }
-        this.streams = this.streams.filter((s) => s.source_id !== src.catalogId);
-        const items = StreamParser.parseSource(body, src);
-        const res = this.ingestSourceItems(src, items);
-        if (prevHealthByUrl.size > 0) {
-          for (const st of this.streams) {
-            if (st.source_id !== src.catalogId) continue;
-            const prev = prevHealthByUrl.get(st.url);
-            if (prev) {
-              st.online = prev.online;
-              st.http_code = prev.http_code;
-              st.response_ms = prev.response_ms;
-              st.checked_at = prev.checked_at;
-              if (prev.diag_code) st.diag_code = prev.diag_code;
-              if (prev.diag_reason) st.diag_reason = prev.diag_reason;
-              if (prev.codec_warning) st.codec_warning = prev.codec_warning;
+          const prevHealthByUrl = new Map<
+            string,
+            Pick<
+              CatalogStream,
+              'online' | 'http_code' | 'response_ms' | 'checked_at' | 'diag_code' | 'diag_reason' | 'codec_warning'
+            >
+          >();
+          for (const existingStream of this.streams) {
+            if (existingStream.source_id === src.catalogId && existingStream.checked_at > 0) {
+              prevHealthByUrl.set(existingStream.url, {
+                online: existingStream.online,
+                http_code: existingStream.http_code,
+                response_ms: existingStream.response_ms,
+                checked_at: existingStream.checked_at,
+                diag_code: existingStream.diag_code,
+                diag_reason: existingStream.diag_reason,
+                codec_warning: existingStream.codec_warning,
+              });
             }
           }
+          this.streams = this.streams.filter((s) => s.source_id !== src.catalogId);
+          const items = StreamParser.parseSource(body, src);
+          if (items.length > 0) {
+            StreamParser.saveIndexForSource(src.id, items);
+          }
+          const res = this.ingestSourceItems(src, items);
+          if (prevHealthByUrl.size > 0) {
+            for (const st of this.streams) {
+              if (st.source_id !== src.catalogId) continue;
+              const prev = prevHealthByUrl.get(st.url);
+              if (prev) {
+                st.online = prev.online;
+                st.http_code = prev.http_code;
+                st.response_ms = prev.response_ms;
+                st.checked_at = prev.checked_at;
+                if (prev.diag_code) st.diag_code = prev.diag_code;
+                if (prev.diag_reason) st.diag_reason = prev.diag_reason;
+                if (prev.codec_warning) st.codec_warning = prev.codec_warning;
+              }
+            }
+          }
+          addedChannels += res.addedChannels;
+          addedStreams += res.addedStreams;
+          totalChannelsFound += items.length;
+          StreamParser.updateSourceStats(src.catalogId, {
+            last_run: now,
+            last_status: 'ok',
+            total_found: items.length,
+          });
+        } catch {
+          StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
         }
-        addedChannels += res.addedChannels;
-        addedStreams += res.addedStreams;
-        StreamParser.updateSourceStats(src.catalogId, {
-          last_run: now,
-          last_status: 'ok',
-          total_found: items.length,
-        });
-      } catch {
-        StreamParser.updateSourceStats(src.catalogId, { last_run: now, last_status: 'error' });
+        this.aggregateProgress.completedSources++;
+        this.aggregateProgress.totalChannelsFound = totalChannelsFound;
+        this.aggregateProgress.addedChannels = addedChannels;
+        this.aggregateProgress.addedStreams = addedStreams;
       }
-    }
 
-    const rec = this.reconcile({ save: true });
-    return {
-      ok: rec.persisted,
-      addedChannels,
-      addedStreams,
-      ...(rec.error ? { error: rec.error } : {}),
-    };
+      this.aggregateProgress.phase = 'reconciling';
+      this.aggregateProgress.currentSourceName = 'Синхронизация плейлистов';
+      const rec = this.reconcile({ save: true });
+      this.aggregateProgress.running = false;
+      this.aggregateProgress.phase = rec.persisted ? 'done' : 'error';
+      this.aggregateProgress.finishedAt = Math.floor(Date.now() / 1000);
+      if (rec.error) this.aggregateProgress.error = rec.error;
+      return {
+        ok: rec.persisted,
+        addedChannels,
+        addedStreams,
+        totalFound: totalChannelsFound,
+        ...(rec.error ? { error: rec.error } : {}),
+      };
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      this.aggregateProgress.running = false;
+      this.aggregateProgress.phase = 'error';
+      this.aggregateProgress.finishedAt = Math.floor(Date.now() / 1000);
+      this.aggregateProgress.error = errMsg;
+      return { ok: false, addedChannels, addedStreams, error: errMsg };
+    }
   }
 
   exportRawState(): {

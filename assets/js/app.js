@@ -61,7 +61,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const parseProgressLog = document.getElementById('parse-progress-log');
     const parseResultsContainer = document.getElementById('parse-results-container');
     const parseTargetInfo = document.getElementById('parse-target-info');
-    const parseTargetSelect = document.getElementById('parse-target-playlist');
     const sourcesListContainer = document.getElementById('sources-list-container');
     const btnAddSource = document.getElementById('btn-add-source');
 
@@ -161,8 +160,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function isCloudStorageMode() {
         const cfg = window.PQTV_STORAGE_CONFIG;
-        if (cfg && cfg.mode === 'local') return false;
-        return true;
+        return Boolean(cfg && cfg.mode === 'cloud');
     }
 
     const NON_SYNC_POST_PREFIXES = [
@@ -707,6 +705,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const res = await apiRequest('/api/auth/set-password', 'POST', { password });
                 if (res.ok) {
                     closeModal();
+                    showToast('Пароль администратора обновлён', 'ok');
                 } else if (pwdMsg) {
                     pwdMsg.textContent = res.error || 'Ошибка сохранения пароля';
                     pwdMsg.classList.remove('hidden');
@@ -936,6 +935,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         html += '</tbody></table>';
         container.innerHTML = html;
+        enhanceAdminTable(container, 'playlists', { totalCount: playlistsMetaItems.length });
 
         container.querySelectorAll('tr[data-playlist-row]').forEach((row) => {
             row.addEventListener('click', (e) => {
@@ -994,30 +994,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 });
             }
         }
-        populateParseTargetSelect();
         syncEditorPlaylistControls(currentPlaylist);
         renderPlaylistsTable();
-    }
-
-    function populateParseTargetSelect() {
-        if (!parseTargetSelect) return;
-        const prev = parseTargetSelect.value;
-        parseTargetSelect.innerHTML = '';
-        if (playlistsList.length === 0) {
-            const opt = document.createElement('option');
-            opt.value = '';
-            opt.textContent = '— нет плейлистов —';
-            parseTargetSelect.appendChild(opt);
-            return;
-        }
-        playlistsList.forEach(name => {
-            const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name + '.m3u';
-            parseTargetSelect.appendChild(opt);
-        });
-        if (prev && playlistsList.includes(prev)) parseTargetSelect.value = prev;
-        else if (currentPlaylist && playlistsList.includes(currentPlaylist)) parseTargetSelect.value = currentPlaylist;
     }
 
     async function selectPlaylist(name) {
@@ -1118,6 +1096,258 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    let colVisGlobalBound = false;
+    function readTableJsonStore(storageKey, fallback) {
+        try {
+            const raw = localStorage.getItem(storageKey);
+            return raw ? JSON.parse(raw) : fallback;
+        } catch {
+            return fallback;
+        }
+    }
+    function writeTableJsonStore(storageKey, value) {
+        try {
+            localStorage.setItem(storageKey, JSON.stringify(value));
+        } catch {}
+    }
+
+    function enhanceAdminTable(containerEl, tableKey, options = {}) {
+        if (!containerEl) return;
+        const table = containerEl.querySelector('table');
+        if (!table) return;
+        const headRow = table.querySelector('thead tr');
+        if (!headRow) return;
+        const ths = Array.from(headRow.children);
+        if (ths.length === 0) return;
+
+        if (!colVisGlobalBound) {
+            colVisGlobalBound = true;
+            document.addEventListener('click', (evt) => {
+                if (evt.target && evt.target.closest('.col-vis-wrap')) return;
+                document.querySelectorAll('.col-vis-popover:not(.hidden)').forEach((pop) => pop.classList.add('hidden'));
+            });
+        }
+
+        const safeKey = String(tableKey || 'default').replace(/[^a-z0-9_-]/gi, '_');
+        const colsStorageKey = 'pqtv_tbl_cols_' + safeKey;
+        const widthsStorageKey = 'pqtv_tbl_widths_' + safeKey;
+        const colSpecs = Array.isArray(options.columns) ? options.columns : [];
+        const defaultHiddenList = Array.isArray(options.defaultHidden) ? options.defaultHidden : [];
+
+        const colsMeta = ths.map((th, idx) => {
+            const spec = colSpecs[idx];
+            const key = (spec && spec.key) || th.dataset.colKey || ('col_' + idx);
+            const rawLabel = (spec && spec.label !== undefined ? spec.label : th.textContent.replace(/[↑↓]/g, '').trim()) || (key === 'select' ? 'Выбор' : `Колонка ${idx + 1}`);
+            const lockVisible = key === 'select' || key === 'actions' || th.dataset.lockVisible === '1';
+            const inlineW = parseInt(String(th.style.width || '').replace(/[^0-9]/g, ''), 10);
+            th.dataset.colKey = key;
+            return {
+                idx,
+                key,
+                label: rawLabel,
+                lockVisible,
+                initialWidth: Number.isFinite(inlineW) && inlineW > 30 ? inlineW : null,
+                th,
+            };
+        });
+
+        const storedHidden = readTableJsonStore(colsStorageKey, null);
+        const hiddenSet = new Set(Array.isArray(storedHidden) ? storedHidden : defaultHiddenList);
+        colsMeta.forEach((m) => { if (m.lockVisible) hiddenSet.delete(m.key); });
+
+        let widthsMap = readTableJsonStore(widthsStorageKey, {});
+        if (!widthsMap || typeof widthsMap !== 'object') widthsMap = {};
+
+        table.classList.add('admin-table-enhanced');
+
+        let colgroup = table.querySelector('colgroup');
+        if (!colgroup) {
+            colgroup = document.createElement('colgroup');
+            table.insertBefore(colgroup, table.firstChild);
+        }
+        colgroup.innerHTML = '';
+        const colEls = colsMeta.map((m) => {
+            const col = document.createElement('col');
+            col.dataset.colKey = m.key;
+            const savedW = Number(widthsMap[m.key]);
+            if (Number.isFinite(savedW) && savedW >= 40) {
+                col.style.width = savedW + 'px';
+                m.th.style.width = '';
+            } else if (m.initialWidth) {
+                col.style.width = m.initialWidth + 'px';
+                m.th.style.width = '';
+            }
+            colgroup.appendChild(col);
+            return col;
+        });
+        if (Object.keys(widthsMap).length > 0) {
+            table.style.tableLayout = 'fixed';
+        }
+
+        const applyColumnVisibility = () => {
+            let visibleCount = 0;
+            const bodyRows = Array.from(table.querySelectorAll('tbody tr'));
+            colsMeta.forEach((m) => {
+                const isHidden = hiddenSet.has(m.key) && !m.lockVisible;
+                if (!isHidden) visibleCount++;
+                const colEl = colEls[m.idx];
+                if (colEl) colEl.style.display = isHidden ? 'none' : '';
+                m.th.style.display = isHidden ? 'none' : '';
+                bodyRows.forEach((tr) => {
+                    if (tr.children.length === 1 && tr.children[0].hasAttribute('colspan')) return;
+                    const cell = tr.children[m.idx];
+                    if (cell) cell.style.display = isHidden ? 'none' : '';
+                });
+            });
+            table.querySelectorAll('tbody td[colspan], tbody td.shared-table-empty').forEach((td) => {
+                td.colSpan = Math.max(1, visibleCount);
+            });
+        };
+
+        colsMeta.forEach((m) => {
+            if (m.key === 'select') return;
+            const oldHandle = m.th.querySelector('.col-resize-handle');
+            if (oldHandle) oldHandle.remove();
+            const handle = document.createElement('span');
+            handle.className = 'col-resize-handle';
+            handle.title = 'Потяните, чтобы изменить ширину колонки';
+            handle.addEventListener('click', (e) => { e.preventDefault(); e.stopPropagation(); });
+            handle.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                const startX = e.clientX;
+                const startW = Math.max(48, Math.round(m.th.getBoundingClientRect().width));
+                table.style.tableLayout = 'fixed';
+                colsMeta.forEach((cm) => {
+                    if (!hiddenSet.has(cm.key) && !colEls[cm.idx].style.width) {
+                        const w = Math.max(48, Math.round(cm.th.getBoundingClientRect().width));
+                        colEls[cm.idx].style.width = w + 'px';
+                    }
+                });
+                document.body.classList.add('is-resizing-cols');
+                handle.classList.add('is-active');
+
+                const onMove = (ev) => {
+                    const nextW = Math.max(52, Math.round(startW + (ev.clientX - startX)));
+                    colEls[m.idx].style.width = nextW + 'px';
+                    widthsMap[m.key] = nextW;
+                };
+                const onUp = () => {
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    document.body.classList.remove('is-resizing-cols');
+                    handle.classList.remove('is-active');
+                    writeTableJsonStore(widthsStorageKey, widthsMap);
+                };
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+            });
+            m.th.appendChild(handle);
+        });
+
+        applyColumnVisibility();
+
+        const oldMetaBar = containerEl.querySelector('.table-meta-bar[data-meta-for="' + safeKey + '"]');
+        if (oldMetaBar) oldMetaBar.remove();
+
+        const dataRows = Array.from(table.querySelectorAll('tbody tr')).filter(
+            (tr) => !(tr.children.length === 1 && (tr.children[0].classList.contains('shared-table-empty') || Number(tr.children[0].colSpan) > 1))
+        );
+        const countNum = Number.isFinite(Number(options.totalCount)) ? Number(options.totalCount) : dataRows.length;
+
+        const metaBar = document.createElement('div');
+        metaBar.className = 'table-meta-bar';
+        metaBar.dataset.metaFor = safeKey;
+
+        const leftInfo = document.createElement('span');
+        leftInfo.className = 'table-meta-count';
+        leftInfo.innerHTML = 'Записей: <b>' + countNum + '</b>';
+        metaBar.appendChild(leftInfo);
+
+        const rightTools = document.createElement('div');
+        rightTools.className = 'table-meta-tools';
+
+        const toggleableCols = colsMeta.filter((m) => !m.lockVisible);
+        if (toggleableCols.length > 0) {
+            const visWrap = document.createElement('div');
+            visWrap.className = 'col-vis-wrap';
+
+            const visBtn = document.createElement('button');
+            visBtn.type = 'button';
+            visBtn.className = 'btn btn-secondary col-vis-btn';
+            visBtn.textContent = 'Колонки';
+
+            const popover = document.createElement('div');
+            popover.className = 'col-vis-popover hidden';
+
+            const popHead = document.createElement('div');
+            popHead.className = 'col-vis-head';
+            popHead.innerHTML = '<span>Видимые колонки</span>';
+            const resetBtn = document.createElement('button');
+            resetBtn.type = 'button';
+            resetBtn.className = 'col-vis-reset';
+            resetBtn.textContent = 'Сбросить';
+            resetBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                try { localStorage.removeItem(colsStorageKey); localStorage.removeItem(widthsStorageKey); } catch {}
+                hiddenSet.clear();
+                defaultHiddenList.forEach((k) => hiddenSet.add(k));
+                widthsMap = {};
+                table.style.tableLayout = '';
+                colsMeta.forEach((m) => {
+                    colEls[m.idx].style.width = m.initialWidth ? (m.initialWidth + 'px') : '';
+                });
+                popover.querySelectorAll('input[type="checkbox"]').forEach((chk) => {
+                    chk.checked = !hiddenSet.has(chk.dataset.colKey);
+                });
+                applyColumnVisibility();
+                showToast('Колонки и ширина сброшены по умолчанию', 'ok');
+            });
+            popHead.appendChild(resetBtn);
+            popover.appendChild(popHead);
+
+            toggleableCols.forEach((m) => {
+                const lbl = document.createElement('label');
+                lbl.className = 'col-vis-item';
+                const chk = document.createElement('input');
+                chk.type = 'checkbox';
+                chk.dataset.colKey = m.key;
+                chk.checked = !hiddenSet.has(m.key);
+                chk.addEventListener('change', () => {
+                    const checkedCount = Array.from(popover.querySelectorAll('input[type="checkbox"]')).filter((x) => x.checked).length;
+                    if (!chk.checked && checkedCount === 0) {
+                        chk.checked = true;
+                        showToast('Должна остаться хотя бы одна видимая колонка', 'err');
+                        return;
+                    }
+                    if (chk.checked) hiddenSet.delete(m.key);
+                    else hiddenSet.add(m.key);
+                    writeTableJsonStore(colsStorageKey, Array.from(hiddenSet));
+                    applyColumnVisibility();
+                });
+                const span = document.createElement('span');
+                span.textContent = m.label;
+                lbl.appendChild(chk);
+                lbl.appendChild(span);
+                popover.appendChild(lbl);
+            });
+
+            visBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const wasHidden = popover.classList.contains('hidden');
+                document.querySelectorAll('.col-vis-popover:not(.hidden)').forEach((p) => p.classList.add('hidden'));
+                if (wasHidden) popover.classList.remove('hidden');
+            });
+
+            visWrap.appendChild(visBtn);
+            visWrap.appendChild(popover);
+            rightTools.appendChild(visWrap);
+        }
+
+        metaBar.appendChild(rightTools);
+        table.parentNode.insertBefore(metaBar, table);
+    }
+
     function getSharedChannelTableState(key, defaultSort) {
         if (!sharedChannelTableStates[key]) {
             sharedChannelTableStates[key] = { sortKey: defaultSort || 'name', sortDirection: 'asc', filters: {}, offset: 0, pageSize: 100 };
@@ -1131,14 +1361,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderSharedChannelTable(container, rows, columns, options = {}) {
         const state = getSharedChannelTableState(options.key || 'default', options.defaultSort || 'name');
-        const filteredRows = rows.filter((row) => columns.every((column) => {
-            const filter = String(state.filters[column.key] || '').trim().toLowerCase();
-            if (!filter || column.filterType === 'none') return true;
-            const value = String(row[column.key] ?? '').toLowerCase();
-            return column.filterType === 'select' ? value === filter : value.includes(filter);
-        }));
         const sortColumn = columns.find((column) => column.key === state.sortKey);
-        const sortedRows = [...filteredRows];
+        const sortedRows = [...rows];
         if (sortColumn && sortColumn.sortable !== false) {
             sortedRows.sort((left, right) => {
                 const a = left[state.sortKey];
@@ -1151,26 +1375,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         const header = columns.map((column) => {
-            if (column.sortable === false) return '<th>' + escapeHtml(column.label || '') + '</th>';
+            const keyAttr = ' data-col-key="' + escapeHtml(column.key) + '"';
+            if (column.sortable === false) return '<th' + keyAttr + '>' + escapeHtml(column.label || '') + '</th>';
             const direction = state.sortKey === column.key ? state.sortDirection : '';
             const marker = direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : '';
-            return '<th><button type="button" class="shared-table-sort" data-shared-sort="' +
+            return '<th' + keyAttr + '><button type="button" class="shared-table-sort" data-shared-sort="' +
                 escapeHtml(column.key) + '">' + escapeHtml(column.label || '') + marker + '</button></th>';
-        }).join('');
-        const filters = columns.map((column) => {
-            if (!column.filterType || column.filterType === 'none') return '<th></th>';
-            const value = escapeHtml(state.filters[column.key] || '');
-            if (column.filterType === 'select') {
-                const values = [...new Set(rows.map((row) => String(row[column.key] ?? '')).filter(Boolean))]
-                    .sort((a, b) => a.localeCompare(b, 'ru', { numeric: true, sensitivity: 'base' }));
-                return '<th><select class="shared-table-filter" data-shared-filter="' + escapeHtml(column.key) +
-                    '"><option value="">Все</option>' + values.map((item) =>
-                        '<option value="' + escapeHtml(item) + '"' + (item.toLowerCase() === value.toLowerCase() ? ' selected' : '') +
-                        '>' + escapeHtml(item) + '</option>'
-                    ).join('') + '</select></th>';
-            }
-            return '<th><input class="shared-table-filter" type="search" data-shared-filter="' +
-                escapeHtml(column.key) + '" value="' + value + '" placeholder="Фильтр"></th>';
         }).join('');
 
         const pageSize = Math.max(10, Math.min(500, Number(options.pageSize) || state.pageSize || 100));
@@ -1190,7 +1400,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     (rowAttrs ? ' ' + rowAttrs : '') + '>' + cells + '</tr>';
             }).join('')
             : '<tr><td class="shared-table-empty" colspan="' + columns.length + '">' +
-                escapeHtml(options.emptyText || 'Каналов по выбранному фильтру не найдено') + '</td></tr>';
+                escapeHtml(options.emptyText || 'Каналов не найдено') + '</td></tr>';
         const pagination = sortedRows.length > pageSize
             ? '<div class="shared-table-pagination" style="display:flex;align-items:center;justify-content:flex-end;gap:10px;padding:10px 2px;color:var(--muted);font-size:12px;">' +
                 '<span>Показано ' + (state.offset + 1) + '–' + Math.min(state.offset + pageSize, sortedRows.length) + ' из ' + sortedRows.length + '</span>' +
@@ -1200,11 +1410,16 @@ document.addEventListener('DOMContentLoaded', () => {
               '</div>'
             : '';
 
-        const filterRow = options.showFilters === false ? '' : '<tr class="shared-table-filters">' + filters + '</tr>';
         const extraClass = options.tableClass ? ' ' + escapeHtml(options.tableClass) : '';
         container.innerHTML = (options.beforeHtml || '') +
             '<table class="ch-table shared-channel-table' + extraClass + '"><thead><tr>' + header +
-            '</tr>' + filterRow + '</thead><tbody>' + body + '</tbody></table>' + pagination;
+            '</tr></thead><tbody>' + body + '</tbody></table>' + pagination;
+
+        enhanceAdminTable(container, 'shared_' + (options.key || 'default'), {
+            totalCount: sortedRows.length,
+            columns,
+            defaultHidden: options.defaultHidden,
+        });
 
         container.querySelectorAll('[data-shared-sort]').forEach((button) => {
             button.addEventListener('click', () => {
@@ -1213,17 +1428,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 else { state.sortKey = key; state.sortDirection = 'asc'; }
                 state.offset = 0;
                 if (typeof options.onChange === 'function') options.onChange();
-            });
-        });
-        container.querySelectorAll('[data-shared-filter]').forEach((control) => {
-            const update = () => {
-                state.filters[control.dataset.sharedFilter] = control.value || '';
-                state.offset = 0;
-                if (typeof options.onChange === 'function') options.onChange();
-            };
-            control.addEventListener('change', update);
-            if (control.tagName === 'INPUT') control.addEventListener('keydown', (event) => {
-                if (event.key === 'Enter') update();
             });
         });
         container.querySelectorAll('[data-shared-page]').forEach((button) => {
@@ -1457,51 +1661,58 @@ document.addEventListener('DOMContentLoaded', () => {
         runParsing(ch.name);
     }
 
+    let activeParseRunId = 0;
+    if (parseSearchInput && btnStartParse) {
+        parseSearchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                btnStartParse.click();
+            }
+        });
+    }
     if (btnStartParse) {
         btnStartParse.onclick = () => {
             parseContext = { playlist: null, channelIndex: -1, channelName: '' };
             if (parseTargetInfo) parseTargetInfo.classList.add('hidden');
             const q = parseSearchInput ? parseSearchInput.value.trim() : '';
-            if (q) runParsing(q);
+            if (!q) {
+                showToast('Введите название канала для поиска по индексу', 'err');
+                if (parseSearchInput) parseSearchInput.focus();
+                return;
+            }
+            runParsing(q);
         };
     }
 
+    function renderStreamStatusBadgeHtml(status) {
+        if (status === 'online') return '<span class="badge-status badge-online">online</span>';
+        if (status === 'offline') return '<span class="badge-status badge-offline">offline</span>';
+        if (status === 'checking') return '<span class="badge-status badge-checking">проверка…</span>';
+        return '<span class="badge-status badge-unknown">неизвестно</span>';
+    }
+
     async function runParsing(query) {
+        const myRunId = ++activeParseRunId;
         if (parseProgressBox) parseProgressBox.classList.remove('hidden');
         if (parseProgressStatus) parseProgressStatus.textContent = 'Поиск ссылок по источникам...';
-        if (parseProgressLog) parseProgressLog.textContent = 'Отправка запросов. Пожалуйста, подождите.';
+        if (parseProgressLog) parseProgressLog.textContent = 'Отправка запросов в проиндексированные источники.';
         if (parseResultsContainer) parseResultsContainer.innerHTML = '';
 
         try {
             const res = await apiRequest('/api/stream/parse', 'POST', { query });
-            const items = Array.isArray(res.results) ? res.results : [];
+            if (myRunId !== activeParseRunId) return;
+            const items = Array.isArray(res && res.results) ? res.results : [];
 
             if (items.length === 0) {
                 if (parseProgressStatus) parseProgressStatus.textContent = 'Ссылок не найдено';
-                if (parseProgressLog) parseProgressLog.textContent = 'Попробуйте изменить запрос или добавить источники.';
+                if (parseProgressLog) parseProgressLog.textContent = 'Попробуйте изменить запрос или обновить индекс источников.';
                 if (parseResultsContainer) parseResultsContainer.innerHTML = '<p class="placeholder-text">Потоков не найдено</p>';
+                showToast(`По запросу «${query}» потоков не найдено`, 'info');
                 return;
             }
 
-            if (parseProgressStatus) parseProgressStatus.textContent = `Найдено ссылок: ${items.length}. Проверка доступности...`;
-
+            showToast(`Найдено потоков: ${items.length}`, 'ok');
             const checks = new Map();
-            const uniqueUrls = [...new Set(items.map(item => item.url).filter(Boolean))];
-            let checkIndex = 0;
-            await Promise.all(Array.from({ length: Math.min(6, uniqueUrls.length) }, async () => {
-                while (checkIndex < uniqueUrls.length) {
-                    const index = checkIndex++;
-                    const url = uniqueUrls[index];
-                    try {
-                        const result = await apiRequest('/api/stream/check', 'POST', { url });
-                        checks.set(url, result.status || (result.online === true ? 'online' : result.online === false ? 'offline' : 'unknown'));
-                    } catch {
-                        checks.set(url, 'unknown');
-                    }
-                }
-            }));
-
-            if (parseProgressBox) parseProgressBox.classList.add('hidden');
             const rows = items.map((item, index) => normalizeChannelRow({
                 name: item.title || query,
                 source: item.source,
@@ -1511,69 +1722,117 @@ document.addEventListener('DOMContentLoaded', () => {
                 logo: item.logo || '',
                 tvg_id: item.tvg_id || item.tvgId || '',
                 url: item.url,
-                status: checks.get(item.url) || 'unknown',
+                status: 'unknown',
             }, 'parser', index));
+
             const renderParserTable = () => {
                 renderSharedChannelTable(parseResultsContainer, rows, [
-                { key: 'sourceName', label: 'Источник', filterType: 'text' },
-                { key: 'type', label: 'Тип источника', filterType: 'select' },
-                { key: 'name', label: 'Канал', filterType: 'text' },
-                { key: 'group', label: 'Категория', filterType: 'text' },
-                { key: 'logo', label: 'Логотип URL', filterType: 'text' },
-                { key: 'tvgId', label: 'TVG ID', filterType: 'text' },
-                {
-                    key: 'url', label: 'Ссылка потока', filterType: 'text',
-                    render: (row) => `<code class="shared-table-url">${escapeHtml(row.url)}</code>`,
-                },
-                {
-                    key: 'status', label: 'Статус', filterType: 'select',
-                    render: (row) => row.status === 'online'
-                        ? '<span class="badge-status badge-online">online</span>'
-                        : row.status === 'offline'
-                            ? '<span class="badge-status badge-offline">offline</span>'
-                            : '<span class="badge-status badge-unknown">неизвестно</span>',
-                },
-                {
-                    key: 'actions', label: 'Действие', sortable: false, filterType: 'none',
-                    render: (row) => {
-                        const url = encodeURIComponent(row.url);
-                        const name = encodeURIComponent(query);
-                        return parseContext.channelIndex >= 0
-                            ? `<button class="btn btn-primary" data-apply="${url}">${I.check} Заменить</button>`
-                            : `<button class="btn btn-primary" data-add="${url}" data-name="${name}">${I.plus} Добавить</button>`;
+                    { key: 'sourceName', label: 'Источник' },
+                    { key: 'type', label: 'Тип' },
+                    { key: 'name', label: 'Канал' },
+                    { key: 'group', label: 'Категория' },
+                    { key: 'tvgId', label: 'TVG ID' },
+                    {
+                        key: 'url', label: 'Ссылка потока',
+                        render: (row) => `<code class="shared-table-url" title="${escapeHtml(row.url)}">${escapeHtml(row.url)}</code>`,
                     },
-                },
-            ], {
-                key: 'parser',
-                defaultSort: 'sourceName',
-                rowClass: () => 'parse-row',
-                rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(query)}"`,
-                onChange: renderParserTable,
-                emptyText: 'Потоков по выбранным фильтрам не найдено',
-            } );
+                    {
+                        key: 'status', label: 'Статус',
+                        render: (row) => `<span data-parse-status="${escapeHtml(row.url)}">${renderStreamStatusBadgeHtml(checks.get(row.url) || row.status)}</span>`,
+                    },
+                    {
+                        key: 'actions', label: 'Действия', sortable: false,
+                        render: (row) => {
+                            const url = encodeURIComponent(row.url);
+                            const name = encodeURIComponent(row.name || query);
+                            const logo = encodeURIComponent(row.logo || '');
+                            const group = encodeURIComponent(row.group || '');
+                            const tvgId = encodeURIComponent(row.tvgId || '');
+                            return parseContext.channelIndex >= 0
+                                ? `<button class="btn btn-primary" data-apply="${url}">${I.check} Заменить</button>`
+                                : `<button class="btn btn-primary" data-add="${url}" data-name="${name}" data-logo="${logo}" data-group="${group}" data-tvgid="${tvgId}">${I.plus} Добавить</button>`;
+                        },
+                    },
+                ], {
+                    key: 'parser',
+                    defaultSort: 'sourceName',
+                    defaultHidden: ['tvgId'],
+                    pageSize: 100,
+                    rowClass: () => 'parse-row',
+                    rowAttributes: (row) => `data-purl="${encodeURIComponent(row.url)}" data-pname="${encodeURIComponent(row.name || query)}" data-plogo="${encodeURIComponent(row.logo || '')}" data-ptvg="${encodeURIComponent(row.tvgId || '')}" data-pgroup="${encodeURIComponent(row.group || '')}"`,
+                    onChange: renderParserTable,
+                    onPageChange: renderParserTable,
+                    emptyText: 'Потоков не найдено',
+                });
 
-
-            parseResultsContainer.querySelectorAll('.parse-row').forEach(tr => {
-                tr.onclick = (e) => {
-                    if (e.target.closest('button')) return;
-                    openPlayerByUrl(decodeURIComponent(tr.dataset.purl), decodeURIComponent(tr.dataset.pname));
-                };
-            });
-
-            parseResultsContainer.querySelectorAll('[data-apply]').forEach(b => {
-                b.onclick = () => applyParsedUrl(decodeURIComponent(b.dataset.apply));
-            });
-            parseResultsContainer.querySelectorAll('[data-add]').forEach(b => {
-                b.onclick = () => addParsedToPlaylist(
-                    decodeURIComponent(b.dataset.add),
-                    decodeURIComponent(b.dataset.name)
-                );
-            });
-
+                parseResultsContainer.querySelectorAll('.parse-row').forEach(tr => {
+                    tr.onclick = (e) => {
+                        if (e.target.closest('button')) return;
+                        openPlayerByUrl(
+                            decodeURIComponent(tr.dataset.purl),
+                            decodeURIComponent(tr.dataset.pname),
+                            decodeURIComponent(tr.dataset.plogo || ''),
+                            decodeURIComponent(tr.dataset.ptvg || ''),
+                            { group: decodeURIComponent(tr.dataset.pgroup || '') }
+                        );
+                    };
+                });
+                parseResultsContainer.querySelectorAll('[data-apply]').forEach(b => {
+                    b.onclick = () => applyParsedUrl(decodeURIComponent(b.dataset.apply));
+                });
+                parseResultsContainer.querySelectorAll('[data-add]').forEach(b => {
+                    b.onclick = () => addParsedToPlaylist(
+                        decodeURIComponent(b.dataset.add),
+                        decodeURIComponent(b.dataset.name),
+                        decodeURIComponent(b.dataset.logo || ''),
+                        decodeURIComponent(b.dataset.group || ''),
+                        decodeURIComponent(b.dataset.tvgid || '')
+                    );
+                });
             };
+
             renderParserTable();
+
+            const maxToAutoCheck = Math.min(items.length, 30);
+            const uniqueUrls = [...new Set(items.slice(0, maxToAutoCheck).map(item => item.url).filter(Boolean))];
+            if (parseProgressStatus) parseProgressStatus.textContent = `Найдено ссылок: ${items.length}`;
+            if (parseProgressLog) {
+                parseProgressLog.textContent = uniqueUrls.length > 0
+                    ? `Проверка доступности первых ${uniqueUrls.length} потоков...`
+                    : '';
+            }
+
+            let checkIndex = 0;
+            await Promise.all(Array.from({ length: Math.min(5, uniqueUrls.length) }, async () => {
+                while (checkIndex < uniqueUrls.length && myRunId === activeParseRunId) {
+                    const url = uniqueUrls[checkIndex++];
+                    checks.set(url, 'checking');
+                    rows.forEach((r) => { if (r.url === url) r.status = 'checking'; });
+                    parseResultsContainer.querySelectorAll('[data-parse-status]').forEach((el) => {
+                        if (el.dataset.parseStatus === url) el.innerHTML = renderStreamStatusBadgeHtml('checking');
+                    });
+                    let st = 'unknown';
+                    try {
+                        const result = await apiRequest('/api/stream/check', 'POST', { url });
+                        st = result.status || (result.online === true ? 'online' : result.online === false ? 'offline' : 'unknown');
+                    } catch {
+                        st = 'unknown';
+                    }
+                    if (myRunId !== activeParseRunId) return;
+                    checks.set(url, st);
+                    rows.forEach((r) => { if (r.url === url) r.status = st; });
+                    parseResultsContainer.querySelectorAll('[data-parse-status]').forEach((el) => {
+                        if (el.dataset.parseStatus === url) el.innerHTML = renderStreamStatusBadgeHtml(st);
+                    });
+                }
+            }));
+
+            if (myRunId === activeParseRunId && parseProgressBox) {
+                parseProgressBox.classList.add('hidden');
+            }
         } catch (e) {
-            if (parseProgressStatus) parseProgressStatus.textContent = 'Ошибка при парсинге';
+            if (parseProgressStatus) parseProgressStatus.textContent = 'Ошибка при поиске каналов';
+            showToast('Ошибка при поиске каналов по источникам', 'err');
             console.error(e);
         }
     }
@@ -1600,28 +1859,34 @@ document.addEventListener('DOMContentLoaded', () => {
         if (typeof loadHealthOverview === 'function') loadHealthOverview().catch(() => {});
     }
 
-    async function addParsedToPlaylist(url, name) {
-        const target = parseTargetSelect ? parseTargetSelect.value : '';
-        if (!target) { showToast('Выберите плейлист назначения', 'err'); return; }
-
-        const res = await apiRequest(`/api/channels?playlist=${encodeURIComponent(target)}`);
-        let list = Array.isArray(res.channels) ? res.channels : [];
-
-        const existing = list.find(c => (c.name || '').toLowerCase() === name.toLowerCase());
-        if (existing) {
-            existing.url = url;
-        } else {
-            list.push({ name: name, group: 'Общие', logo: '', url: url });
+    async function addParsedToPlaylist(url, name, logo = '', group = '', tvgId = '') {
+        if (!playlistsList || playlistsList.length === 0) {
+            showToast('Сначала создайте плейлист в разделе «Список плейлистов»', 'err');
+            return;
         }
-
-        const save = await apiRequest('/api/channels/save', 'POST', { playlist: target, channels: list });
+        if (playlistsList.length > 1) {
+            openPlayerByUrl(url, name, logo, tvgId, { group: group || 'Общие' });
+            const sel = document.getElementById('player-add-pl-select');
+            if (sel) sel.focus();
+            showToast('Выберите целевой плейлист в шапке плеера и нажмите «Добавить»', 'info');
+            return;
+        }
+        const target = playlistsList[0];
+        const save = await apiRequest('/api/channel/add-to-playlist', 'POST', {
+            playlist: target,
+            name: name || 'Канал',
+            url,
+            logo,
+            group: group || 'Общие',
+            tvg_id: tvgId || '',
+        });
         if (save && save.ok) {
             if (target === currentPlaylist) await loadChannels();
-            showToast(`Добавлено в «${target}.m3u»`, 'ok');
+            showToast(`Канал «${name}» добавлен в «${target}.m3u»`, 'ok');
             loadCatalog().catch(() => {});
             if (typeof loadHealthOverview === 'function') loadHealthOverview().catch(() => {});
         } else {
-            showToast((save && save.error) || 'Ошибка сохранения', 'err');
+            showToast((save && save.error) || 'Ошибка добавления канала', 'err');
         }
     }
 
@@ -1720,6 +1985,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         html += '</tbody></table>';
         sourcesListContainer.innerHTML = html;
+        enhanceAdminTable(sourcesListContainer, 'sources', { totalCount: sourcesData.length });
 
         sourcesListContainer.querySelectorAll('[data-src-edit]').forEach(b => {
             b.onclick = () => editSource(parseInt(b.dataset.srcEdit));
@@ -1839,6 +2105,7 @@ document.addEventListener('DOMContentLoaded', () => {
             await loadSources();
             return false;
         }
+        showToast('Источники сохранены', 'ok');
         await loadSources();
         loadCatalog().catch(() => {});
         return true;
@@ -1884,6 +2151,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         html += '</tbody></table>';
         el.innerHTML = html;
+        enhanceAdminTable(el, 'epg', { totalCount: epgData.length });
         el.querySelectorAll('[data-epg-edit]').forEach(b => b.onclick = () => editEpg(parseInt(b.dataset.epgEdit)));
         el.querySelectorAll('[data-epg-del]').forEach(b => b.onclick = () => deleteEpg(parseInt(b.dataset.epgDel)));
     }
@@ -1961,6 +2229,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return false;
         }
         renderEpg();
+        showToast('Настройки EPG сохранены', 'ok');
         return true;
     }
 
@@ -2198,6 +2467,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         html += '</tbody></table>';
         el.innerHTML = html;
+        enhanceAdminTable(el, 'users', { totalCount: usersData.length });
         el.querySelectorAll('[data-user-edit]').forEach(b => b.onclick = () => editUser(parseInt(b.dataset.userEdit)));
         el.querySelectorAll('[data-user-del]').forEach(b => b.onclick = () => deleteUser(parseInt(b.dataset.userDel)));
     }
@@ -2242,6 +2512,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         html += '</tbody></table>';
         el.innerHTML = html;
+        enhanceAdminTable(el, 'invites', { totalCount: invitesData.length });
         el.querySelectorAll('[data-inv-edit]').forEach(b => b.onclick = () => editInvite(parseInt(b.dataset.invEdit)));
         el.querySelectorAll('[data-inv-del]').forEach(b => b.onclick = () => deleteInvite(parseInt(b.dataset.invDel)));
     }
@@ -2978,7 +3249,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderCatalogStats() {
         const el = document.getElementById('catalog-stats');
         if (!el) return;
-        const indexedChannels = catalogSources.reduce((total, source) => total + (Number(source.total_found) || 0), 0);
+        const indexedChannels = catalogStats.indexed_channels !== undefined
+            ? Number(catalogStats.indexed_channels) || 0
+            : catalogSources.reduce((total, source) => total + (Number(source.total_found) || 0), 0);
         el.innerHTML = `
             <div class="cat-stat-box">
                 <div class="cat-stat-label">Количество источников</div>
@@ -2986,7 +3259,7 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
             <div class="cat-stat-box">
                 <div class="cat-stat-label">Каналов в индексе</div>
-                <div class="cat-stat-value">${indexedChannels}</div>
+                <div class="cat-stat-value" id="stat-indexed-channels">${indexedChannels}</div>
             </div>
             <div class="cat-stat-box">
                 <div class="cat-stat-label">Каналов в каталоге</div>
@@ -3013,8 +3286,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const tableFilters = Object.assign({}, tableState.filters || {});
         if (catalogSourceFilter) tableFilters.sourceName = catalogSourceFilter;
         if (catalogFilter === 'unknown') tableFilters.status = 'unknown';
+        const batchSize = 5000;
         const params = new URLSearchParams({
-            limit: '200',
+            limit: String(batchSize),
             offset: '0',
             search: catalogSearch,
             filter: catalogFilter === 'unknown' ? '' : catalogFilter,
@@ -3039,7 +3313,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const batch = Array.isArray(response.channels) ? response.channels : [];
             allChannels.push(...batch);
             offset += batch.length;
-        } while ((response.channels || []).length === 200);
+        } while ((response.channels || []).length === batchSize);
 
         catalogData = allChannels;
         renderCatalogChannels();
@@ -3168,152 +3442,248 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function viewCatalogChannel(id) {
+    async function viewCatalogChannel(id, existingModal) {
         const ch = await apiRequest('/api/catalog/channel?id=' + id);
-        if (!ch || ch.error) { showToast('Ошибка загрузки', 'err'); return; }
+        if (!ch || ch.error) { showToast((ch && ch.error) || 'Ошибка загрузки канала', 'err'); return; }
 
-        const streams = ch.streams || [];
+        const modal = existingModal || document.createElement('div');
+        modal.className = 'modal-backdrop';
 
-        // Список потоков
-        let streamsHtml = '';
-        if (streams.length === 0) {
-            streamsHtml = '<p style="text-align:center; color:var(--muted); padding:20px;">Нет потоков</p>';
-        } else {
-            streamsHtml = '<table class="streams-table" style="width:100%; border-collapse:collapse; margin-top:14px; font-size:13px;">'
-                + '<thead><tr>'
-                + '<th style="text-align:left; padding:8px; color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid var(--border);">URL потока</th>'
-                + '<th style="text-align:center; padding:8px; width:90px; color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid var(--border);">Статус</th>'
-                + '<th style="text-align:right; padding:8px; width:100px; color:var(--muted); font-size:10.5px; text-transform:uppercase; letter-spacing:0.05em; border-bottom:1px solid var(--border);">Действие</th>'
-                + '</tr></thead><tbody>';
+        const renderModalContent = (channelObj) => {
+            const streams = Array.isArray(channelObj.streams) ? channelObj.streams : [];
+            const usedInClean = Array.isArray(channelObj.used_in_list)
+                ? channelObj.used_in_list.map(name => String(name || '').replace(/\.m3u$/i, '').trim()).filter(Boolean)
+                : [];
+            const ownPlaylistsHtml = usedInClean.length
+                ? '<div class="streams-modal-playlists">' +
+                    usedInClean.map(name => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join('') +
+                  '</div>'
+                : '<div class="streams-modal-playlists"><span class="cat-badge grey">Нет в собственных плейлистах</span></div>';
 
-            streams.forEach(s => {
-                streamsHtml += '<tr style="border-bottom:1px solid var(--border);">'
-                    + '<td style="padding:10px 8px; font-family:monospace; font-size:11.5px; word-break:break-all; color:var(--text-dim);">' + escapeHtml(s.url) + '</td>'
-                    + '<td style="padding:10px 8px; text-align:center;">' + (s.status === 'online'
+            let streamsHtml = '';
+            if (streams.length === 0) {
+                streamsHtml = '<p class="placeholder-text" style="padding:24px 0;">Потоки отсутствуют</p>';
+            } else {
+                const rowsHtml = streams.map((s) => {
+                    const statusBadge = s.status === 'online'
                         ? '<span class="cat-status-badge online">online</span>'
                         : s.status === 'offline'
                             ? '<span class="cat-status-badge offline">offline</span>'
-                            : '<span class="cat-status-badge partial">неизвестно</span>') + '</td>'
-                    + '<td style="padding:10px 8px; text-align:right; white-space:nowrap;">'
-                    +   '<button data-play-url="' + encodeURIComponent(s.url) + '" title="Смотреть" style="background:transparent; border:none; color:#64b5f6; cursor:pointer; padding:4px; font-size:14px;">▶</button>'
-                    +   '<button data-del-stream="' + s.id + '" title="Удалить" style="background:transparent; border:none; color:#ef4444; cursor:pointer; padding:4px; font-size:13px;">✕</button>'
-                    + '</td>'
-                    + '</tr>';
-            });
-            streamsHtml += '</tbody></table>';
-        }
+                            : '<span class="cat-status-badge partial">неизвестно</span>';
+                    const msVal = Number(s.response_ms) > 0 ? `${Math.round(Number(s.response_ms))} мс` : '—';
+                    const errReason = s.fail_reason || s.last_error || '';
+                    const bestTag = s.is_best ? '<span class="stream-best-tag" title="Приоритетный поток для воспроизведения">Лучший</span>' : '';
+                    return `<tr data-stream-id="${s.id}">
+                        <td class="col-url">
+                            <div class="stream-url-cell">
+                                <div class="stream-url-main">
+                                    ${bestTag}
+                                    <span class="stream-url-text" title="${escapeHtml(s.url)}">${escapeHtml(s.url)}</span>
+                                </div>
+                                ${errReason ? `<div class="stream-url-diag">${escapeHtml(errReason)}</div>` : ''}
+                            </div>
+                        </td>
+                        <td class="col-source"><span class="stream-source-name" title="${escapeHtml(s.source_name || 'Источник')}">${escapeHtml(s.source_name || 'Источник')}</span></td>
+                        <td class="col-ms"><span class="stream-ms-val">${msVal}</span></td>
+                        <td class="col-status">${statusBadge}</td>
+                        <td class="col-actions">
+                            <div class="stream-row-actions">
+                                <button type="button" class="icon-btn" data-check-stream="${encodeURIComponent(s.url)}" title="Проверить доступность">${I.check || '✓'}</button>
+                                <button type="button" class="icon-btn accent" data-play-url="${encodeURIComponent(s.url)}" title="Смотреть">▶</button>
+                                <button type="button" class="icon-btn danger" data-del-stream="${s.id}" title="Удалить поток">${I.trash || '✕'}</button>
+                            </div>
+                        </td>
+                    </tr>`;
+                }).join('');
 
-        // Дропдаун плейлистов (без .m3u)
-        let plOptions = '';
-        if (typeof playlistsList !== 'undefined' && playlistsList.length) {
-            playlistsList.forEach(p => {
-                const cleanP = String(p || '').replace(/\.m3u$/i, '');
-                plOptions += '<option value="' + escapeHtml(p) + '">' + escapeHtml(cleanP) + '</option>';
-            });
-        }
-        const usedInClean = Array.isArray(ch.used_in_list)
-            ? ch.used_in_list.map(name => String(name || '').replace(/\.m3u$/i, '').trim()).filter(Boolean)
-            : [];
-        const ownPlaylistsHtml = usedInClean.length
-            ? '<div class="catalog-playlist-list" style="margin-top:8px;">' +
-                usedInClean.map(name => `<span class="cat-badge violet">${escapeHtml(name)}</span>`).join(' ') +
-              '</div>'
-            : '<div style="margin-top:8px;"><span class="cat-badge grey">Нет в собственных плейлистах</span></div>';
+                streamsHtml = `
+                    <div class="streams-modal-scroll">
+                        <table class="streams-table">
+                            <thead>
+                                <tr>
+                                    <th class="col-url">URL потока</th>
+                                    <th class="col-source">Источник</th>
+                                    <th class="col-ms">Задержка</th>
+                                    <th class="col-status">Статус</th>
+                                    <th class="col-actions">Действия</th>
+                                </tr>
+                            </thead>
+                            <tbody>${rowsHtml}</tbody>
+                        </table>
+                    </div>`;
+            }
 
-        const modal = document.createElement('div');
-        modal.style.cssText = 'position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;';
-
-        modal.innerHTML = `
-            <div style="position:absolute;inset:0;background:rgba(0,0,0,0.75);backdrop-filter:blur(6px);"></div>
-            <div style="position:relative;background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:24px;max-width:820px;width:100%;box-shadow:0 24px 80px -20px rgba(0,0,0,0.85);max-height:85vh;overflow-y:auto;">
-
-                <button class="btn-close-cat btn-icon" style="position:absolute;top:14px;right:14px;background:transparent;border:none;color:var(--muted);cursor:pointer;padding:6px;">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:18px;height:18px;"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                </button>
-
-                <div style="display:flex; gap:18px; align-items:center; margin-bottom:18px;">
-                    <div style="width:96px;height:96px;flex-shrink:0;background:#05080f;border:1px solid var(--border);border-radius:14px;display:flex;align-items:center;justify-content:center;overflow:hidden;">
-                        ${ch.logo ? `<img src="${escapeHtml(ch.logo)}" style="max-width:86%;max-height:86%;object-fit:contain;" onerror="this.style.display='none'">` : ''}
-                    </div>
-                    <div style="flex:1; min-width:0;">
-                        <div style="font-size:11px; font-weight:800; letter-spacing:0.08em; color:var(--primary-hi); margin-bottom:6px;">${escapeHtml(ch.code)}</div>
-                        <div style="font-size:24px; font-weight:800; color:#fff; line-height:1.2; word-break:break-word;">${escapeHtml(ch.name)}</div>
-                        <div style="font-size:12px; color:var(--muted); margin-top:6px;">${streams.length} ${streams.length === 1 ? 'поток' : 'потоков'}</div>
-                        ${ownPlaylistsHtml}
-                    </div>
-                </div>
-
-                ${streamsHtml}
-
-                ${plOptions ? `
-                <div style="margin-top:20px; padding-top:18px; border-top:1px solid var(--border);">
-                    <div style="font-size:11px; font-weight:800; letter-spacing:0.08em; color:var(--muted); text-transform:uppercase; margin-bottom:10px;">Добавить в плейлист</div>
-                    <div style="display:flex; gap:10px; align-items:stretch;">
-                        <select id="cat-add-pl" style="flex:1; padding:11px 14px; background:var(--bg-1); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none; font-size:14px;">
-                            ${plOptions}
-                        </select>
-                        <button id="cat-add-btn" class="btn btn-primary" style="padding:11px 24px;">Добавить</button>
-                    </div>
-                </div>` : ''}
-            </div>
-        `;
-        document.body.appendChild(modal);
-
-        const closeBtn = modal.querySelector('.btn-close-cat');
-        if (closeBtn) closeBtn.onclick = () => modal.remove();
-        modal.querySelector('div[style*="position:absolute;inset:0"]').onclick = () => modal.remove();
-
-        // Воспроизвести
-        modal.querySelectorAll('[data-play-url]').forEach(b => {
-            b.onclick = () => {
-                const url = decodeURIComponent(b.dataset.playUrl);
-                modal.remove();
-                openPlayerByUrl(url, ch.name, ch.logo || '', ch.tvg_id || '');
-            };
-        });
-
-        // Удалить поток
-        modal.querySelectorAll('[data-del-stream]').forEach(b => {
-            b.onclick = async () => {
-                if (!(await uiConfirm('Удалить поток?'))) return;
-                const res = await apiRequest('/api/catalog/stream/delete', 'POST', { id: +b.dataset.delStream }, { skipCloudSync: true });
-                if (!res || !res.ok) {
-                    showToast((res && res.error) || 'Не удалось удалить поток', 'err');
-                    return;
-                }
-                if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision))) return;
-                showToast('Поток удалён', 'ok');
-                modal.remove();
-                if ((res.removedChannels || 0) === 0) {
-                    viewCatalogChannel(id);
-                }
-                loadCatalog();
-            };
-        });
-
-        // Добавить в плейлист
-        const addBtn = modal.querySelector('#cat-add-btn');
-        if (addBtn) {
-            addBtn.onclick = async () => {
-                const target = modal.querySelector('#cat-add-pl').value;
-                if (!target) { showToast('Выберите плейлист', 'err'); return; }
-                addBtn.disabled = true;
-                addBtn.textContent = '...';
-                const res = await apiRequest('/api/catalog/to-playlist', 'POST', {
-                    channel_id: id,
-                    playlist: target,
+            let plOptions = '';
+            if (typeof playlistsList !== 'undefined' && playlistsList.length) {
+                playlistsList.forEach(p => {
+                    const cleanP = String(p || '').replace(/\.m3u$/i, '');
+                    plOptions += '<option value="' + escapeHtml(p) + '">' + escapeHtml(cleanP) + '</option>';
                 });
-                addBtn.disabled = false;
-                addBtn.textContent = 'Добавить';
-                if (res.ok) {
-                    showToast(`«${res.name}» добавлен в ${target}.m3u`, 'ok');
-                    loadCatalog().catch(() => {});
-                    if (currentPlaylist === target) loadChannels().catch(() => {});
-                } else {
-                    showToast('Ошибка: ' + (res.error || 'неизвестная'), 'err');
-                }
+            }
+
+            modal.innerHTML = `
+                <div class="modal-box catalog-streams-modal">
+                    <div class="streams-modal-head">
+                        <div class="streams-modal-logo">
+                            ${channelObj.logo ? `<img src="${escapeHtml(channelObj.logo)}" alt="" onerror="this.style.display='none'">` : (I.tv || '')}
+                        </div>
+                        <div class="streams-modal-meta">
+                            <div class="streams-modal-code">${escapeHtml(channelObj.code || '')}</div>
+                            <div class="streams-modal-title">${escapeHtml(channelObj.name)}</div>
+                            <div class="streams-modal-sub">${streams.length} ${streams.length === 1 ? 'поток' : (streams.length >= 2 && streams.length <= 4 ? 'потока' : 'потоков')}</div>
+                            ${ownPlaylistsHtml}
+                        </div>
+                        <div class="streams-modal-actions">
+                            <button type="button" id="btn-modal-check-all-streams" class="btn btn-secondary" ${streams.length === 0 ? 'disabled' : ''}>Проверить все потоки</button>
+                            <button type="button" class="btn-close-cat icon-btn" title="Закрыть">✕</button>
+                        </div>
+                    </div>
+
+                    ${streamsHtml}
+
+                    ${plOptions ? `
+                    <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--border);">
+                        <div style="font-size:11px; font-weight:800; letter-spacing:0.06em; color:var(--muted); text-transform:uppercase; margin-bottom:8px;">Добавить в собственный плейлист</div>
+                        <div style="display:flex; gap:10px; align-items:stretch;">
+                            <select id="cat-add-pl" style="flex:1; padding:10px 12px; background:var(--bg-1); border:1px solid var(--border); color:#fff; border-radius:8px; outline:none; font-size:13.5px;">
+                                ${plOptions}
+                            </select>
+                            <button type="button" id="cat-add-btn" class="btn btn-primary" style="padding:10px 22px;">Добавить</button>
+                        </div>
+                    </div>` : ''}
+                </div>
+            `;
+
+            const closeModal = () => {
+                document.removeEventListener('keydown', onEsc);
+                modal.remove();
             };
-        }
+            const onEsc = (ev) => {
+                if (ev.key === 'Escape' && modal.isConnected) closeModal();
+            };
+            document.removeEventListener('keydown', onEsc);
+            document.addEventListener('keydown', onEsc);
+
+            const closeBtn = modal.querySelector('.btn-close-cat');
+            if (closeBtn) closeBtn.onclick = closeModal;
+            modal.onclick = (ev) => {
+                if (ev.target === modal) closeModal();
+            };
+
+            const btnCheckAll = modal.querySelector('#btn-modal-check-all-streams');
+            if (btnCheckAll) {
+                btnCheckAll.onclick = async () => {
+                    btnCheckAll.disabled = true;
+                    const origText = btnCheckAll.textContent;
+                    btnCheckAll.textContent = 'Проверка...';
+                    try {
+                        const res = await apiRequest('/api/catalog/channel/check', 'POST', { channel_id: id }, { skipCloudSync: true });
+                        if (!res || !res.ok) {
+                            showToast((res && res.error) || 'Ошибка проверки потоков', 'err');
+                            return;
+                        }
+                        if (fbAdminConnected && res.revision) {
+                            void syncCatalogCloudSlice(res.revision);
+                        }
+                        showToast(`Проверка завершена: Online ${res.online || 0}, Offline ${res.offline || 0}`, res.online > 0 ? 'ok' : 'err');
+                        if (res.channel) renderModalContent(res.channel);
+                        void loadCatalogStats().catch(() => {});
+                        void loadCatalogChannels().catch(() => {});
+                    } finally {
+                        if (btnCheckAll.isConnected) {
+                            btnCheckAll.disabled = false;
+                            btnCheckAll.textContent = origText;
+                        }
+                    }
+                };
+            }
+
+            modal.querySelectorAll('[data-check-stream]').forEach(btn => {
+                btn.onclick = async () => {
+                    const streamUrl = decodeURIComponent(btn.dataset.checkStream);
+                    btn.disabled = true;
+                    const oldHtml = btn.innerHTML;
+                    btn.textContent = '...';
+                    try {
+                        const res = await apiRequest('/api/catalog/stream/check', 'POST', { url: streamUrl, channel_id: id }, { skipCloudSync: true });
+                        if (!res || !res.ok) {
+                            showToast((res && res.error) || 'Не удалось проверить поток', 'err');
+                            return;
+                        }
+                        const st = res.result && res.result.status;
+                        const ms = res.result && res.result.ms ? ` (${res.result.ms} мс)` : '';
+                        showToast(
+                            st === 'online'
+                                ? `Поток доступен${ms}`
+                                : `Поток недоступен${(res.result && res.result.reason) ? ': ' + res.result.reason : ''}`,
+                            st === 'online' ? 'ok' : 'err'
+                        );
+                        if (res.channel) renderModalContent(res.channel);
+                        void loadCatalogStats().catch(() => {});
+                        void loadCatalogChannels().catch(() => {});
+                    } finally {
+                        if (btn.isConnected) {
+                            btn.disabled = false;
+                            btn.innerHTML = oldHtml;
+                        }
+                    }
+                };
+            });
+
+            modal.querySelectorAll('[data-play-url]').forEach(b => {
+                b.onclick = () => {
+                    const url = decodeURIComponent(b.dataset.playUrl);
+                    closeModal();
+                    openPlayerByUrl(url, channelObj.name, channelObj.logo || '', channelObj.tvg_id || '');
+                };
+            });
+
+            modal.querySelectorAll('[data-del-stream]').forEach(b => {
+                b.onclick = async () => {
+                    if (!(await uiConfirm('Удалить поток?'))) return;
+                    const res = await apiRequest('/api/catalog/stream/delete', 'POST', { id: +b.dataset.delStream }, { skipCloudSync: true });
+                    if (!res || !res.ok) {
+                        showToast((res && res.error) || 'Не удалось удалить поток', 'err');
+                        return;
+                    }
+                    if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision))) return;
+                    showToast('Поток удалён', 'ok');
+                    if ((res.removedChannels || 0) === 0) {
+                        await viewCatalogChannel(id, modal);
+                    } else {
+                        closeModal();
+                    }
+                    loadCatalog();
+                };
+            });
+
+            const addBtn = modal.querySelector('#cat-add-btn');
+            if (addBtn) {
+                addBtn.onclick = async () => {
+                    const target = modal.querySelector('#cat-add-pl').value;
+                    if (!target) { showToast('Выберите плейлист', 'err'); return; }
+                    addBtn.disabled = true;
+                    addBtn.textContent = '...';
+                    const res = await apiRequest('/api/catalog/to-playlist', 'POST', {
+                        channel_id: id,
+                        playlist: target,
+                    });
+                    addBtn.disabled = false;
+                    addBtn.textContent = 'Добавить';
+                    if (res.ok) {
+                        showToast(`«${res.name}» добавлен в ${target}.m3u`, 'ok');
+                        await viewCatalogChannel(id, modal);
+                        loadCatalog().catch(() => {});
+                        if (currentPlaylist === target) loadChannels().catch(() => {});
+                    } else {
+                        showToast('Ошибка: ' + (res.error || 'неизвестная'), 'err');
+                    }
+                };
+            }
+        };
+
+        renderModalContent(ch);
+        if (!modal.isConnected) document.body.appendChild(modal);
     }
 
     // Источники загружаются в loadCatalogSources выше и отображаются в общей строке фильтров.
@@ -3347,20 +3717,68 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnCatAgg) {
         btnCatAgg.onclick = async () => {
             const txt = document.getElementById('btn-catalog-aggregate-text');
+            const progressBox = document.getElementById('catalog-aggregate-progress');
+            const progressTitle = document.getElementById('catalog-aggregate-progress-title');
+            const progressPct = document.getElementById('catalog-aggregate-progress-pct');
+            const progressBar = document.getElementById('catalog-aggregate-progress-bar');
+            const progressLog = document.getElementById('catalog-aggregate-progress-log');
+
+            const applyProgress = (p) => {
+                if (!progressBox || !p) return;
+                const total = Math.max(0, Number(p.totalSources) || 0);
+                const done = Math.max(0, Number(p.completedSources) || 0);
+                const pct = total > 0 ? Math.min(100, Math.round((done / total) * 100)) : (p.running ? 15 : 100);
+                if (progressTitle) {
+                    progressTitle.textContent = p.currentSource
+                        ? `Сборка: ${p.currentSource} (${done}/${total})`
+                        : (p.phase === 'playlists' ? 'Синхронизация собственных плейлистов...' : 'Сборка каналов из источников...');
+                }
+                if (progressPct) progressPct.textContent = pct + '%';
+                if (progressBar) progressBar.style.width = pct + '%';
+                if (progressLog) {
+                    progressLog.textContent = p.foundChannels > 0
+                        ? `Обработано источников: ${done}/${total} · Найдено каналов: ${p.foundChannels}`
+                        : (p.message || 'Подключение к источникам...');
+                }
+            };
+
             btnCatAgg.disabled = true;
             if (txt) txt.textContent = 'Собираю...';
+            if (progressBox) progressBox.classList.remove('hidden');
+            if (progressPct) progressPct.textContent = '0%';
+            if (progressBar) progressBar.style.width = '5%';
+            if (progressTitle) progressTitle.textContent = 'Сборка каналов из источников...';
+            if (progressLog) progressLog.textContent = 'Подготовка источников...';
+            showToast('Запущена сборка каналов из источников...', 'ok');
+
+            let pollTimer = setInterval(async () => {
+                try {
+                    const st = await apiRequest('/api/catalog/aggregate/status');
+                    if (st && st.progress) applyProgress(st.progress);
+                } catch {}
+            }, 650);
+
             try {
                 const res = await apiRequest('/api/catalog/aggregate', 'POST', {}, { skipCloudSync: true });
                 if (!res || !res.ok) {
                     showToast('Ошибка: ' + ((res && (res.error || res.output)) || 'неизвестная'), 'err');
                     return;
                 }
+                if (progressBar) progressBar.style.width = '100%';
+                if (progressPct) progressPct.textContent = '100%';
                 if (fbAdminConnected && !(await syncCatalogCloudSlice(res.revision, { includeSources: true }))) {
                     return;
                 }
                 await loadCatalog();
-                showToast('Сбор каналов завершён', 'ok');
+                const foundInfo = res.totalFound ? ` (найдено ${res.totalFound} каналов)` : '';
+                showToast(`Сбор каналов завершён${foundInfo}`, 'ok');
             } finally {
+                clearInterval(pollTimer);
+                if (progressBox) {
+                    setTimeout(() => {
+                        if (progressBox.isConnected) progressBox.classList.add('hidden');
+                    }, 900);
+                }
                 if (txt) txt.textContent = 'Собрать из источников';
                 btnCatAgg.disabled = false;
             }
@@ -3455,6 +3873,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 closeForm();
                 loadCatalogSources();
                 loadCatalogStats();
+                showToast('Источник каталога сохранён', 'ok');
             } else {
                 showToast(res.error || 'Ошибка', 'err');
             }
@@ -3466,7 +3885,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const t = idx + dir;
         if (t < 0 || t >= channelsData.length) return;
         [channelsData[idx], channelsData[t]] = [channelsData[t], channelsData[idx]];
-        await saveAllChannels();
+        await saveAllChannels('Порядок каналов обновлён');
     }
 
     function editChannel(idx) {
@@ -3496,10 +3915,10 @@ document.addEventListener('DOMContentLoaded', () => {
     async function deleteChannel(idx) {
         if (!(await uiConfirm('Удалить канал?'))) return;
         channelsData.splice(idx, 1);
-        await saveAllChannels();
+        await saveAllChannels('Канал удалён из плейлиста');
     }
 
-    async function saveAllChannels() {
+    async function saveAllChannels(toastMessage) {
         const res = await apiRequest('/api/channels/save', 'POST', { playlist: currentPlaylist, channels: channelsData });
         if (!res || !res.ok) {
             showToast((res && res.error) || 'Ошибка сохранения плейлиста', 'err');
@@ -3509,6 +3928,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderChannels();
         loadCatalog().catch(() => {});
         if (typeof loadHealthOverview === 'function') loadHealthOverview().catch(() => {});
+        if (toastMessage) showToast(toastMessage, 'ok');
         return true;
     }
 
@@ -3780,6 +4200,158 @@ document.addEventListener('DOMContentLoaded', () => {
     let activeTrackingBuildId = null;
     const notifiedGithubBuilds = new Set();
 
+    const apkMetaState = {
+        bumpType: 'patch',
+        manualOverride: false,
+        suggestions: null,
+        policy: null,
+        latest: null,
+        releases: [],
+    };
+
+    function syncApkVersionSuggestions(forceWrite = false) {
+        const verNameInput = document.getElementById('apk-ver-name');
+        const verCodeInput = document.getElementById('apk-ver-code');
+        const ghVerNameInput = document.getElementById('gh-ver-name');
+        const ghVerCodeInput = document.getElementById('gh-ver-code');
+        const nextBadge = document.getElementById('apk-next-badge');
+        const manualChk = document.getElementById('apk-manual-override');
+
+        if (manualChk) manualChk.checked = apkMetaState.manualOverride;
+
+        const suggestions = apkMetaState.suggestions || {};
+        ['patch', 'minor', 'major'].forEach((t) => {
+            const s = suggestions[t];
+            const el = document.getElementById('apk-sug-' + t);
+            if (el && s) {
+                el.textContent = `v${s.versionName} (c${s.versionCode})`;
+            }
+            const btn = document.querySelector(`[data-apk-bump="${t}"]`);
+            if (btn) btn.classList.toggle('active', apkMetaState.bumpType === t);
+        });
+
+        const chosen = suggestions[apkMetaState.bumpType] || suggestions.patch || null;
+        if (chosen && nextBadge) {
+            nextBadge.textContent = `Следующий: v${chosen.versionName} (code ${chosen.versionCode})`;
+        }
+
+        [verNameInput, verCodeInput, ghVerNameInput, ghVerCodeInput].forEach((inp) => {
+            if (inp) inp.readOnly = !apkMetaState.manualOverride;
+        });
+
+        if (chosen && (!apkMetaState.manualOverride || forceWrite)) {
+            if (verNameInput) verNameInput.value = chosen.versionName;
+            if (verCodeInput) verCodeInput.value = String(chosen.versionCode);
+            if (ghVerNameInput) ghVerNameInput.value = chosen.versionName;
+            if (ghVerCodeInput) ghVerCodeInput.value = String(chosen.versionCode);
+        }
+    }
+
+    function renderApkPolicy() {
+        const minSel = document.getElementById('apk-policy-min-code');
+        const modeSel = document.getElementById('apk-policy-mode');
+        const msgInput = document.getElementById('apk-policy-message');
+        const summaryEl = document.getElementById('apk-policy-summary');
+        const pol = apkMetaState.policy || {};
+        const releases = Array.isArray(apkMetaState.releases) ? apkMetaState.releases : [];
+
+        if (minSel) {
+            const sorted = [...releases].sort((a, b) => (Number(b.versionCode) || 0) - (Number(a.versionCode) || 0));
+            minSel.innerHTML = '<option value="0">Не блокировать по минимальной версии (все разрешены)</option>' +
+                sorted.map((r) => `<option value="${Number(r.versionCode) || 0}">v${escapeHtml(r.versionName)} (code ${r.versionCode}) и выше</option>`).join('');
+            minSel.value = String(Number(pol.minSupportedVersionCode) || 0);
+        }
+        if (modeSel) modeSel.value = pol.blockMode === 'soft' ? 'soft' : 'hard';
+        if (msgInput) msgInput.value = pol.blockMessage || '';
+        if (summaryEl) {
+            const minCode = Number(pol.minSupportedVersionCode) || 0;
+            const blockedCount = Array.isArray(pol.blockedVersionCodes) ? pol.blockedVersionCodes.length : 0;
+            if (minCode > 0 || blockedCount > 0) {
+                summaryEl.textContent = `Активна защита: мин. code ${minCode || '—'}, точечно заблокировано: ${blockedCount}`;
+            } else {
+                summaryEl.textContent = 'Блокируется сразу после нажатия — даже на уже установленных ТВ.';
+            }
+        }
+    }
+
+    (function initApkControlsOnce() {
+        const bumpGroup = document.getElementById('apk-bump-group');
+        if (bumpGroup && !bumpGroup.__bound) {
+            bumpGroup.__bound = true;
+            bumpGroup.querySelectorAll('[data-apk-bump]').forEach((btn) => {
+                btn.onclick = () => {
+                    const t = btn.dataset.apkBump;
+                    if (!['patch', 'minor', 'major'].includes(t)) return;
+                    apkMetaState.bumpType = t;
+                    syncApkVersionSuggestions(true);
+                };
+            });
+        }
+
+        const manualChk = document.getElementById('apk-manual-override');
+        if (manualChk && !manualChk.__bound) {
+            manualChk.__bound = true;
+            manualChk.onchange = () => {
+                apkMetaState.manualOverride = Boolean(manualChk.checked);
+                syncApkVersionSuggestions(false);
+            };
+        }
+
+        const policyForm = document.getElementById('apk-policy-form');
+        if (policyForm && !policyForm.__bound) {
+            policyForm.__bound = true;
+            policyForm.onsubmit = async (e) => {
+                e.preventDefault();
+                const btn = document.getElementById('btn-apk-policy-save');
+                const orig = btn ? btn.textContent : '';
+                if (btn) { btn.disabled = true; btn.textContent = 'Сохранение...'; }
+                try {
+                    const payload = {
+                        minSupportedVersionCode: Number(document.getElementById('apk-policy-min-code')?.value) || 0,
+                        blockedVersionCodes: (apkMetaState.policy && apkMetaState.policy.blockedVersionCodes) || [],
+                        blockMode: document.getElementById('apk-policy-mode')?.value === 'soft' ? 'soft' : 'hard',
+                        blockMessage: (document.getElementById('apk-policy-message')?.value || '').trim(),
+                    };
+                    const res = await apiRequest('/api/admin/apk/policy', 'POST', payload);
+                    if (res && res.ok) {
+                        apkMetaState.policy = res.policy || payload;
+                        showToast('Политика блокировки APK сохранена', 'ok');
+                        await loadApkReleases({ skipGithub: true });
+                    } else {
+                        showToast((res && res.error) || 'Не удалось сохранить политику APK', 'err');
+                    }
+                } finally {
+                    if (btn) { btn.disabled = false; btn.textContent = orig; }
+                }
+            };
+        }
+
+        const blockOlderBtn = document.getElementById('btn-apk-block-older');
+        if (blockOlderBtn && !blockOlderBtn.__bound) {
+            blockOlderBtn.__bound = true;
+            blockOlderBtn.onclick = async () => {
+                if (!(await uiConfirm('Заблокировать все старые версии APK ниже актуальной?'))) return;
+                blockOlderBtn.disabled = true;
+                try {
+                    const res = await apiRequest('/api/admin/apk/policy', 'POST', {
+                        blockOlderThanLatest: true,
+                        blockMode: document.getElementById('apk-policy-mode')?.value === 'soft' ? 'soft' : 'hard',
+                        blockMessage: (document.getElementById('apk-policy-message')?.value || '').trim(),
+                    });
+                    if (res && res.ok) {
+                        apkMetaState.policy = res.policy || null;
+                        showToast('Все версии ниже актуальной заблокированы', 'ok');
+                        await loadApkReleases({ skipGithub: true });
+                    } else {
+                        showToast((res && res.error) || 'Не удалось обновить политику', 'err');
+                    }
+                } finally {
+                    blockOlderBtn.disabled = false;
+                }
+            };
+        }
+    })();
+
     function stopGithubPoll() {
         ghPollGeneration += 1;
         if (ghPollTimer) {
@@ -3802,10 +4374,6 @@ document.addEventListener('DOMContentLoaded', () => {
         const listBox = document.getElementById('apk-releases-container');
         const latestBtn = document.getElementById('apk-latest-download');
         const snippetEl = document.getElementById('apk-ci-snippet');
-        const verNameInput = document.getElementById('apk-ver-name');
-        const verCodeInput = document.getElementById('apk-ver-code');
-        const ghVerNameInput = document.getElementById('gh-ver-name');
-        const ghVerCodeInput = document.getElementById('gh-ver-code');
         const ghServerUrlInput = document.getElementById('gh-server-url');
 
         const res = await apiRequest('/api/admin/apk/releases');
@@ -3814,10 +4382,18 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        if (verNameInput && !verNameInput.value) verNameInput.value = res.suggestedVersionName || '1.0.1';
-        if (verCodeInput && !verCodeInput.value) verCodeInput.value = String(res.suggestedVersionCode || 1);
-        if (ghVerNameInput && !ghVerNameInput.value) ghVerNameInput.value = res.suggestedVersionName || '1.0.1';
-        if (ghVerCodeInput && !ghVerCodeInput.value) ghVerCodeInput.value = String(res.suggestedVersionCode || 1);
+        const releases = Array.isArray(res.releases) ? res.releases : [];
+        apkMetaState.releases = releases;
+        apkMetaState.latest = res.latest || null;
+        apkMetaState.policy = res.policy || {};
+        apkMetaState.suggestions = res.suggestions || {
+            patch: { versionName: res.suggestedVersionName || '1.0.1', versionCode: res.suggestedVersionCode || 1 },
+            minor: { versionName: res.suggestedVersionName || '1.1.0', versionCode: res.suggestedVersionCode || 1 },
+            major: { versionName: res.suggestedVersionName || '2.0.0', versionCode: res.suggestedVersionCode || 1 },
+        };
+
+        syncApkVersionSuggestions(false);
+        renderApkPolicy();
         if (ghServerUrlInput && !ghServerUrlInput.value) ghServerUrlInput.value = res.serverOrigin || window.location.origin;
 
         const latest = res.latest;
@@ -3856,50 +4432,95 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
   --data-binary "@app-release.apk"`;
         }
 
-        const releases = Array.isArray(res.releases) ? res.releases : [];
         if (listBox) {
             if (releases.length === 0) {
                 listBox.innerHTML = '<p class="placeholder-text" style="margin:20px 0;">Опубликованных релизов пока нет</p>';
             } else {
-                let html = `<table class="ch-table"><thead><tr>
+                const blockedCodes = new Set((apkMetaState.policy && apkMetaState.policy.blockedVersionCodes) || []);
+                const minCode = Number(apkMetaState.policy && apkMetaState.policy.minSupportedVersionCode) || 0;
+                let html = `<div class="admin-table-scroll"><table class="ch-table"><thead><tr>
                     <th>Версия</th>
                     <th style="width:90px;">Code</th>
-                    <th style="width:110px;">Размер</th>
+                    <th style="width:120px;">Статус</th>
+                    <th style="width:105px;">Размер</th>
                     <th>Изменения</th>
-                    <th style="width:120px; text-align:right;">Действия</th>
+                    <th style="width:240px; text-align:right;" data-lock-visible="1">Действия</th>
                 </tr></thead><tbody>`;
                 releases.forEach((rel, i) => {
                     const sz = rel.sizeBytes ?? rel.size ?? 0;
+                    const isLatest = latest && latest.id === rel.id;
+                    const isExplicitBlocked = Boolean(rel.blocked) || blockedCodes.has(Number(rel.versionCode));
+                    const isMinBlocked = !isLatest && minCode > 0 && Number(rel.versionCode) < minCode;
+                    const isBlocked = isExplicitBlocked || isMinBlocked;
+                    const statusBadge = isBlocked
+                        ? '<span class="badge-status badge-offline">Заблокирован</span>'
+                        : isLatest
+                            ? '<span class="badge-status badge-online">Актуальный</span>'
+                            : '<span class="badge-status">Доступен</span>';
                     html += `<tr>
                         <td>
                             <b style="color:#fff;">v${escapeHtml(rel.versionName)}</b>
-                            ${i === 0 ? '<span class="badge-status badge-online" style="margin-left:6px;">latest</span>' : ''}
+                            ${isLatest || i === 0 && !latest ? '<span class="badge-status badge-online" style="margin-left:6px;">latest</span>' : ''}
                         </td>
                         <td><code>${rel.versionCode}</code></td>
+                        <td>${statusBadge}</td>
                         <td>${fmtBytes(sz)}</td>
                         <td style="font-size:12px; color:var(--text-dim);">${escapeHtml(rel.changelog || '—')}</td>
                         <td style="text-align:right;">
                             <div class="actions-cell">
+                                ${!isLatest ? `<button type="button" class="btn btn-secondary" style="padding:4px 8px; font-size:11px;" data-apk-restore="${escapeHtml(rel.id)}" title="Сделать активной OTA-версией">Активная</button>` : ''}
+                                <button type="button" class="btn btn-secondary" style="padding:4px 8px; font-size:11px;" data-apk-block="${escapeHtml(rel.id)}" data-blocked="${isExplicitBlocked ? '1' : '0'}">${isExplicitBlocked ? 'Разблок.' : 'Блок.'}</button>
                                 <a class="icon-btn accent" href="/apk/${encodeURIComponent(rel.filename)}" title="Скачать APK">${I.plus}</a>
                                 <button type="button" class="icon-btn danger" data-apk-del="${escapeHtml(rel.id)}" title="Удалить">${I.trash}</button>
                             </div>
                         </td>
                     </tr>`;
                 });
-                html += '</tbody></table>';
+                html += '</tbody></table></div>';
                 listBox.innerHTML = html;
+
+                listBox.querySelectorAll('[data-apk-restore]').forEach(btn => {
+                    btn.onclick = async () => {
+                        const rRes = await apiRequest('/api/admin/apk/restore', 'POST', { id: btn.dataset.apkRestore });
+                        if (rRes && rRes.ok) {
+                            showToast('Версия сделана активной для OTA-обновления', 'ok');
+                            await loadApkReleases({ skipGithub: true });
+                        } else {
+                            showToast((rRes && rRes.error) || 'Ошибка восстановления релиза', 'err');
+                        }
+                    };
+                });
+
+                listBox.querySelectorAll('[data-apk-block]').forEach(btn => {
+                    btn.onclick = async () => {
+                        const nextBlocked = btn.dataset.blocked !== '1';
+                        const bRes = await apiRequest('/api/admin/apk/toggle-block', 'POST', {
+                            id: btn.dataset.apkBlock,
+                            blocked: nextBlocked,
+                        });
+                        if (bRes && bRes.ok) {
+                            showToast(nextBlocked ? 'Версия APK заблокирована на ТВ' : 'Блокировка версии снята', 'ok');
+                            await loadApkReleases({ skipGithub: true });
+                        } else {
+                            showToast((bRes && bRes.error) || 'Ошибка изменения блокировки', 'err');
+                        }
+                    };
+                });
+
                 listBox.querySelectorAll('[data-apk-del]').forEach(btn => {
                     btn.onclick = async () => {
                         if (!(await uiConfirm('Удалить этот релиз APK?'))) return;
                         const dRes = await apiRequest('/api/admin/apk/delete', 'POST', { id: btn.dataset.apkDel });
-                        if (dRes.ok) {
+                        if (dRes && dRes.ok) {
                             showToast('Релиз удалён', 'ok');
-                            loadApkReleases({ skipGithub: true });
+                            await loadApkReleases({ skipGithub: true });
                         } else {
-                            showToast(dRes.error || 'Ошибка удаления', 'err');
+                            showToast((dRes && dRes.error) || 'Ошибка удаления', 'err');
                         }
                     };
                 });
+
+                enhanceAdminTable(listBox, 'apk_releases', { totalCount: releases.length });
             }
         }
 
@@ -4011,12 +4632,12 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             box.innerHTML = '<p class="placeholder-text" style="margin:14px 0;">Запусков сборки в репозитории пока нет</p>';
             return;
         }
-        let html = `<table class="ch-table"><thead><tr>
+        let html = `<div class="admin-table-scroll"><table class="ch-table"><thead><tr>
             <th style="width:80px;">#</th>
             <th>Статус</th>
             <th>Ветка</th>
             <th>Дата</th>
-            <th style="width:190px; text-align:right;">Действия</th>
+            <th style="width:190px; text-align:right;" data-lock-visible="1">Действия</th>
         </tr></thead><tbody>`;
         runs.forEach(r => {
             const st = r.status === 'completed' ? (r.conclusion || 'completed') : r.status;
@@ -4035,7 +4656,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 </td>
             </tr>`;
         });
-        html += '</tbody></table>';
+        html += '</tbody></table></div>';
         box.innerHTML = html;
 
         box.querySelectorAll('[data-gh-import]').forEach(btn => {
@@ -4053,7 +4674,10 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         versionName: verName,
                         versionCode: verCode,
                         changelog,
-                        mandatory
+                        mandatory,
+                        bumpType: apkMetaState.bumpType,
+                        manualOverride: apkMetaState.manualOverride,
+                        autoBlockOlder: Boolean(document.getElementById('gh-auto-block-older')?.checked),
                     });
                     if (impRes && impRes.ok) {
                         showToast(`APK v${impRes.release.versionName} импортирован в OTA`, 'ok');
@@ -4067,6 +4691,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 }
             };
         });
+
+        enhanceAdminTable(box, 'gh_runs', { totalCount: runs.length });
     }
 
     let cachedWorkflowManual = null;
@@ -4262,7 +4888,10 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     serverUrl: (document.getElementById('gh-server-url')?.value || '').trim(),
                     changelog: (document.getElementById('gh-changelog')?.value || '').trim(),
                     mandatory: Boolean(document.getElementById('gh-mandatory')?.checked),
-                    syncProject: Boolean(document.getElementById('gh-sync-before')?.checked)
+                    syncProject: Boolean(document.getElementById('gh-sync-before')?.checked),
+                    bumpType: apkMetaState.bumpType,
+                    manualOverride: apkMetaState.manualOverride,
+                    autoBlockOlder: Boolean(document.getElementById('gh-auto-block-older')?.checked),
                 };
                 const res = await apiRequest('/api/admin/github/build', 'POST', payload);
                 if (res && res.ok && res.build) {
@@ -4319,7 +4948,10 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     versionName: document.getElementById('apk-ver-name').value.trim(),
                     versionCode: parseInt(document.getElementById('apk-ver-code').value, 10) || 1,
                     changelog: document.getElementById('apk-changelog').value.trim(),
-                    mandatory: document.getElementById('apk-mandatory').checked
+                    mandatory: document.getElementById('apk-mandatory').checked,
+                    bumpType: apkMetaState.bumpType,
+                    manualOverride: apkMetaState.manualOverride,
+                    autoBlockOlder: Boolean(document.getElementById('apk-auto-block-older')?.checked),
                 };
                 const res = await apiRequest('/api/admin/apk-upload', 'POST', payload);
                 if (res && res.ok) {
@@ -5079,6 +5711,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         ], {
             key: 'health',
             defaultSort: 'name',
+            defaultHidden: ['logo', 'tvgId', 'stillBrokenAfterResolve'],
             onChange: renderHealthView,
             emptyText: 'Каналов по выбранным фильтрам не найдено',
         });
@@ -5092,7 +5725,13 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 if (act === 'check') {
                     btn.disabled = true;
                     btn.textContent = '...';
-                    await apiRequest('/api/health/check', 'POST', { channelName: chName, force: true });
+                    const cRes = await apiRequest('/api/health/check', 'POST', { channelName: chName, force: true });
+                    showToast(
+                        cRes && cRes.ok
+                            ? `Проверка «${chName}» завершена`
+                            : ((cRes && cRes.error) || `Не удалось проверить «${chName}»`),
+                        cRes && cRes.ok ? 'ok' : 'err'
+                    );
                     await loadHealthOverview();
                     return;
                 }
@@ -5361,12 +6000,12 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 if (list.length === 0) {
                     backupsBox.innerHTML = '<p class="placeholder-text" style="margin:12px 0;">Резервных копий (.bak) пока нет</p>';
                 } else {
-                    backupsBox.innerHTML = `<table class="ch-table"><thead><tr>
+                    backupsBox.innerHTML = `<div class="admin-table-scroll"><table class="ch-table"><thead><tr>
                         <th>Файл</th>
                         <th>Плейлист</th>
                         <th style="width:90px;">Размер</th>
                         <th style="width:150px;">Создана</th>
-                        <th style="width:170px; text-align:right;">Действия</th>
+                        <th style="width:170px; text-align:right;" data-lock-visible="1">Действия</th>
                     </tr></thead><tbody>` + list.map((bk) => `<tr>
                         <td style="font-family:monospace; font-size:11.5px;">${escapeHtml(bk.filename)}</td>
                         <td><span class="cat-badge violet">${escapeHtml(bk.playlistName || bk.playlist || '')}</span></td>
@@ -5376,7 +6015,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                             <button type="button" class="btn btn-secondary" data-bak-restore="${escapeHtml(bk.filename)}" style="padding:4px 9px; font-size:11.5px;">Восстановить</button>
                             <button type="button" class="icon-btn danger" data-bak-del="${escapeHtml(bk.filename)}" title="Удалить">${I.trash}</button>
                         </td>
-                    </tr>`).join('') + '</tbody></table>';
+                    </tr>`).join('') + '</tbody></table></div>';
 
                     backupsBox.querySelectorAll('[data-bak-restore]').forEach((btn) => {
                         btn.onclick = async () => {
@@ -5412,6 +6051,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                             await loadModalData();
                         };
                     });
+
+                    enhanceAdminTable(backupsBox, 'backups', { totalCount: list.length });
                 }
             }
 
@@ -5420,7 +6061,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 if (logs.length === 0) {
                     logsBox.innerHTML = '<p class="placeholder-text" style="margin:12px 0;">Операций пока нет</p>';
                 } else {
-                    logsBox.innerHTML = `<table class="ch-table"><thead><tr>
+                    logsBox.innerHTML = `<div class="admin-table-scroll"><table class="ch-table"><thead><tr>
                         <th style="width:70px;">Rev</th>
                         <th style="width:150px;">Действие</th>
                         <th>Объект</th>
@@ -5430,7 +6071,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         <td style="font-family:monospace; font-size:11.5px; color:#fff;">${escapeHtml(entry.action)}</td>
                         <td style="font-size:12px; color:var(--text-dim);">${escapeHtml(entry.target || '—')}</td>
                         <td style="font-size:11.5px; color:var(--muted);">${escapeHtml(entry.at ? new Date(entry.at).toLocaleString('ru-RU') : '—')}</td>
-                    </tr>`).join('') + '</tbody></table>';
+                    </tr>`).join('') + '</tbody></table></div>';
+                    enhanceAdminTable(logsBox, 'lifecycle_logs', { totalCount: logs.length });
                 }
             }
         }
@@ -5486,6 +6128,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                     }
                     await loadCategoryManager();
                     renderChannels();
+                    showToast('Категория удалена', 'ok');
                 } catch (err) {
                     showToast(err && err.message ? err.message : 'Не удалось удалить категорию', 'err');
                 }
@@ -5805,7 +6448,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         fillForm(currentStreamingSettings);
     })();
 
-    // ===== ХРАНЕНИЕ ИНФОРМАЦИИ (ЛОКАЛЬНОЕ / ОБЛАЧНОЕ) =====
+    // ===== ХРАНЕНИЕ ИНФОРМАЦИИ (ЛОКАЛЬНОЕ / POSTGRESQL / ОБЛАЧНОЕ) =====
     (function initStorageSettingsScreen() {
         const screen = document.getElementById('screen-storage');
         if (!screen) return;
@@ -5813,6 +6456,7 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const modeButtons = screen.querySelectorAll('[data-storage-mode]');
         const statusStrip = document.getElementById('storage-status-strip');
         const firebasePanel = document.getElementById('storage-firebase-panel');
+        const postgresPanel = document.getElementById('storage-postgres-panel');
         const customCheck = document.getElementById('storage-use-custom-fb');
         const customFieldsWrap = document.getElementById('storage-custom-fb-fields');
         const pasteInput = document.getElementById('storage-cfg-paste');
@@ -5825,6 +6469,18 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         const btnImport = document.getElementById('btn-storage-import');
         const importFileInput = document.getElementById('storage-import-file');
 
+        const pgUseEnvCheck = document.getElementById('storage-pg-use-env');
+        const pgCustomWrap = document.getElementById('storage-pg-custom-fields');
+        const pgConnInput = document.getElementById('storage-pg-conn');
+        const pgHostInput = document.getElementById('storage-pg-host');
+        const pgPortInput = document.getElementById('storage-pg-port');
+        const pgDbInput = document.getElementById('storage-pg-db');
+        const pgUserInput = document.getElementById('storage-pg-user');
+        const pgPassInput = document.getElementById('storage-pg-pass');
+        const pgSslCheck = document.getElementById('storage-pg-ssl');
+        const btnTestPg = document.getElementById('btn-storage-test-pg');
+        const pgTestResultEl = document.getElementById('storage-pg-test-result');
+
         const fbInputs = {
             projectId: document.getElementById('storage-fb-project-id'),
             firestoreDatabaseId: document.getElementById('storage-fb-db-id'),
@@ -5836,14 +6492,82 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         };
 
         let state = {
-            mode: isCloudStorageMode() ? 'cloud' : 'local',
+            mode: (window.PQTV_STORAGE_CONFIG && ['local', 'postgres', 'cloud'].includes(window.PQTV_STORAGE_CONFIG.mode))
+                ? window.PQTV_STORAGE_CONFIG.mode
+                : 'local',
             useCustomFirebaseConfig: false,
             firebaseConfig: {},
+            postgresConfig: {
+                useEnvDatabaseUrl: true,
+                hasEnvDatabaseUrl: false,
+                host: '127.0.0.1',
+                port: 5432,
+                database: 'pqtv',
+                user: 'postgres',
+                ssl: false,
+                hasConnectionString: false,
+                maskedConnectionString: '',
+                hasPassword: false,
+            },
+            pgConnEdited: false,
+            pgPassEdited: false,
+            postgresActive: false,
             bundledConfig: null,
             effectiveSource: '',
             dataDir: '',
             playlistDir: '',
         };
+
+        if (pgConnInput) pgConnInput.addEventListener('input', () => { state.pgConnEdited = true; });
+        if (pgPassInput) pgPassInput.addEventListener('input', () => { state.pgPassEdited = true; });
+
+        function readPgInputs() {
+            const connVal = pgConnInput ? pgConnInput.value.trim() : '';
+            const passVal = pgPassInput ? pgPassInput.value : '';
+            const out = {
+                useEnvDatabaseUrl: pgUseEnvCheck ? Boolean(pgUseEnvCheck.checked) : true,
+                host: pgHostInput ? pgHostInput.value.trim() : '127.0.0.1',
+                port: pgPortInput ? (parseInt(pgPortInput.value, 10) || 5432) : 5432,
+                database: pgDbInput ? pgDbInput.value.trim() : 'pqtv',
+                user: pgUserInput ? pgUserInput.value.trim() : 'postgres',
+                ssl: pgSslCheck ? Boolean(pgSslCheck.checked) : false,
+            };
+            if (state.pgConnEdited) {
+                out.connectionString = connVal;
+            } else if (state.postgresConfig && state.postgresConfig.hasConnectionString) {
+                out.connectionString = '********';
+            }
+            if (state.pgPassEdited) {
+                out.password = passVal;
+            } else if (state.postgresConfig && state.postgresConfig.hasPassword) {
+                out.password = '********';
+            }
+            return out;
+        }
+
+        function writePgInputs(cfg) {
+            const c = cfg || {};
+            state.pgConnEdited = false;
+            state.pgPassEdited = false;
+            if (pgUseEnvCheck) pgUseEnvCheck.checked = c.useEnvDatabaseUrl !== false;
+            if (pgConnInput) {
+                pgConnInput.value = '';
+                pgConnInput.placeholder = c.hasConnectionString
+                    ? `Сохранена (${c.maskedConnectionString || '********'}) — введите новую, чтобы изменить`
+                    : 'postgresql://user:password@localhost:5432/pqtv';
+            }
+            if (pgHostInput) pgHostInput.value = c.host || '127.0.0.1';
+            if (pgPortInput) pgPortInput.value = String(c.port || 5432);
+            if (pgDbInput) pgDbInput.value = c.database || 'pqtv';
+            if (pgUserInput) pgUserInput.value = c.user || 'postgres';
+            if (pgPassInput) {
+                pgPassInput.value = '';
+                pgPassInput.placeholder = c.hasPassword
+                    ? 'Пароль сохранён — оставьте пустым, чтобы не менять'
+                    : 'Пароль пользователя PostgreSQL';
+            }
+            if (pgSslCheck) pgSslCheck.checked = Boolean(c.ssl);
+        }
 
         function readFbInputs() {
             return {
@@ -5906,7 +6630,12 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 btn.classList.toggle('active', btn.dataset.storageMode === state.mode);
             });
             const isCloud = state.mode === 'cloud';
+            const isPg = state.mode === 'postgres';
             if (firebasePanel) firebasePanel.classList.toggle('hidden', !isCloud);
+            if (postgresPanel) postgresPanel.classList.toggle('hidden', !isPg);
+            if (pgCustomWrap && pgUseEnvCheck) {
+                pgCustomWrap.classList.toggle('is-disabled', Boolean(pgUseEnvCheck.checked && state.postgresConfig && state.postgresConfig.hasEnvDatabaseUrl));
+            }
             if (customCheck) customCheck.checked = Boolean(state.useCustomFirebaseConfig);
             if (customFieldsWrap) {
                 customFieldsWrap.classList.toggle('is-disabled', !Boolean(state.useCustomFirebaseConfig));
@@ -5914,6 +6643,8 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
             if (statusStrip) {
                 const sourceLabels = {
                     local_files: 'Файлы сервера',
+                    postgres_connected: 'PostgreSQL подключена',
+                    postgres_disconnected: 'PostgreSQL не подключена',
                     custom_firebase: 'Свой проект Firebase',
                     env_firebase: 'Переменные окружения FIREBASE_*',
                     bundled_firebase: 'Встроенный firebase-applet-config.json',
@@ -5923,6 +6654,13 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                 if (state.mode === 'local') {
                     statusStrip.textContent =
                         `Активен локальный режим (${srcText}) · Данные: ${state.dataDir || './data'} · Плейлисты: ${state.playlistDir || './playlist'}`;
+                } else if (state.mode === 'postgres') {
+                    const pgCur = readPgInputs();
+                    const envNote = pgCur.useEnvDatabaseUrl && state.postgresConfig && state.postgresConfig.hasEnvDatabaseUrl
+                        ? 'DATABASE_URL окружения'
+                        : `${pgCur.host || '127.0.0.1'}:${pgCur.port || 5432}/${pgCur.database || 'pqtv'}`;
+                    statusStrip.textContent =
+                        `Режим PostgreSQL (${srcText}) · Цель: ${envNote}`;
                 } else {
                     const curFb = readFbInputs();
                     statusStrip.textContent =
@@ -5934,14 +6672,17 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
         async function refreshStorageSettings() {
             const res = await apiRequest('/api/settings/storage');
             if (!res || !res.ok || !res.settings) return;
-            state.mode = res.settings.mode === 'local' ? 'local' : 'cloud';
+            state.mode = ['local', 'postgres', 'cloud'].includes(res.settings.mode) ? res.settings.mode : 'local';
             state.useCustomFirebaseConfig = Boolean(res.settings.useCustomFirebaseConfig);
             state.firebaseConfig = res.settings.firebaseConfig || {};
+            state.postgresConfig = Object.assign({}, state.postgresConfig, res.settings.postgresConfig || {});
+            state.postgresActive = Boolean(res.postgresActive);
             state.bundledConfig = res.bundledConfig || null;
             state.effectiveSource = res.effectiveSource || '';
             state.dataDir = res.dataDir || '';
             state.playlistDir = res.playlistDir || '';
             writeFbInputs(state.firebaseConfig);
+            writePgInputs(state.postgresConfig);
             syncStorageUi();
         }
 
@@ -5949,10 +6690,45 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
 
         modeButtons.forEach((btn) => {
             btn.addEventListener('click', () => {
-                state.mode = btn.dataset.storageMode === 'local' ? 'local' : 'cloud';
-                syncStorageUi();
+                const nextMode = btn.dataset.storageMode;
+                if (['local', 'postgres', 'cloud'].includes(nextMode)) {
+                    state.mode = nextMode;
+                    syncStorageUi();
+                }
             });
         });
+
+        if (pgUseEnvCheck) {
+            pgUseEnvCheck.addEventListener('change', () => {
+                syncStorageUi();
+            });
+        }
+
+        if (btnTestPg) {
+            btnTestPg.addEventListener('click', async () => {
+                btnTestPg.disabled = true;
+                if (pgTestResultEl) {
+                    pgTestResultEl.textContent = 'Проверка подключения к PostgreSQL...';
+                    pgTestResultEl.style.color = 'var(--muted)';
+                }
+                try {
+                    const res = await apiRequest('/api/settings/storage/test-postgres', 'POST', {
+                        postgresConfig: readPgInputs(),
+                    }, { skipCloudSync: true });
+                    const ok = Boolean(res && res.ok);
+                    const msg = ok
+                        ? `Подключение к PostgreSQL успешно${res.version ? ' (' + res.version + ')' : ''}${res.ms ? ' · ' + res.ms + ' мс' : ''}`
+                        : ((res && res.error) || 'Не удалось подключиться к PostgreSQL');
+                    if (pgTestResultEl) {
+                        pgTestResultEl.textContent = msg;
+                        pgTestResultEl.style.color = ok ? '#34d399' : '#fca5a5';
+                    }
+                    showToast(msg, ok ? 'ok' : 'err');
+                } finally {
+                    btnTestPg.disabled = false;
+                }
+            });
+        }
 
         if (customCheck) {
             customCheck.addEventListener('change', () => {
@@ -6034,20 +6810,26 @@ curl -X POST "${origin}/api/admin/apk-upload" \\
                         mode: state.mode,
                         useCustomFirebaseConfig: state.useCustomFirebaseConfig,
                         firebaseConfig: readFbInputs(),
+                        postgresConfig: readPgInputs(),
                     };
                     const res = await apiRequest('/api/settings/storage', 'POST', payload, { skipCloudSync: true });
                     if (!res || !res.ok) {
                         showToast((res && res.error) || 'Не удалось сохранить настройки хранения', 'err');
                         return;
                     }
+                    let toastMessage = state.mode === 'local'
+                        ? 'Включено локальное хранение (файлы сервера)'
+                        : state.mode === 'postgres'
+                            ? 'Подключение к PostgreSQL сохранено и активировано'
+                            : 'Настройки облачного хранения применены';
+                    if (state.mode === 'postgres' && res.postgresSync) {
+                        const imp = Number(res.postgresSync.imported) || 0;
+                        const ld = Number(res.postgresSync.loaded) || 0;
+                        toastMessage = `PostgreSQL активирован (перенесено ключей: ${imp}, загружено: ${ld})`;
+                    }
                     try {
                         sessionStorage.setItem('pqtv_reopen_screen', 'storage');
-                        sessionStorage.setItem(
-                            'pqtv_storage_saved_toast',
-                            state.mode === 'local'
-                                ? 'Включено локальное хранение (файлы сервера)'
-                                : 'Настройки облачного хранения применены'
-                        );
+                        sessionStorage.setItem('pqtv_storage_saved_toast', toastMessage);
                     } catch {}
                     window.location.reload();
                 } finally {

@@ -290,20 +290,15 @@
                         </button>
                     </div>
 
-                    <div class="target-select">
-                        <label>Добавлять в плейлист:</label>
-                        <select id="parse-target-playlist"></select>
-                    </div>
-
                     <div id="parse-target-info" class="info-box hidden">
                         Контекст: замена для канала <b id="parse-target-channel-name"></b> в плейлисте <b id="parse-target-playlist-name"></b>
                     </div>
 
                     <div id="parse-progress-box" class="progress-box hidden">
                         <div class="spinner"></div>
-                        <div style="flex:1;">
-                            <div id="parse-progress-status" style="font-size:13px; font-weight:600; margin-bottom:3px;">Инициализация поиска...</div>
-                            <div id="parse-progress-log" style="font-size:12px; color:var(--muted);">Сканирование активных источников...</div>
+                        <div class="progress-box-body">
+                            <div id="parse-progress-status" class="progress-box-title">Инициализация поиска...</div>
+                            <div id="parse-progress-log" class="progress-box-sub">Сканирование активных источников...</div>
                         </div>
                     </div>
 
@@ -418,6 +413,20 @@
                             </svg>
                             <span id="btn-catalog-clear-text">Очистить таблицу</span>
                         </button>
+                    </div>
+
+                    <div id="catalog-aggregate-progress" class="progress-box catalog-progress-box hidden" aria-live="polite">
+                        <div class="spinner"></div>
+                        <div class="progress-box-body">
+                            <div class="progress-box-head">
+                                <span id="catalog-aggregate-progress-title" class="progress-box-title">Сборка каналов из источников...</span>
+                                <span id="catalog-aggregate-progress-pct" class="progress-pct-badge">0%</span>
+                            </div>
+                            <div class="progress-track">
+                                <div id="catalog-aggregate-progress-bar" class="progress-track-fill"></div>
+                            </div>
+                            <div id="catalog-aggregate-progress-log" class="progress-box-sub">Подготовка источников...</div>
+                        </div>
                     </div>
 
                     <div class="catalog-toolbar catalog-toolbar-unified">
@@ -848,8 +857,9 @@
 
                         <div class="streaming-settings-grid">
                             <!-- 1. Доставка, извлечение и протокол -->
-                            <div class="apk-panel">
+                            <div class="apk-panel stream-card">
                                 <h3>1. Извлечение потока и протоколы</h3>
+                                <p class="stream-card-lead">Определяет маршрут доставки видеопотока и способ выбора декодера в веб-плеере и приложении.</p>
                                 <div class="stream-form-grid">
                                     <div class="form-group">
                                         <label for="st-mode">Маршрут доставки потока</label>
@@ -859,6 +869,7 @@
                                             <option value="proxy_only">Только через серверный proxy</option>
                                             <option value="direct_only">Только напрямую к источнику</option>
                                         </select>
+                                        <p class="setting-desc">Решает, пойдёт ли видео через ваш сервер (обходит CORS и HTTP-блокировки браузера) или напрямую с устройства зрителя.</p>
                                     </div>
                                     <div class="form-group">
                                         <label for="st-protocol">Принудительный протокол / извлечение</label>
@@ -868,196 +879,256 @@
                                             <option value="mpegts">Всегда MPEG-TS (mpegts.js — .ts / Xtream)</option>
                                             <option value="native">Нативный &lt;video&gt; (MP4 / WebM / встроенный плеер)</option>
                                         </select>
+                                        <p class="setting-desc">Если ссылки провайдера не имеют расширения (.m3u8/.ts), выберите нужный движок вручную или оставьте «Авто».</p>
                                     </div>
                                     <div class="form-group">
-                                        <label for="st-ua">User-Agent серверного proxy (как VLC или браузер)</label>
+                                        <label for="st-ua">User-Agent серверного proxy</label>
                                         <input type="text" id="st-ua" placeholder="VLC/3.0.20 LibVLC/3.0.20">
+                                        <p class="setting-desc">Идентификатор клиента, который сервер отправляет источнику. Значение VLC помогает открывать потоки, блокирующие браузеры.</p>
                                     </div>
-                                    <div class="stream-row-2">
-                                        <div class="form-group">
-                                            <label for="st-redirects">Макс. редиректов (301/302)</label>
-                                            <input type="number" id="st-redirects" min="0" max="10" step="1">
-                                        </div>
-                                        <div class="form-group">
+                                    <div class="form-group">
+                                        <label for="st-redirects">Макс. редиректов (301/302)</label>
+                                        <input type="number" id="st-redirects" min="0" max="10" step="1">
+                                        <p class="setting-desc">Сколько перенаправлений допускается при получении ссылки на поток. Оптимально 3–5 для балансировщиков IPTV.</p>
+                                    </div>
+                                    <div class="stream-checks-col">
+                                        <div class="stream-check-item">
                                             <label class="stream-check-label" for="st-https">
                                                 <input type="checkbox" id="st-https">
                                                 <span>Пробовать HTTPS перед HTTP</span>
                                             </label>
-                                            <label class="stream-check-label" for="st-tv-direct" title="В нативном Android TV APK смешанный HTTP-контент разрешён: прямое подключение убирает задержку облачного сервера">
+                                            <p class="setting-desc">При включении плеер сначала проверяет защищённый https-адрес перед переходом на обычный http.</p>
+                                        </div>
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-tv-direct">
                                                 <input type="checkbox" id="st-tv-direct">
                                                 <span>На Android TV APK сначала напрямую (минуя сервер)</span>
                                             </label>
+                                            <p class="setting-desc">ТВ-приставки умеют открывать HTTP-потоки напрямую без прокси — снижает нагрузку на сервер и задержку старта.</p>
                                         </div>
                                     </div>
                                 </div>
                             </div>
 
                             <!-- 2. Серверный прокси и сокеты -->
-                            <div class="apk-panel">
+                            <div class="apk-panel stream-card">
                                 <h3>2. Серверный proxy, пул потоков и сокеты</h3>
+                                <p class="stream-card-lead">Управляет скоростью, повторными соединениями и пропускной способностью встроенного proxy-ретранслятора.</p>
                                 <div class="stream-form-grid">
                                     <div class="stream-row-2">
                                         <div class="form-group">
                                             <label for="st-proxy-timeout">Таймаут подключения proxy (сек)</label>
                                             <input type="number" id="st-proxy-timeout" min="3" max="60" step="1">
+                                            <p class="setting-desc">Время ожидания ответа от удалённого источника до обрыва попытки.</p>
                                         </div>
                                         <div class="form-group">
                                             <label for="st-proxy-retries">Повторы при обрыве proxy</label>
                                             <input type="number" id="st-proxy-retries" min="0" max="5" step="1">
+                                            <p class="setting-desc">Сколько раз сервер переподключится к потоку при внезапном сбросе.</p>
                                         </div>
                                     </div>
                                     <div class="stream-row-2">
                                         <div class="form-group">
-                                            <label for="st-proxy-sockets">Макс. одновременных потоков/сокетов</label>
+                                            <label for="st-proxy-sockets">Макс. одновременных сокетов</label>
                                             <input type="number" id="st-proxy-sockets" min="4" max="200" step="4">
+                                            <p class="setting-desc">Лимит параллельных подключений от сервера к источникам потоков.</p>
                                         </div>
                                         <div class="form-group">
                                             <label for="st-proxy-buffer">Буфер трубы proxy (КБ, 16–1024)</label>
                                             <input type="number" id="st-proxy-buffer" min="16" max="1024" step="16">
+                                            <p class="setting-desc">Размер промежуточного буфера передачи данных. Больше — плавнее при нестабильном канале.</p>
                                         </div>
                                     </div>
-                                    <label class="stream-check-label" for="st-proxy-keepalive">
-                                        <input type="checkbox" id="st-proxy-keepalive">
-                                        <span>Keep-Alive пул соединений (ускоряет загрузку .ts сегментов без повторного TLS)</span>
-                                    </label>
+                                    <div class="stream-checks-col">
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-proxy-keepalive">
+                                                <input type="checkbox" id="st-proxy-keepalive">
+                                                <span>Keep-Alive пул соединений</span>
+                                            </label>
+                                            <p class="setting-desc">Переиспользует открытые TCP/TLS-сессии к провайдеру — ускоряет подгрузку следующих .ts сегментов.</p>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
 
                             <!-- 3. HLS.js — буферизация и воркеры -->
-                            <div class="apk-panel">
+                            <div class="apk-panel stream-card">
                                 <h3>3. HLS (.m3u8) — буферизация и потоки</h3>
+                                <p class="stream-card-lead">Настройки объёма опережающего кэша hls.js и многопоточной обработки сегментов в браузере и на ТВ.</p>
                                 <div class="stream-form-grid">
                                     <div class="stream-row-2">
                                         <div class="form-group">
                                             <label for="st-hls-livesync">Запас от края эфира (сегментов)</label>
                                             <input type="number" id="st-hls-livesync" min="1" max="12" step="1">
+                                            <p class="setting-desc">Отступ от live-точки в сегментах (обычно 3–4 дают плавность как в VLC).</p>
                                         </div>
                                         <div class="form-group">
                                             <label for="st-hls-maxbuf">Целевой буфер вперёд (сек)</label>
                                             <input type="number" id="st-hls-maxbuf" min="5" max="180" step="1">
+                                            <p class="setting-desc">Сколько секунд видео плеер старается предзагрузить заранее.</p>
                                         </div>
                                     </div>
                                     <div class="stream-row-2">
                                         <div class="form-group">
                                             <label for="st-hls-maxmaxbuf">Макс. предел буфера (сек)</label>
                                             <input type="number" id="st-hls-maxmaxbuf" min="10" max="360" step="5">
+                                            <p class="setting-desc">Верхний лимит памяти под буфер (защищает слабые приставки от нехватки ОЗУ).</p>
                                         </div>
                                         <div class="form-group">
-                                            <label for="st-hls-backbuf">Хранить прошлый буфер (сек, 0=сразу удалять)</label>
+                                            <label for="st-hls-backbuf">Хранить прошлый буфер (сек)</label>
                                             <input type="number" id="st-hls-backbuf" min="0" max="120" step="5">
+                                            <p class="setting-desc">Сколько секунд уже просмотренного видео держать в памяти (0 = удалять сразу).</p>
                                         </div>
                                     </div>
                                     <div class="stream-checks-col">
-                                        <label class="stream-check-label" for="st-hls-workers">
-                                            <input type="checkbox" id="st-hls-workers">
-                                            <span>Отдельный поток Web Worker (уменьшает фризы интерфейса на ТВ)</span>
-                                        </label>
-                                        <label class="stream-check-label" for="st-hls-prefetch">
-                                            <input type="checkbox" id="st-hls-prefetch">
-                                            <span>Предзагрузка следующего сегмента (startFragPrefetch)</span>
-                                        </label>
-                                        <label class="stream-check-label" for="st-hls-ll">
-                                            <input type="checkbox" id="st-hls-ll">
-                                            <span>Low-Latency режим (меньше задержка, но выше риск подгрузок)</span>
-                                        </label>
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-hls-workers">
+                                                <input type="checkbox" id="st-hls-workers">
+                                                <span>Отдельный поток Web Worker</span>
+                                            </label>
+                                            <p class="setting-desc">Выносит разбор видеопотока в фоновый поток — интерфейс пульта на ТВ не тормозит.</p>
+                                        </div>
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-hls-prefetch">
+                                                <input type="checkbox" id="st-hls-prefetch">
+                                                <span>Предзагрузка следующего сегмента (startFragPrefetch)</span>
+                                            </label>
+                                            <p class="setting-desc">Начинает скачивать следующий фрагмент до окончания текущего для бесшовного перехода.</p>
+                                        </div>
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-hls-ll">
+                                                <input type="checkbox" id="st-hls-ll">
+                                                <span>Low-Latency режим</span>
+                                            </label>
+                                            <p class="setting-desc">Уменьшает отставание от прямого эфира, но при плохом интернете чаще вызывает подгрузки.</p>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
 
                             <!-- 4. HLS.js — таймауты, паузы и повторы -->
-                            <div class="apk-panel">
+                            <div class="apk-panel stream-card">
                                 <h3>4. HLS (.m3u8) — паузы, таймауты и повторы</h3>
+                                <p class="stream-card-lead">Поведение плеера при пропадании сети, задержках ответа плейлиста и пропусках таймкодов.</p>
                                 <div class="stream-form-grid">
                                     <div class="stream-row-2">
                                         <div class="form-group">
                                             <label for="st-hls-mtimeout">Таймаут манифеста .m3u8 (сек)</label>
                                             <input type="number" id="st-hls-mtimeout" min="3" max="60" step="1">
+                                            <p class="setting-desc">Максимальное время загрузки индексного файла .m3u8.</p>
                                         </div>
                                         <div class="form-group">
                                             <label for="st-hls-mretry">Повторы загрузки манифеста</label>
                                             <input type="number" id="st-hls-mretry" min="0" max="10" step="1">
+                                            <p class="setting-desc">Сколько раз повторять запрос манифеста при временной ошибке сети.</p>
                                         </div>
                                     </div>
                                     <div class="stream-row-2">
                                         <div class="form-group">
                                             <label for="st-hls-ftimeout">Таймаут сегмента .ts (сек)</label>
                                             <input type="number" id="st-hls-ftimeout" min="5" max="60" step="1">
+                                            <p class="setting-desc">Сколько секунд ждать скачивания одного видеосегмента.</p>
                                         </div>
                                         <div class="form-group">
                                             <label for="st-hls-fretry">Повторы загрузки сегмента</label>
                                             <input type="number" id="st-hls-fretry" min="0" max="10" step="1">
+                                            <p class="setting-desc">Число повторных попыток скачать сбойный фрагмент до переключения потока.</p>
                                         </div>
                                     </div>
                                     <div class="form-group">
                                         <label for="st-hls-hole">Допустимая «дыра» в буфере (мс, 100–5000)</label>
                                         <input type="number" id="st-hls-hole" min="100" max="5000" step="50">
+                                        <p class="setting-desc">Порог разрыва таймкода в видеопотоке, который плеер перепрыгивает без остановки воспроизведения.</p>
                                     </div>
                                 </div>
                             </div>
 
                             <!-- 5. MPEG-TS (.ts / Xtream) -->
-                            <div class="apk-panel">
+                            <div class="apk-panel stream-card">
                                 <h3>5. MPEG-TS (.ts) — буфер и рассинхрон</h3>
+                                <p class="stream-card-lead">Тонкая настройка непрерывных TS-потоков (mpegts.js / Xtream) без плейлиста фрагментов.</p>
                                 <div class="stream-form-grid">
                                     <div class="form-group">
-                                        <label for="st-ts-stashkb">Размер предварительного буфера Stash (КБ, 64–2048)</label>
+                                        <label for="st-ts-stashkb">Предварительный буфер Stash (КБ, 64–2048)</label>
                                         <input type="number" id="st-ts-stashkb" min="64" max="2048" step="32">
+                                        <p class="setting-desc">Объём начального кэша в памяти перед отрисовкой кадра. Увеличение устраняет рассыпание при старте.</p>
                                     </div>
                                     <div class="stream-row-2">
                                         <div class="form-group">
                                             <label for="st-ts-maxlat">Макс. задержка live (сек)</label>
                                             <input type="number" id="st-ts-maxlat" min="1" max="20" step="0.5">
+                                            <p class="setting-desc">При превышении этого отставания плеер подтягивается ближе к прямому эфиру.</p>
                                         </div>
                                         <div class="form-group">
                                             <label for="st-ts-minrem">Мин. остаток буфера (сек)</label>
                                             <input type="number" id="st-ts-minrem" min="0.5" max="10" step="0.5">
+                                            <p class="setting-desc">Запас секунд, который остаётся в буфере после подтяжки к live-краю.</p>
                                         </div>
                                     </div>
                                     <div class="stream-checks-col">
-                                        <label class="stream-check-label" for="st-ts-worker">
-                                            <input type="checkbox" id="st-ts-worker">
-                                            <span>Web Worker для декодирования MPEG-TS</span>
-                                        </label>
-                                        <label class="stream-check-label" for="st-ts-stash">
-                                            <input type="checkbox" id="st-ts-stash">
-                                            <span>Включить Stash-буфер (сглаживает рывки сети)</span>
-                                        </label>
-                                        <label class="stream-check-label" for="st-ts-chasing">
-                                            <input type="checkbox" id="st-ts-chasing">
-                                            <span>Агрессивно догонять live-край (ускоряет видео, может вызывать фризы)</span>
-                                        </label>
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-ts-worker">
+                                                <input type="checkbox" id="st-ts-worker">
+                                                <span>Web Worker для декодирования MPEG-TS</span>
+                                            </label>
+                                            <p class="setting-desc">Переносит ремультиплексирование TS в фоновый поток для снижения нагрузки на основной поток.</p>
+                                        </div>
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-ts-stash">
+                                                <input type="checkbox" id="st-ts-stash">
+                                                <span>Включить Stash-буфер</span>
+                                            </label>
+                                            <p class="setting-desc">Сглаживает скачки скорости интернета за счёт накопления входного буфера.</p>
+                                        </div>
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-ts-chasing">
+                                                <input type="checkbox" id="st-ts-chasing">
+                                                <span>Агрессивно догонять live-край</span>
+                                            </label>
+                                            <p class="setting-desc">Подкручивает скорость воспроизведения при накоплении задержки (может вызывать микрофризы).</p>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
 
                             <!-- 6. Плеер, паузы и превью -->
-                            <div class="apk-panel">
+                            <div class="apk-panel stream-card">
                                 <h3>6. Плеер пользователя — паузы и превью</h3>
+                                <p class="stream-card-lead">Тайминги автоподбора рабочих потоков в полноэкранном плеере и превью в боковой панели.</p>
                                 <div class="stream-form-grid">
                                     <div class="stream-row-2">
                                         <div class="form-group">
                                             <label for="st-attempt-timeout">Таймаут попытки запуска (сек)</label>
                                             <input type="number" id="st-attempt-timeout" min="4" max="60" step="1">
+                                            <p class="setting-desc">Через сколько секунд плеер переключается на следующий запасной поток, если текущий не стартует.</p>
                                         </div>
                                         <div class="form-group">
-                                            <label for="st-codec-delay">Пауза проверки кодека HEVC (сек, 0=выкл)</label>
+                                            <label for="st-codec-delay">Пауза проверки кодека (сек, 0=выкл)</label>
                                             <input type="number" id="st-codec-delay" min="0" max="30" step="1">
+                                            <p class="setting-desc">Контроль наличия видеокадров (например, при неподдерживаемом HEVC/H.265) до автоперебора потоков.</p>
                                         </div>
                                     </div>
                                     <div class="stream-row-2">
                                         <div class="form-group">
-                                            <label for="st-prev-debounce">Пауза до старта превью при навигации (мс)</label>
+                                            <label for="st-prev-debounce">Задержка старта превью (мс)</label>
                                             <input type="number" id="st-prev-debounce" min="0" max="3000" step="50">
+                                            <p class="setting-desc">Пауза при быстром листании каналов пультом, чтобы не запускать лишние потоки.</p>
                                         </div>
                                         <div class="form-group">
-                                            <label for="st-prev-resume">Пауза возврата превью после выхода (мс)</label>
+                                            <label for="st-prev-resume">Пауза возврата превью (мс)</label>
                                             <input type="number" id="st-prev-resume" min="0" max="3000" step="50">
+                                            <p class="setting-desc">Задержка возобновления превью после выхода из полноэкранного просмотра.</p>
                                         </div>
                                     </div>
-                                    <label class="stream-check-label" for="st-prev-enabled">
-                                        <input type="checkbox" id="st-prev-enabled">
-                                        <span>Автоматически запускать живое превью в боковом окне</span>
-                                    </label>
+                                    <div class="stream-checks-col">
+                                        <div class="stream-check-item">
+                                            <label class="stream-check-label" for="st-prev-enabled">
+                                                <input type="checkbox" id="st-prev-enabled">
+                                                <span>Автоматически запускать живое превью в боковом окне</span>
+                                            </label>
+                                            <p class="setting-desc">Показывать живое мини-окно трансляции при наведении фокуса на карточку канала.</p>
+                                        </div>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -1074,15 +1145,19 @@
                         </div>
                     </div>
                     <div id="storage-settings-scroll">
-                        <div class="apk-panel" style="margin-bottom:16px;">
+                        <div class="apk-panel panel-gap">
                             <h3>Режим хранения данных</h3>
-                            <p style="font-size:12.5px; color:var(--muted); margin-bottom:14px; line-height:1.5;">
-                                Эти настройки сохраняются только на текущем сервере и не перезаписываются при синхронизации из облака. При переносе проекта на собственный сервер выберите локальное хранение или укажите параметры своего проекта Firebase.
+                            <p class="panel-subtitle">
+                                Эти настройки хранятся на текущем сервере и управляют тем, где лежат плейлисты, общая таблица каталога, источники и пользователи: локально в файлах, в базе данных PostgreSQL или в облаке Firebase.
                             </p>
                             <div class="storage-mode-grid" id="storage-mode-grid">
                                 <button type="button" class="storage-mode-card" data-storage-mode="local">
                                     <span class="storage-mode-title">Локальное хранение (файлы сервера)</span>
-                                    <span class="storage-mode-desc">Все плейлисты, каталог каналов, категории, пользователи и настройки хранятся локально в каталогах сервера. Работает полностью автономно без Firebase и Google-входа.</span>
+                                    <span class="storage-mode-desc">Все плейлисты, каталог каналов, категории, пользователи и настройки хранятся локально в каталогах сервера. Работает полностью автономно.</span>
+                                </button>
+                                <button type="button" class="storage-mode-card" data-storage-mode="postgres">
+                                    <span class="storage-mode-title">База данных PostgreSQL</span>
+                                    <span class="storage-mode-desc">Все данные приложения (каталог, источники, плейлисты, пользователи, настройки) надёжно хранятся и мигрируются в PostgreSQL.</span>
                                 </button>
                                 <button type="button" class="storage-mode-card" data-storage-mode="cloud">
                                     <span class="storage-mode-title">Облачное хранение (Firebase Firestore)</span>
@@ -1094,11 +1169,68 @@
                             </div>
                         </div>
 
-                        <div id="storage-firebase-panel" class="apk-panel" style="margin-bottom:16px;">
+                        <div id="storage-postgres-panel" class="apk-panel panel-gap hidden">
+                            <h3>Параметры подключения PostgreSQL</h3>
+                            <p class="panel-subtitle">
+                                Укажите строку подключения URI или отдельные параметры вашего PostgreSQL-сервера. При первом подключении текущие локальные данные автоматически переносятся в базу.
+                            </p>
+                            <div class="form-check-row">
+                                <input type="checkbox" id="storage-pg-use-env">
+                                <label for="storage-pg-use-env">
+                                    Использовать переменную окружения сервера <code>DATABASE_URL</code> (если задана при запуске)
+                                </label>
+                            </div>
+
+                            <div id="storage-pg-custom-fields">
+                                <div class="form-group">
+                                    <label for="storage-pg-conn">Строка подключения (DATABASE_URL URI, необязательно если заполнены поля ниже)</label>
+                                    <input type="text" id="storage-pg-conn" placeholder="postgresql://user:password@localhost:5432/pqtv" autocomplete="off">
+                                </div>
+                                <div class="stream-row-2">
+                                    <div class="form-group">
+                                        <label for="storage-pg-host">Хост (Host)</label>
+                                        <input type="text" id="storage-pg-host" placeholder="127.0.0.1" autocomplete="off">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="storage-pg-port">Порт (Port)</label>
+                                        <input type="number" id="storage-pg-port" min="1" max="65535" step="1" placeholder="5432">
+                                    </div>
+                                </div>
+                                <div class="stream-row-2">
+                                    <div class="form-group">
+                                        <label for="storage-pg-db">База данных (Database)</label>
+                                        <input type="text" id="storage-pg-db" placeholder="pqtv" autocomplete="off">
+                                    </div>
+                                    <div class="form-group">
+                                        <label for="storage-pg-user">Пользователь (User)</label>
+                                        <input type="text" id="storage-pg-user" placeholder="postgres" autocomplete="off">
+                                    </div>
+                                </div>
+                                <div class="stream-row-2">
+                                    <div class="form-group">
+                                        <label for="storage-pg-pass">Пароль (Password)</label>
+                                        <input type="password" id="storage-pg-pass" placeholder="Оставьте пустым, чтобы не менять сохранённый" autocomplete="new-password">
+                                    </div>
+                                    <div class="form-group storage-pg-ssl-wrap">
+                                        <label class="stream-check-label" for="storage-pg-ssl">
+                                            <input type="checkbox" id="storage-pg-ssl">
+                                            <span>Включить SSL-шифрование (для облачных БД PostgreSQL)</span>
+                                        </label>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div class="inline-action-row">
+                                <button type="button" id="btn-storage-test-pg" class="btn btn-secondary">Проверить подключение PostgreSQL</button>
+                                <span id="storage-pg-test-result" class="inline-status-text"></span>
+                            </div>
+                        </div>
+
+                        <div id="storage-firebase-panel" class="apk-panel panel-gap">
                             <h3>Параметры проекта Firebase</h3>
-                            <div class="form-group" style="display:flex; align-items:center; gap:8px; margin-bottom:14px;">
+                            <div class="form-check-row">
                                 <input type="checkbox" id="storage-use-custom-fb">
-                                <label for="storage-use-custom-fb" style="margin:0; cursor:pointer; color:var(--text);">
+                                <label for="storage-use-custom-fb">
                                     Использовать собственные параметры Firebase (для переноса на свой сервер)
                                 </label>
                             </div>
@@ -1107,7 +1239,7 @@
                                 <div class="form-group">
                                     <label for="storage-cfg-paste">Быстрая вставка конфигурации из Firebase Console (JSON или объект firebaseConfig)</label>
                                     <textarea id="storage-cfg-paste" rows="4" placeholder='{"apiKey":"...","authDomain":"...","projectId":"...","firestoreDatabaseId":"(default)","appId":"..."}'></textarea>
-                                    <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+                                    <div class="inline-action-row">
                                         <button type="button" id="btn-storage-parse-cfg" class="btn btn-secondary">Распознать параметры</button>
                                         <button type="button" id="btn-storage-reset-fb" class="btn btn-secondary">Сбросить к проекту по умолчанию</button>
                                     </div>
@@ -1148,9 +1280,9 @@
                                     <input type="text" id="storage-fb-sender-id" placeholder="1234567890" autocomplete="off">
                                 </div>
 
-                                <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin-top:10px;">
+                                <div class="inline-action-row">
                                     <button type="button" id="btn-storage-test-fb" class="btn btn-secondary">Проверить подключение к Firestore</button>
-                                    <span id="storage-test-result" style="font-size:12.5px; color:var(--muted);"></span>
+                                    <span id="storage-test-result" class="inline-status-text"></span>
                                 </div>
                             </div>
                         </div>

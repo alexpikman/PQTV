@@ -549,8 +549,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tvProgressFill) tvProgressFill.style.width = Math.min(100, Math.max(0, Number(pct) || 0)) + '%';
     };
 
+    let lastFocusBeforeSettings = null;
     function openSettingsModal() {
         if (!settingsModal) return;
+        lastFocusBeforeSettings = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         syncSettingsModalLabels();
         settingsModal.classList.remove('hidden');
         checkTvUpdate(true);
@@ -560,6 +562,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function closeSettingsModal() {
         if (!settingsModal) return;
         settingsModal.classList.add('hidden');
+        const restoreEl = (lastFocusBeforeSettings && lastFocusBeforeSettings.isConnected) ? lastFocusBeforeSettings : settingsBtn;
+        lastFocusBeforeSettings = null;
+        if (restoreEl) setFocus(restoreEl);
     }
 
     const settingsBtn = $('btn-settings');
@@ -808,20 +813,24 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    let lastFocusBeforeUnavail = null;
     function openUnavailableModal() {
         if (!unavailModal) return;
+        lastFocusBeforeUnavail = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         renderUnavailableModal();
         unavailModal.classList.remove('hidden');
-        const first = unavailModal.querySelector('button');
+        const first = unavailModal.querySelector('button:not(.hidden)');
         if (first) setFocus(first);
     }
 
     function closeUnavailableModal() {
         if (!unavailModal) return;
         unavailModal.classList.add('hidden');
-        if (unavailBtnEl && !unavailBtnEl.classList.contains('hidden')) {
-            setFocus(unavailBtnEl);
-        }
+        const restoreEl = (lastFocusBeforeUnavail && lastFocusBeforeUnavail.isConnected)
+            ? lastFocusBeforeUnavail
+            : (unavailBtnEl && !unavailBtnEl.classList.contains('hidden') ? unavailBtnEl : document.querySelector('.ch-card'));
+        lastFocusBeforeUnavail = null;
+        if (restoreEl) setFocus(restoreEl);
     }
 
     if (unavailBtnEl) unavailBtnEl.onclick = openUnavailableModal;
@@ -907,6 +916,9 @@ document.addEventListener('DOMContentLoaded', () => {
             </button>`;
         }
 
+        const hadCatFocus = Boolean(catsEl && document.activeElement && catsEl.contains(document.activeElement));
+        const prevGroupFocus = hadCatFocus ? (document.activeElement.getAttribute('data-group') || currentGroup) : null;
+
         catsEl.innerHTML = html;
         catsEl.querySelectorAll('.cat-btn').forEach(btn => {
             btn.onclick = () => {
@@ -916,6 +928,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderChannels();  // updatePreview первой карточки произойдёт внутри renderChannels
             };
         });
+
+        if (hadCatFocus) {
+            const targetCat = Array.from(catsEl.querySelectorAll('.cat-btn')).find(
+                b => b.getAttribute('data-group') === prevGroupFocus
+            ) || catsEl.querySelector('.cat-btn.active') || catsEl.querySelector('.cat-btn');
+            if (targetCat) targetCat.focus({ preventScroll: true });
+        }
     }
 
     function filterChannels() {
@@ -952,6 +971,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function renderChannels() {
+        const activeEl = document.activeElement;
+        const activeCard = (activeEl && gridEl && gridEl.contains(activeEl)) ? activeEl.closest('.ch-card') : null;
+        const prevCardIdx = activeCard ? Number(activeCard.dataset.idx) : -1;
+        const prevCardKey = (prevCardIdx >= 0 && filtered[prevCardIdx]) ? keyOf(filtered[prevCardIdx]) : null;
+
         filtered = filterChannels();
 
         if (filtered.length === 0) {
@@ -995,12 +1019,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 const ch = filtered[i];
                 if (ch) openFullscreenPlayer(ch);
             };
+            card.oncontextmenu = (e) => {
+                e.preventDefault();
+                const i = +card.dataset.idx;
+                const ch = filtered[i];
+                if (ch) openChannelMenu(ch);
+            };
             card.addEventListener('focus', () => {
                 const i = +card.dataset.idx;
                 const ch = filtered[i];
                 if (ch) updatePreview(ch);
             });
         });
+
+        const cards = gridEl.querySelectorAll('.ch-card');
+        if (prevCardKey !== null && cards.length > 0) {
+            let matchIdx = filtered.findIndex(c => keyOf(c) === prevCardKey);
+            if (matchIdx < 0) matchIdx = Math.min(Math.max(0, prevCardIdx), cards.length - 1);
+            if (cards[matchIdx]) cards[matchIdx].focus({ preventScroll: true });
+        } else if ((!activeEl || activeEl === document.body) && cards.length > 0) {
+            cards[0].focus({ preventScroll: true });
+        }
 
         // Автопревью: показываем первый канал при любой смене категории/поиска
         if (filtered.length > 0) {
@@ -1189,8 +1228,39 @@ document.addEventListener('DOMContentLoaded', () => {
         if (previewLoading) previewLoading.classList.add('hidden');
     }
 
+    function collectChannelStreams(url, ch) {
+        const streamEntries = [];
+        const seen = new Set();
+        const pushEntry = (rawUrl, sourceName, meta, isBackup) => {
+            const clean = String(rawUrl || '').trim();
+            if (!clean) return;
+            const low = clean.toLowerCase();
+            if (seen.has(low)) return;
+            seen.add(low);
+            streamEntries.push({
+                url: clean,
+                source: String(sourceName || (isBackup ? 'Резервный поток' : 'Основной поток')).trim(),
+                userAgent: meta && meta.userAgent ? String(meta.userAgent) : undefined,
+                referer: meta && meta.referer ? String(meta.referer) : undefined,
+                origin: meta && meta.origin ? String(meta.origin) : undefined,
+                isBackup: Boolean(isBackup),
+            });
+        };
+        pushEntry(url || (ch && ch.url), (ch && ch.source) || 'Основной поток', ch, false);
+        if (ch && Array.isArray(ch.backupStreams)) {
+            for (const bs of ch.backupStreams) {
+                if (bs && bs.url) {
+                    pushEntry(bs.url, bs.source || 'Резервный поток', bs, true);
+                }
+            }
+        }
+        return streamEntries;
+    }
+
     function startPreviewStream(ch) {
-        if (!ch || !ch.url) return;
+        if (!ch) return;
+        const streamEntries = collectChannelStreams(ch.url, ch);
+        if (streamEntries.length === 0) return;
         const eff = getEffectiveStreamingSettings();
         if (eff.previewEnabled === false) {
             stopPreviewStream();
@@ -1200,10 +1270,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
         previewLoading.classList.remove('hidden');
 
-        const url = ch.url;
-        const candidates = buildStreamCandidates(url, eff, ch);
+        const candidates = [];
+        streamEntries.forEach((entry, sIdx) => {
+            const list = buildStreamCandidates(entry.url, eff, entry);
+            list.forEach((c) => {
+                candidates.push(Object.assign({}, c, {
+                    streamUrl: entry.url,
+                    streamIndex: sIdx,
+                    streamTotal: streamEntries.length,
+                }));
+            });
+        });
         let candidateIdx = 0;
-        let resolvedKind = 'hls';
 
         const onReady = () => {
             clearTimeout(previewAttemptTimer);
@@ -1234,7 +1312,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         };
 
-        const runAttempt = (cand) => {
+        const runAttempt = async (cand) => {
             if (!cand) {
                 onAllFailed();
                 return;
@@ -1249,13 +1327,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 previewVideo.load();
             } catch (e) {}
 
+            const resolvedKind = await resolveWatchStreamKind(cand.streamUrl, eff);
+            if (myAttempt !== previewAttemptId) return;
+
             let settled = false;
             const advance = () => {
                 if (settled || myAttempt !== previewAttemptId) return;
                 settled = true;
                 clearTimeout(previewAttemptTimer);
                 if (candidateIdx < candidates.length) {
-                    runAttempt(candidates[candidateIdx++]);
+                    void runAttempt(candidates[candidateIdx++]);
                 } else {
                     onAllFailed();
                 }
@@ -1304,12 +1385,7 @@ document.addEventListener('DOMContentLoaded', () => {
             onAllFailed();
             return;
         }
-        const launchAttemptToken = ++previewAttemptId;
-        void resolveWatchStreamKind(url, eff).then((kind) => {
-            if (launchAttemptToken !== previewAttemptId) return;
-            resolvedKind = kind;
-            runAttempt(candidates[candidateIdx++]);
-        });
+        void runAttempt(candidates[candidateIdx++]);
     }
 
     // Клик по кнопке fullscreen на превью
@@ -1351,7 +1427,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ===== CHANNEL MENU =====
+    let lastFocusBeforeMenu = null;
     function openChannelMenu(ch) {
+        if (!ch) return;
+        lastFocusBeforeMenu = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         channelMenuTarget = ch;
 
         if (ch.logo) {
@@ -1374,10 +1453,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
         menuProgram.classList.add('hidden');
         menu.classList.remove('hidden');
+        const firstAction = menu.querySelector('.ch-menu-btn:not(.hidden)');
+        if (firstAction) setFocus(firstAction);
     }
     function closeChannelMenu() {
         menu.classList.add('hidden');
         channelMenuTarget = null;
+        const restoreEl = (lastFocusBeforeMenu && lastFocusBeforeMenu.isConnected) ? lastFocusBeforeMenu : document.querySelector('.ch-card');
+        lastFocusBeforeMenu = null;
+        if (restoreEl) setFocus(restoreEl);
     }
     menu.querySelectorAll('[data-menu-close]').forEach(el => el.onclick = closeChannelMenu);
 
@@ -1543,6 +1627,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const mySession = playerSessionId;
         const ch = channelObj || window.__playerChannel || previewChannel;
         const safeUrl = String(url || '').trim();
+        const streamEntries = collectChannelStreams(safeUrl, ch);
 
         const v = document.createElement('video');
         v.id = 'player-video';
@@ -1570,7 +1655,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let attemptId = 0;
         let activeStage = 'prepare';
         let activeSettings = getEffectiveStreamingSettings();
-        let resolvedKind = 'hls';
+        const streamKindCache = new Map();
 
         const ready = () => {
             if (mySession !== playerSessionId) return;
@@ -1599,7 +1684,7 @@ document.addEventListener('DOMContentLoaded', () => {
             recordRuntimeUnavailable(ch, msg);
         };
 
-        if (!safeUrl) {
+        if (streamEntries.length === 0) {
             err('Ссылка на поток не задана');
             return;
         }
@@ -1610,24 +1695,60 @@ document.addEventListener('DOMContentLoaded', () => {
             activeStage = 'buffer';
             setPlayerStage('connect', 'done');
             setPlayerStage('buffer', 'active', 'Буферизация');
-            if (text) text.textContent = 'Буферизация и запуск видео...';
+            if (text) {
+                text.classList.remove('hidden');
+                text.textContent = 'Буферизация и запуск видео...';
+            }
         };
 
-        const attempt = (candidate) => {
+        const attempt = async (candidate) => {
             if (mySession !== playerSessionId) return;
             if (!candidate) {
                 err(window.location.protocol === 'https:' && !isNativeTvApp() && /^http:\/\//i.test(safeUrl)
                     ? 'Прямая http:// ссылка заблокирована браузером (HTTPS) — включите proxy'
-                    : 'Поток недоступен или формат не поддерживается');
+                    : (streamEntries.length > 1
+                        ? 'Все рабочие потоки канала (' + streamEntries.length + ') недоступны'
+                        : 'Поток недоступен или формат не поддерживается'));
                 return;
             }
             const source = candidate.src;
             const currentAttempt = ++attemptId;
-            const stepLabel = (attempts.length > 1 ? (attemptIndex + '/' + attempts.length + ' · ') : '') + candidate.label + ' · ' + resolvedKind.toUpperCase();
+            let resolvedKind = streamKindCache.get(candidate.streamUrl);
+            if (!resolvedKind) {
+                setPlayerStage(
+                    'prepare',
+                    'active',
+                    candidate.streamTotal > 1 ? ('Поток ' + (candidate.streamIndex + 1) + '/' + candidate.streamTotal) : ''
+                );
+                if (text && candidate.isBackup) {
+                    text.classList.remove('hidden');
+                    text.textContent = 'Перебор рабочих потоков (' + (candidate.streamIndex + 1) + '/' + candidate.streamTotal + ' · ' + candidate.streamSource + ')...';
+                }
+                resolvedKind = await resolveWatchStreamKind(candidate.streamUrl, activeSettings);
+                if (mySession !== playerSessionId || currentAttempt !== attemptId) return;
+                streamKindCache.set(candidate.streamUrl, resolvedKind);
+            }
+            setPlayerStage(
+                'prepare',
+                'done',
+                (candidate.streamTotal > 1 ? ((candidate.streamIndex + 1) + '/' + candidate.streamTotal + ' · ') : '') + resolvedKind.toUpperCase()
+            );
+
+            const streamPrefix = candidate.streamTotal > 1
+                ? ('Поток ' + (candidate.streamIndex + 1) + '/' + candidate.streamTotal + ' · ')
+                : '';
+            const stepLabel = streamPrefix + (attempts.length > 1 ? (attemptIndex + '/' + attempts.length + ' · ') : '') + candidate.label + ' · ' + resolvedKind.toUpperCase();
             activeStage = 'connect';
             setPlayerStage('connect', 'active', stepLabel);
             setPlayerStage('buffer', 'pending', '');
-            if (text) text.textContent = 'Подключение (' + candidate.label + ')...';
+            if (text) {
+                text.classList.remove('hidden');
+                text.textContent = candidate.isBackup
+                    ? ('Перебор рабочих потоков (' + (candidate.streamIndex + 1) + '/' + candidate.streamTotal + ' · ' + candidate.streamSource + ') — ' + candidate.label + '...')
+                    : (candidate.streamTotal > 1
+                        ? ('Поток 1/' + candidate.streamTotal + ' · Подключение (' + candidate.label + ')...')
+                        : ('Подключение (' + candidate.label + ')...'));
+            }
 
             clearTimeout(playerAttemptTimer);
             if (hls) {
@@ -1648,9 +1769,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (mySession !== playerSessionId || currentAttempt !== attemptId) return;
                 clearTimeout(playerAttemptTimer);
                 if (attemptIndex < attempts.length) {
-                    attempt(attempts[attemptIndex++]);
+                    void attempt(attempts[attemptIndex++]);
                 } else {
-                    err(fallbackMsg || 'Поток недоступен или формат не поддерживается');
+                    err(fallbackMsg || (streamEntries.length > 1
+                        ? 'Все рабочие потоки канала (' + streamEntries.length + ') недоступны'
+                        : 'Поток недоступен или формат не поддерживается'));
                 }
             };
 
@@ -1700,12 +1823,21 @@ document.addEventListener('DOMContentLoaded', () => {
         const startWithSettings = async (eff) => {
             if (mySession !== playerSessionId) return;
             activeSettings = eff || getEffectiveStreamingSettings();
-            resolvedKind = await resolveWatchStreamKind(safeUrl, activeSettings);
-            if (mySession !== playerSessionId) return;
-            setPlayerStage('prepare', 'done', resolvedKind.toUpperCase());
-            attempts = buildStreamCandidates(safeUrl, activeSettings, ch);
+            attempts = [];
+            streamEntries.forEach((entry, sIdx) => {
+                const cands = buildStreamCandidates(entry.url, activeSettings, entry);
+                cands.forEach((c) => {
+                    attempts.push(Object.assign({}, c, {
+                        streamUrl: entry.url,
+                        streamIndex: sIdx,
+                        streamTotal: streamEntries.length,
+                        streamSource: entry.source,
+                        isBackup: entry.isBackup,
+                    }));
+                });
+            });
             attemptIndex = 0;
-            attempt(attempts[attemptIndex++]);
+            void attempt(attempts[attemptIndex++]);
 
             const codecDelaySec = Math.max(0, Math.min(30, Number(activeSettings.codecCheckDelaySec) ?? 8));
             if (codecDelaySec > 0) {
@@ -1819,7 +1951,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function isCloudStorageEnabled() {
         const cfg = window.PQTV_STORAGE_CONFIG;
-        if (cfg && cfg.mode === 'local') return false;
+        if (cfg && cfg.mode !== 'cloud') return false;
         if (cfg && cfg.mode === 'cloud' && cfg.configured === false) return false;
         return Boolean(window.PQTVFirebase && typeof window.PQTVFirebase.isEnabled === 'function' ? window.PQTVFirebase.isEnabled() : true);
     }
@@ -2132,8 +2264,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    let lastFocusBeforeUserPopup = null;
     function openTvUserPopup(mode, record) {
         if (!tvUserPopup) return;
+        lastFocusBeforeUserPopup = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         showTvPopupError('');
         const isEdit = Boolean(record);
         tvPopupEditingType = isEdit ? mode : null;
@@ -2175,9 +2309,11 @@ document.addEventListener('DOMContentLoaded', () => {
     function closeTvUserPopup() {
         if (!tvUserPopup) return;
         tvUserPopup.classList.add('hidden');
-        if (tvUsersModal && !tvUsersModal.classList.contains('hidden') && tvBtnAddUser) {
-            setFocus(tvBtnAddUser);
-        }
+        const restoreEl = (lastFocusBeforeUserPopup && lastFocusBeforeUserPopup.isConnected)
+            ? lastFocusBeforeUserPopup
+            : ((tvUsersModal && !tvUsersModal.classList.contains('hidden')) ? tvBtnAddUser : null);
+        lastFocusBeforeUserPopup = null;
+        if (restoreEl) setFocus(restoreEl);
     }
 
     async function saveTvUserPopup() {
@@ -2263,8 +2399,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    let lastFocusBeforeUsers = null;
     function openTvUsersModal() {
         if (!tvUsersModal) return;
+        lastFocusBeforeUsers = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         tvUsersModal.classList.remove('hidden');
         loadTvAdminUsers();
         if (tvBtnAddUser) setFocus(tvBtnAddUser);
@@ -2273,7 +2411,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function closeTvUsersModal() {
         if (!tvUsersModal) return;
         tvUsersModal.classList.add('hidden');
-        if (tvUsersBtn) setFocus(tvUsersBtn);
+        const restoreEl = (lastFocusBeforeUsers && lastFocusBeforeUsers.isConnected) ? lastFocusBeforeUsers : tvUsersBtn;
+        lastFocusBeforeUsers = null;
+        if (restoreEl) setFocus(restoreEl);
     }
 
     async function loadTvAlerts() {
@@ -2353,8 +2493,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    let lastFocusBeforeAlerts = null;
     function openTvAlertsModal() {
         if (!tvAlertsModal) return;
+        lastFocusBeforeAlerts = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         tvAlertsModal.classList.remove('hidden');
         loadTvAlerts();
         if (tvBtnRefreshAlerts) setFocus(tvBtnRefreshAlerts);
@@ -2363,7 +2505,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function closeTvAlertsModal() {
         if (!tvAlertsModal) return;
         tvAlertsModal.classList.add('hidden');
-        if (tvAlertsBtn) setFocus(tvAlertsBtn);
+        const restoreEl = (lastFocusBeforeAlerts && lastFocusBeforeAlerts.isConnected) ? lastFocusBeforeAlerts : tvAlertsBtn;
+        lastFocusBeforeAlerts = null;
+        if (restoreEl) setFocus(restoreEl);
     }
 
     if (window.IS_ADMIN_VIEWER) {
@@ -2387,18 +2531,38 @@ document.addEventListener('DOMContentLoaded', () => {
         setInterval(loadTvAlerts, 60000);
     }
 
-// ============ SPATIAL NAVIGATION (стрелки по координатам) ============
+// ============ SPATIAL NAVIGATION (стрелки по координатам + Android TV пульт) ============
     const FOCUS_SELECTOR = '.tb-btn, .tb-update-btn, .tb-install, .tb-profile, #watch-search, .tb-btn-exit, .watch-unavail-btn, .preview-btn, .cat-btn, .ch-card, .btn-ice, .group-btn, .admin-access';
 
+    function normalizeDpadKey(e) {
+        const k = String(e.key || '');
+        const code = Number(e.keyCode || e.which || 0);
+        if (code === 37 || k === 'ArrowLeft' || k === 'DPadLeft' || k === 'Left') return 'ArrowLeft';
+        if (code === 38 || k === 'ArrowUp' || k === 'DPadUp' || k === 'Up') return 'ArrowUp';
+        if (code === 39 || k === 'ArrowRight' || k === 'DPadRight' || k === 'Right') return 'ArrowRight';
+        if (code === 40 || k === 'ArrowDown' || k === 'DPadDown' || k === 'Down') return 'ArrowDown';
+        if (code === 13 || code === 23 || code === 66 || k === 'Enter' || k === 'Select' || k === 'DPadCenter' || k === 'NumpadEnter') return 'Enter';
+        if (code === 4 || code === 27 || code === 111 || k === 'Escape' || k === 'Back' || k === 'GoBack' || k === 'BrowserBack') return 'Escape';
+        if (code === 8 || k === 'Backspace') return 'Backspace';
+        if (code === 82 || k === 'ContextMenu' || k === 'Menu' || k === 'Info') return 'ContextMenu';
+        if (k === ' ' || k === 'Spacebar' || k === 'MediaPlayPause') return 'MediaPlayPause';
+        return k;
+    }
+
+    function isElementFocusable(el) {
+        if (!el || el.disabled) return false;
+        if (el.classList.contains('hidden')) return false;
+        if (el.tagName === 'INPUT' && el.type === 'hidden') return false;
+        if (el.closest('.hidden')) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width <= 0 || r.height <= 0) return false;
+        const st = window.getComputedStyle(el);
+        if (st.visibility === 'hidden' || st.display === 'none' || st.pointerEvents === 'none') return false;
+        return true;
+    }
+
     function getVisibleFocusables() {
-        return Array.from(document.querySelectorAll(FOCUS_SELECTOR))
-            .filter(el => {
-                if (el.offsetParent === null) return false;
-                if (el.disabled) return false;
-                const st = window.getComputedStyle(el);
-                if (st.visibility === 'hidden' || st.display === 'none') return false;
-                return true;
-            });
+        return Array.from(document.querySelectorAll(FOCUS_SELECTOR)).filter(isElementFocusable);
     }
 
     function rectCenter(el) {
@@ -2406,61 +2570,86 @@ document.addEventListener('DOMContentLoaded', () => {
         return { x: r.left + r.width / 2, y: r.top + r.height / 2, r };
     }
 
-    // Ищем ближайший элемент в направлении dir ('up','down','left','right')
-    function findNext(current, dir) {
-        const all = getVisibleFocusables();
-        if (all.length === 0) return null;
-        if (!current || !all.includes(current)) return all[0];
+    function findSpatialCandidate(current, list, dir) {
+        if (!Array.isArray(list) || list.length === 0) return null;
+        if (!current || !list.includes(current)) return list[0];
 
         const cur = rectCenter(current);
-
-        // Собираем кандидатов в нужном направлении
         const candidates = [];
-        for (const el of all) {
+
+        for (const el of list) {
             if (el === current) continue;
             const c = rectCenter(el);
             const dx = c.x - cur.x;
             const dy = c.y - cur.y;
 
             let ok = false;
-            // Главная ось для стрелки, второстепенная — отклонение
-            let mainDist, offAxis;
+            let mainGap = 0;
+            let centerDist = 0;
+            let crossOverlap = 0;
+            let crossGap = 0;
+            let offAxis = 0;
+
             if (dir === 'left') {
-                ok = dx < -2;
-                mainDist = -dx;
-                offAxis = Math.abs(dy);
+                ok = dx < -2 || c.r.right <= cur.r.left + 4;
+                if (ok) {
+                    centerDist = Math.max(0, -dx);
+                    mainGap = Math.max(0, cur.r.left - c.r.right);
+                    crossOverlap = Math.max(0, Math.min(cur.r.bottom, c.r.bottom) - Math.max(cur.r.top, c.r.top));
+                    crossGap = crossOverlap > 0 ? 0 : Math.min(Math.abs(c.r.top - cur.r.bottom), Math.abs(cur.r.top - c.r.bottom));
+                    offAxis = Math.abs(dy);
+                }
             } else if (dir === 'right') {
-                ok = dx > 2;
-                mainDist = dx;
-                offAxis = Math.abs(dy);
+                ok = dx > 2 || c.r.left >= cur.r.right - 4;
+                if (ok) {
+                    centerDist = Math.max(0, dx);
+                    mainGap = Math.max(0, c.r.left - cur.r.right);
+                    crossOverlap = Math.max(0, Math.min(cur.r.bottom, c.r.bottom) - Math.max(cur.r.top, c.r.top));
+                    crossGap = crossOverlap > 0 ? 0 : Math.min(Math.abs(c.r.top - cur.r.bottom), Math.abs(cur.r.top - c.r.bottom));
+                    offAxis = Math.abs(dy);
+                }
             } else if (dir === 'up') {
-                ok = dy < -2;
-                mainDist = -dy;
-                offAxis = Math.abs(dx);
+                ok = dy < -2 || c.r.bottom <= cur.r.top + 4;
+                if (ok) {
+                    centerDist = Math.max(0, -dy);
+                    mainGap = Math.max(0, cur.r.top - c.r.bottom);
+                    crossOverlap = Math.max(0, Math.min(cur.r.right, c.r.right) - Math.max(cur.r.left, c.r.left));
+                    crossGap = crossOverlap > 0 ? 0 : Math.min(Math.abs(c.r.left - cur.r.right), Math.abs(cur.r.left - c.r.right));
+                    offAxis = Math.abs(dx);
+                }
             } else if (dir === 'down') {
-                ok = dy > 2;
-                mainDist = dy;
-                offAxis = Math.abs(dx);
+                ok = dy > 2 || c.r.top >= cur.r.bottom - 4;
+                if (ok) {
+                    centerDist = Math.max(0, dy);
+                    mainGap = Math.max(0, c.r.top - cur.r.bottom);
+                    crossOverlap = Math.max(0, Math.min(cur.r.right, c.r.right) - Math.max(cur.r.left, c.r.left));
+                    crossGap = crossOverlap > 0 ? 0 : Math.min(Math.abs(c.r.left - cur.r.right), Math.abs(cur.r.left - c.r.right));
+                    offAxis = Math.abs(dx);
+                }
             }
+
             if (!ok) continue;
 
-            // Не уходим слишком далеко по второстепенной оси
-            // Штраф за смещение
-            const score = mainDist + offAxis * 2.5;
-            candidates.push({ el, score, mainDist, offAxis });
+            // Элементы с перекрытием по перпендикулярной оси (строка/колонка) всегда предпочтительнее диагональных
+            const alignedPenalty = crossOverlap > 0 ? (offAxis * 0.18) : (260 + crossGap * 2.4 + offAxis * 1.15);
+            const score = mainGap + centerDist * 0.35 + alignedPenalty;
+            candidates.push({ el, score });
         }
 
         if (candidates.length === 0) return null;
-
-        // Сначала берём те, что близко по главной оси; потом лучший score
         candidates.sort((a, b) => a.score - b.score);
         return candidates[0].el;
+    }
+
+    // Ищем ближайший элемент в направлении dir ('up','down','left','right')
+    function findNext(current, dir) {
+        const all = getVisibleFocusables();
+        return findSpatialCandidate(current, all, dir);
     }
 
     // Прокрутка контейнера так, чтобы элемент был виден
     function scrollIntoViewSmooth(el) {
         if (!el) return;
-        // Найти ближайший скроллируемый родитель
         let p = el.parentElement;
         let scroller = null;
         while (p && p !== document.body) {
@@ -2472,23 +2661,21 @@ document.addEventListener('DOMContentLoaded', () => {
             p = p.parentElement;
         }
         if (!scroller) {
-            // document-level скролл
             const r = el.getBoundingClientRect();
             if (r.top < 40 || r.bottom > window.innerHeight - 40) {
-                el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
             }
             return;
         }
         const r = el.getBoundingClientRect();
         const sr = scroller.getBoundingClientRect();
-        // Верхняя и нижняя видимые границы контейнера
-        const topLimit = sr.top + 20;
-        const botLimit = sr.bottom - 20;
+        const topLimit = sr.top + 16;
+        const botLimit = sr.bottom - 16;
 
         if (r.top < topLimit) {
-            scroller.scrollBy({ top: r.top - topLimit - 40, behavior: 'smooth' });
+            scroller.scrollBy({ top: r.top - topLimit - 32, behavior: 'smooth' });
         } else if (r.bottom > botLimit) {
-            scroller.scrollBy({ top: r.bottom - botLimit + 40, behavior: 'smooth' });
+            scroller.scrollBy({ top: r.bottom - botLimit + 32, behavior: 'smooth' });
         }
     }
 
@@ -2501,40 +2688,51 @@ document.addEventListener('DOMContentLoaded', () => {
     function handleModalDpad(modalEl, key, e, closeFn) {
         const cur = document.activeElement;
         const inTextInput = Boolean(cur && cur.tagName === 'INPUT');
-        if (key === 'Escape' || key === 'BrowserBack' || (key === 'Backspace' && !inTextInput)) {
+        if (key === 'Escape' || (key === 'Backspace' && !inTextInput)) {
             e.preventDefault();
             closeFn();
             return true;
         }
-        const focusables = [...modalEl.querySelectorAll('button, input')].filter(el =>
-            el.offsetParent !== null && !el.disabled && !el.classList.contains('hidden') && el.type !== 'hidden'
-        );
+        const focusables = [...modalEl.querySelectorAll('button, input, select, a[href], [tabindex="0"]')].filter(isElementFocusable);
         if (focusables.length === 0) return true;
         const idx = focusables.indexOf(cur);
 
         if (inTextInput && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+            const valLen = (cur.value || '').length;
+            const atStart = typeof cur.selectionStart === 'number' ? cur.selectionStart === 0 : valLen === 0;
+            const atEnd = typeof cur.selectionEnd === 'number' ? cur.selectionEnd === valLen : valLen === 0;
+            if ((key === 'ArrowLeft' && !atStart) || (key === 'ArrowRight' && !atEnd)) {
+                return true;
+            }
+        }
+
+        if (key === 'ArrowLeft' || key === 'ArrowRight' || key === 'ArrowUp' || key === 'ArrowDown') {
+            e.preventDefault();
+            const dir = key.replace('Arrow', '').toLowerCase();
+            let target = (idx >= 0) ? findSpatialCandidate(cur, focusables, dir) : focusables[0];
+            if (!target) {
+                if (dir === 'down' || dir === 'right') {
+                    target = focusables[(idx + 1 + focusables.length) % focusables.length];
+                } else {
+                    target = focusables[(idx - 1 + focusables.length) % focusables.length];
+                }
+            }
+            if (target) setFocus(target);
             return true;
         }
-        if (key === 'ArrowDown' || (!inTextInput && key === 'ArrowRight')) {
-            e.preventDefault();
-            setFocus(focusables[(idx + 1 + focusables.length) % focusables.length]);
-            return true;
-        }
-        if (key === 'ArrowUp' || (!inTextInput && key === 'ArrowLeft')) {
-            e.preventDefault();
-            setFocus(focusables[(idx - 1 + focusables.length) % focusables.length]);
-            return true;
-        }
-        if (key === 'Enter' && cur && cur.tagName === 'BUTTON' && focusables.includes(cur)) {
-            e.preventDefault();
-            cur.click();
+
+        if (key === 'Enter' && cur && focusables.includes(cur)) {
+            if (cur.tagName !== 'INPUT') {
+                e.preventDefault();
+                cur.click();
+            }
             return true;
         }
         return true;
     }
 
     document.addEventListener('keydown', (e) => {
-        const key = e.key;
+        const key = normalizeDpadKey(e);
         const playerOpen = playerModal && !playerModal.classList.contains('hidden');
         const userPopupOpen = tvUserPopup && !tvUserPopup.classList.contains('hidden');
         const usersOpen = tvUsersModal && !tvUsersModal.classList.contains('hidden');
@@ -2545,10 +2743,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // === Плеер открыт ===
         if (playerOpen) {
-            if (key === 'Escape' || key === 'Backspace' || key === 'BrowserBack') {
+            if (key === 'Escape' || key === 'Backspace') {
                 e.preventDefault(); closePlayer(); return;
             }
-            if (key === 'Enter' || key === ' ' || key === 'MediaPlayPause') {
+            if (key === 'Enter' || key === 'MediaPlayPause') {
                 e.preventDefault();
                 const v = playerVideoHost.querySelector('video');
                 if (v) { if (v.paused) v.play().catch(()=>{}); else v.pause(); }
@@ -2571,61 +2769,23 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        // === TV Admin / Unavailable Modals (priority top-down) ===
+        // === Все модальные окна (единая 2D-навигация для пульта, priority top-down) ===
         if (userPopupOpen && handleModalDpad(tvUserPopup, key, e, closeTvUserPopup)) return;
         if (usersOpen && handleModalDpad(tvUsersModal, key, e, closeTvUsersModal)) return;
         if (alertsOpen && handleModalDpad(tvAlertsModal, key, e, closeTvAlertsModal)) return;
         if (unavailOpen && handleModalDpad(unavailModal, key, e, closeUnavailableModal)) return;
+        if (settingsOpen && handleModalDpad(settingsModal, key, e, closeSettingsModal)) return;
+        if (menuOpen && handleModalDpad(menu, key, e, closeChannelMenu)) return;
 
-        // === Окно настроек и обновления ТВ открыто ===
-        if (settingsOpen) {
-            if (key === 'Escape' || key === 'Backspace' || key === 'BrowserBack') {
-                e.preventDefault(); closeSettingsModal(); return;
-            }
-            const setFocusList = [...settingsModal.querySelectorAll('button')].filter(b => b.offsetParent !== null && !b.classList.contains('hidden'));
-            if (setFocusList.length === 0) return;
-            const cur = document.activeElement;
-            const idx = setFocusList.indexOf(cur);
-            if (key === 'ArrowRight' || key === 'ArrowDown') {
-                e.preventDefault();
-                setFocus(setFocusList[(idx + 1 + setFocusList.length) % setFocusList.length]);
-                return;
-            }
-            if (key === 'ArrowLeft' || key === 'ArrowUp') {
-                e.preventDefault();
-                setFocus(setFocusList[(idx - 1 + setFocusList.length) % setFocusList.length]);
-                return;
-            }
-            if (key === 'Enter' && cur && setFocusList.includes(cur)) {
-                e.preventDefault(); cur.click();
-                return;
-            }
-            return;
-        }
-
-        // === Меню канала открыто — фокус только внутри него ===
-        if (menuOpen) {
-            if (key === 'Escape' || key === 'Backspace' || key === 'BrowserBack') {
-                e.preventDefault(); closeChannelMenu(); return;
-            }
-            const menuFocus = [...menu.querySelectorAll('button')].filter(b => b.offsetParent !== null);
-            if (menuFocus.length === 0) return;
-            const cur = document.activeElement;
-            const idx = menuFocus.indexOf(cur);
-
-            if (key === 'ArrowRight' || key === 'ArrowDown') {
-                e.preventDefault();
-                setFocus(menuFocus[(idx + 1 + menuFocus.length) % menuFocus.length]);
-                return;
-            }
-            if (key === 'ArrowLeft' || key === 'ArrowUp') {
-                e.preventDefault();
-                setFocus(menuFocus[(idx - 1 + menuFocus.length) % menuFocus.length]);
-                return;
-            }
-            if (key === 'Enter') {
-                if (cur && menuFocus.includes(cur)) { e.preventDefault(); cur.click(); }
-                return;
+        // === Главная: контекстное меню канала с пульта ===
+        if (key === 'ContextMenu') {
+            const card = document.activeElement && document.activeElement.closest('.ch-card');
+            if (card) {
+                const ch = filtered[Number(card.dataset.idx)];
+                if (ch) {
+                    e.preventDefault();
+                    openChannelMenu(ch);
+                }
             }
             return;
         }
@@ -2635,7 +2795,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!NAV.includes(key)) {
             if (key === 'Enter') {
                 const a = document.activeElement;
-                if (a && FOCUS_SELECTOR.split(', ').some(s => a.matches(s)) && a.id !== 'watch-search') {
+                if (a && a.id !== 'watch-search' && FOCUS_SELECTOR.split(', ').some(s => a.matches(s))) {
                     e.preventDefault();
                     a.click();
                 }
@@ -2643,15 +2803,23 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        const cur = document.activeElement;
+        if (cur && cur.id === 'watch-search' && (key === 'ArrowLeft' || key === 'ArrowRight')) {
+            const valLen = (cur.value || '').length;
+            const atStart = typeof cur.selectionStart === 'number' ? cur.selectionStart === 0 : valLen === 0;
+            const atEnd = typeof cur.selectionEnd === 'number' ? cur.selectionEnd === valLen : valLen === 0;
+            if ((key === 'ArrowLeft' && !atStart) || (key === 'ArrowRight' && !atEnd)) {
+                return;
+            }
+        }
+
         e.preventDefault();
         const dir = key.replace('Arrow', '').toLowerCase();
-        const cur = document.activeElement;
         const next = findNext(cur, dir);
 
         if (next) {
             setFocus(next);
         } else if (!cur || !cur.matches(FOCUS_SELECTOR)) {
-            // Ничего не в фокусе — на первую карточку или первый элемент
             const first = document.querySelector('.ch-card') || getVisibleFocusables()[0];
             if (first) setFocus(first);
         }

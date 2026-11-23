@@ -52,7 +52,6 @@ export interface SearchResult extends IndexedChannel {
 }
 
 const INDEX_TTL = 6 * 3600;
-const MAX_RESULTS = 40;
 
 function safeId(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -726,6 +725,12 @@ export class StreamParser {
     return true;
   }
 
+  static saveIndexForSource(sourceId: string, items: IndexedChannel[]): boolean {
+    const id = safeId(sourceId || '');
+    if (!id) return false;
+    return this.writeIndex(id, items);
+  }
+
   static async refreshAll(): Promise<{
     ok: boolean;
     total: number;
@@ -857,10 +862,8 @@ export class StreamParser {
             origin: it.origin || src.origin,
             source: src.name || '?',
           });
-          if (results.length >= 500) break;
         }
       }
-      if (results.length >= 500) break;
     }
 
     // Fallback: also search local playlists if index hasn't been populated yet
@@ -889,12 +892,26 @@ export class StreamParser {
     const seen = new Set<string>();
     const final: SearchResult[] = [];
     for (const r of results) {
-      const k = r.url.toLowerCase();
-      if (seen.has(k)) continue;
+      const k = r.url.trim().toLowerCase();
+      if (!k || seen.has(k)) continue;
       seen.add(k);
       final.push(r);
-      if (final.length >= MAX_RESULTS) break;
     }
+
+    const relevanceScore = (name: string): number => {
+      const low = name.trim().toLowerCase();
+      if (low === qLower) return 0;
+      if (qNorm && normalizeChannelName(name) === qNorm) return 1;
+      if (low.startsWith(qLower)) return 2;
+      return 3;
+    };
+
+    final.sort((a, b) => {
+      const sa = relevanceScore(a.name);
+      const sb = relevanceScore(b.name);
+      if (sa !== sb) return sa - sb;
+      return a.name.localeCompare(b.name, 'ru', { numeric: true, sensitivity: 'base' });
+    });
 
     return final;
   }

@@ -1052,5 +1052,235 @@ describe('PQTV Data Lifecycle & Integrity Suite', () => {
     assert.equal(cloudCustomRes.data.publicConfig.firebaseConfig?.projectId, 'my-own-server-tv');
     assert.equal(storageSettingsMod.getActiveFirebaseConfig()?.projectId, 'my-own-server-tv');
   });
+
+  test('19. Uncapped StreamParser.search (>40 & >500), relevance ordering, and indexed_channels stat counter', async () => {
+    resetTempWorkspace();
+
+    // Seed 540 matching channels in source index
+    streamParserMod.StreamParser.saveSources([
+      {
+        id: 'src_big',
+        catalogId: 1,
+        name: 'Big Source',
+        type: 'm3u',
+        url: 'http://127.0.0.1:9/big.m3u',
+        enabled: true,
+      },
+    ]);
+
+    const items = Array.from({ length: 540 }, (_, i) => ({
+      name: i === 539 ? 'Кино' : i === 538 ? 'Кино Премиум' : `Канал Кино #${i + 1}`,
+      url: `http://127.0.0.1:19999/ch/${i + 1}.m3u8`,
+      logo: '',
+      group: 'Фильмы',
+      tvg_id: `kino_${i + 1}`,
+    }));
+    assert.equal(streamParserMod.StreamParser.saveIndexForSource('src_big', items), true);
+
+    const searchRes = streamParserMod.StreamParser.search('Кино');
+    assert.equal(searchRes.length, 540);
+    assert.equal(searchRes[0].name, 'Кино');
+    assert.equal(searchRes[1].name, 'Кино Премиум');
+
+    const parseApiRes = await api<{ results: Array<{ name: string }> }>('/api/stream/parse', 'POST', {
+      query: 'Кино',
+    });
+    assert.equal(parseApiRes.status, 200);
+    assert.equal(parseApiRes.data.results.length, 540);
+
+    const statsRes = await api<{ indexed_channels: number; sources_enabled: number }>('/api/catalog/stats');
+    assert.equal(statsRes.status, 200);
+    assert.equal(statsRes.data.indexed_channels, 540);
+    assert.equal(statsRes.data.sources_enabled, 1);
+  });
+
+  test('20. Best-stream ranking, deduplication, backupStreams in /watch/api/channels, and catalog check endpoints', async () => {
+    resetTempWorkspace();
+    const { saveStorageSettings } = await import('../src/storageSettings.js');
+    assert.equal(saveStorageSettings({ mode: 'local' }).ok, true);
+
+    const deadUrl = 'http://127.0.0.1:9/dead.m3u8';
+    const fastUrl = 'https://cdn.example.com/fast.m3u8';
+    const slowUrl = 'https://cdn.example.com/slow.m3u8';
+
+    // Seed playlist and channel
+    assert.equal((await api('/api/playlists', 'POST', { name: 'main', enabled: true })).status, 200);
+    assert.equal((await api('/api/channels/save', 'POST', {
+      playlist: 'main',
+      channels: [
+        { name: 'Первый Тест', group: 'Общие', logo: '', url: deadUrl, tvg_id: 'ch1' },
+      ],
+    })).status, 200);
+
+    // Seed 2 catalog sources pointing to duplicate deadUrl + fastUrl + slowUrl
+    streamParserMod.StreamParser.saveSources([
+      { id: 'src_1', catalogId: 1, name: 'Источник A', type: 'm3u', url: 'https://cdn.example.com/src1.m3u', enabled: true },
+      { id: 'src_2', catalogId: 2, name: 'Источник B', type: 'm3u', url: 'https://cdn.example.com/src2.m3u', enabled: true },
+    ]);
+    streamParserMod.StreamParser.saveIndexForSource('src_1', [
+      { name: 'Первый Тест', url: deadUrl, logo: '', group: 'Общие', tvg_id: 'ch1' },
+      { name: 'Первый Тест', url: slowUrl, logo: '', group: 'Общие', tvg_id: 'ch1' },
+    ]);
+    streamParserMod.StreamParser.saveIndexForSource('src_2', [
+      { name: 'Первый Тест', url: `  ${deadUrl}  `, logo: '', group: 'Общие', tvg_id: 'ch1' },
+      { name: 'Первый Тест', url: fastUrl, logo: '', group: 'Общие', tvg_id: 'ch1' },
+    ]);
+
+    catalogStoreMod.catalogStore.ingestSourceItems(
+      streamParserMod.StreamParser.getSources()[0],
+      [
+        { name: 'Первый Тест', url: deadUrl, logo: '', group: 'Общие', tvg_id: 'ch1' },
+        { name: 'Первый Тест', url: slowUrl, logo: '', group: 'Общие', tvg_id: 'ch1' },
+      ]
+    );
+    catalogStoreMod.catalogStore.ingestSourceItems(
+      streamParserMod.StreamParser.getSources()[1],
+      [
+        { name: 'Первый Тест', url: deadUrl, logo: '', group: 'Общие', tvg_id: 'ch1' },
+        { name: 'Первый Тест', url: fastUrl, logo: '', group: 'Общие', tvg_id: 'ch1' },
+      ]
+    );
+    catalogStoreMod.catalogStore.reconcile({ save: true });
+
+    const listRes = await api<{ channels: Array<{ id: number; name: string }> }>('/api/catalog/channels?limit=50');
+    assert.equal(listRes.status, 200);
+    const catCh = listRes.data.channels.find((c) => c.name === 'Первый Тест');
+    assert.ok(catCh);
+
+    // Check single stream via /api/catalog/stream/check (blocked loopback returns deterministic offline)
+    const singleCheck = await api<{ ok: boolean; result: { status: string } }>(
+      '/api/catalog/stream/check',
+      'POST',
+      { url: deadUrl, channel_id: catCh.id }
+    );
+    assert.equal(singleCheck.status, 200);
+    assert.equal(singleCheck.data.ok, true);
+    assert.equal(singleCheck.data.result.status, 'offline');
+
+    // Hydrate deterministic fresh latency/status metrics across the 3 deduplicated streams
+    const raw = catalogStoreMod.catalogStore.exportRawState();
+    const now = Math.floor(Date.now() / 1000);
+    for (const st of raw.streams) {
+      if (st.url === fastUrl) {
+        st.online = 1;
+        st.response_ms = 35;
+        st.checked_at = now - 5;
+      } else if (st.url === slowUrl) {
+        st.online = 1;
+        st.response_ms = 900;
+        st.checked_at = now - 5;
+      } else if (st.url === deadUrl) {
+        st.online = -1;
+        st.response_ms = 0;
+        st.checked_at = now - 5;
+      }
+    }
+    catalogStoreMod.catalogStore.hydrateRawState(raw);
+    catalogStoreMod.catalogStore.reconcile({ save: true });
+
+    // Verify deduplication & best marker in /api/catalog/channel
+    const detailRes = await api<{
+      streams: Array<{ url: string; status: string; is_best?: boolean }>;
+    }>(`/api/catalog/channel?id=${catCh.id}`);
+    assert.equal(detailRes.status, 200);
+    assert.equal(detailRes.data.streams.length, 3);
+    assert.equal(detailRes.data.streams[0].url, fastUrl);
+    assert.equal(detailRes.data.streams[0].status, 'online');
+    assert.equal(detailRes.data.streams[0].is_best, true);
+
+    // Verify /api/catalog/aggregate/status returns progress structure
+    const aggStatus = await api<{ ok: boolean; progress: { running: boolean; phase: string } }>(
+      '/api/catalog/aggregate/status'
+    );
+    assert.equal(aggStatus.status, 200);
+    assert.equal(aggStatus.data.ok, true);
+    assert.equal(aggStatus.data.progress.running, false);
+
+    // Verify /watch/api/channels picks best online stream & attaches backupStreams in quality order
+    const watchRes = await api<{
+      channels: Array<{ name: string; url: string; backupStreams?: Array<{ url: string; source?: string }> }>;
+    }>('/watch/api/channels');
+    assert.equal(watchRes.status, 200);
+    const wCh = watchRes.data.channels.find((c) => c.name === 'Первый Тест');
+    assert.ok(wCh);
+    assert.equal(wCh.url, fastUrl);
+    assert.ok(Array.isArray(wCh.backupStreams));
+    assert.equal(wCh.backupStreams.length, 2);
+    assert.equal(wCh.backupStreams[0].url, slowUrl);
+    assert.equal(wCh.backupStreams[1].url, deadUrl);
+    assert.equal(wCh.backupStreams.some((b) => b.url === fastUrl), false);
+  });
+
+  test('21. PostgreSQL storage config masks secrets, tests connectivity, and rolls back on failed activation', async () => {
+    resetTempWorkspace();
+    const { saveStorageSettings, loadStorageSettings } = await import('../src/storageSettings.js');
+    assert.equal(saveStorageSettings({ mode: 'local' }).ok, true);
+
+    // Save non-sensitive or test-only PG settings and verify GET masks password & connectionString
+    const savedRaw = saveStorageSettings({
+      mode: 'postgres',
+      postgresConfig: {
+        useEnvDatabaseUrl: false,
+        connectionString: 'postgresql://pguser:SuperSecretPass@127.0.0.1:1/pqtv_db',
+        host: '127.0.0.1',
+        port: 1,
+        database: 'pqtv_db',
+        user: 'pguser',
+        password: 'SuperSecretPass',
+        ssl: false,
+      },
+    });
+    assert.equal(savedRaw.ok, true);
+
+    const getRes = await api<{
+      ok: boolean;
+      settings: {
+        mode: string;
+        postgresConfig: {
+          hasConnectionString: boolean;
+          maskedConnectionString: string;
+          hasPassword: boolean;
+          password?: string;
+          connectionString?: string;
+        };
+      };
+    }>('/api/settings/storage');
+    assert.equal(getRes.status, 200);
+    assert.equal(getRes.data.settings.postgresConfig.hasConnectionString, true);
+    assert.equal(getRes.data.settings.postgresConfig.hasPassword, true);
+    assert.equal(getRes.data.settings.postgresConfig.maskedConnectionString.includes('SuperSecretPass'), false);
+    assert.equal(getRes.data.settings.postgresConfig.maskedConnectionString.includes('********'), true);
+    assert.equal(getRes.data.settings.postgresConfig.password, undefined);
+    assert.equal(getRes.data.settings.postgresConfig.connectionString, undefined);
+
+    // Restore local before testing live switch failure rollback
+    assert.equal(saveStorageSettings({ mode: 'local' }).ok, true);
+
+    const testConnRes = await api<{ ok: boolean; error?: string }>(
+      '/api/settings/storage/test-postgres',
+      'POST',
+      {
+        postgresConfig: {
+          useEnvDatabaseUrl: false,
+          connectionString: 'postgresql://pguser:pass@127.0.0.1:1/pqtv_db',
+        },
+      }
+    );
+    assert.equal(testConnRes.status, 400);
+    assert.equal(testConnRes.data.ok, false);
+
+    // Attempting to activate unreachable PostgreSQL returns 400 and rolls back mode to local
+    const switchFail = await api<{ ok: boolean; error?: string }>('/api/settings/storage', 'POST', {
+      mode: 'postgres',
+      postgresConfig: {
+        useEnvDatabaseUrl: false,
+        connectionString: 'postgresql://pguser:pass@127.0.0.1:1/pqtv_db',
+      },
+    });
+    assert.equal(switchFail.status, 400);
+    assert.equal(switchFail.data.ok, false);
+    assert.equal(loadStorageSettings().mode, 'local');
+  });
 });
+
 

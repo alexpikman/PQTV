@@ -607,6 +607,7 @@ export async function aggregateCatalogFromSourcesUnified(): Promise<UnifiedOpRes
       status: 200,
       addedChannels: result.addedChannels,
       addedStreams: result.addedStreams,
+      totalFound: result.totalFound ?? 0,
       output: `Aggregated ${result.addedChannels} channels and ${result.addedStreams} streams`,
       revision: meta.revision,
     };
@@ -658,6 +659,37 @@ export async function checkCatalogStreamsUnified(limit = 500): Promise<UnifiedOp
       offline: result.offline,
       unknown: result.unknown,
       output: `Checked ${result.checked} streams: ${result.online} online, ${result.offline} offline, ${result.unknown} unknown`,
+      revision: meta.revision,
+    };
+  });
+}
+
+export async function checkCatalogChannelStreamsUnified(channelId: number, force = true): Promise<UnifiedOpResult> {
+  return withAsyncWriteLock(lockKey(), async () => {
+    const result = await catalogStore.checkChannelStreams(channelId, force);
+    if (result.notFound) {
+      return { ok: false, status: 404, error: result.error || 'Канал не найден' };
+    }
+    if (!result.persisted) {
+      return { ok: false, status: 500, error: result.error || 'Не удалось сохранить результаты проверки канала' };
+    }
+    const meta = stateLifecycle.bumpRevision('reconcile', 'catalog_channel_check', {
+      channelId,
+      checked: result.checked,
+      online: result.online,
+      offline: result.offline,
+      unknown: result.unknown,
+    });
+    const revisionFailure = revisionWriteFailure(meta);
+    if (revisionFailure) return revisionFailure;
+    return {
+      ok: true,
+      status: 200,
+      checked: result.checked,
+      online: result.online,
+      offline: result.offline,
+      unknown: result.unknown,
+      channel: result.channel,
       revision: meta.revision,
     };
   });

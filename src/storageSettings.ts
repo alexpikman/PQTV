@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
-import { atomicWriteJsonSync, readJsonSync } from './persistence.js';
+import { atomicWriteFileSync } from './persistence.js';
 
-export type StorageMode = 'local' | 'cloud';
+export type StorageMode = 'local' | 'postgres' | 'cloud';
 
 export interface FirebaseWebConfig {
   apiKey: string;
@@ -16,10 +16,43 @@ export interface FirebaseWebConfig {
   measurementId?: string;
 }
 
+export interface PostgresConfig {
+  useEnvDatabaseUrl: boolean;
+  connectionString: string;
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  password: string;
+  ssl: boolean;
+}
+
 export interface StorageSettings {
   mode: StorageMode;
   useCustomFirebaseConfig: boolean;
   firebaseConfig: FirebaseWebConfig;
+  postgresConfig: PostgresConfig;
+  updatedAt: number;
+}
+
+export interface MaskedPostgresConfig {
+  useEnvDatabaseUrl: boolean;
+  hasEnvDatabaseUrl: boolean;
+  host: string;
+  port: number;
+  database: string;
+  user: string;
+  ssl: boolean;
+  hasConnectionString: boolean;
+  maskedConnectionString: string;
+  hasPassword: boolean;
+}
+
+export interface MaskedStorageSettings {
+  mode: StorageMode;
+  useCustomFirebaseConfig: boolean;
+  firebaseConfig: FirebaseWebConfig;
+  postgresConfig: MaskedPostgresConfig;
   updatedAt: number;
 }
 
@@ -29,7 +62,9 @@ export interface PublicStorageClientConfig {
   firebaseConfig: FirebaseWebConfig | null;
 }
 
-function cleanStr(val: unknown, maxLen = 256): string {
+const MASK_SENTINEL = '********';
+
+function cleanStr(val: unknown, maxLen = 512): string {
   return typeof val === 'string' ? val.trim().slice(0, maxLen) : '';
 }
 
@@ -43,6 +78,98 @@ function emptyFirebaseConfig(): FirebaseWebConfig {
     messagingSenderId: '',
     appId: '',
     measurementId: '',
+  };
+}
+
+export function emptyPostgresConfig(): PostgresConfig {
+  return {
+    useEnvDatabaseUrl: Boolean(config.databaseUrl),
+    connectionString: '',
+    host: '',
+    port: 5432,
+    database: 'pqtv',
+    user: 'postgres',
+    password: '',
+    ssl: false,
+  };
+}
+
+function normalizePort(raw: unknown): number {
+  const n = Number(raw);
+  if (Number.isFinite(n) && n >= 1 && n <= 65535) return Math.floor(n);
+  return 5432;
+}
+
+function normalizePostgresConfig(raw: unknown, fallback?: PostgresConfig): PostgresConfig {
+  const obj = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const base = fallback || emptyPostgresConfig();
+
+  const rawConn = cleanStr(obj.connectionString, 1024);
+  const nextConn =
+    rawConn === MASK_SENTINEL
+      ? base.connectionString
+      : obj.connectionString !== undefined
+        ? rawConn
+        : base.connectionString;
+
+  const rawPass = typeof obj.password === 'string' ? obj.password.slice(0, 512) : undefined;
+  const nextPass =
+    rawPass === MASK_SENTINEL
+      ? base.password
+      : rawPass !== undefined
+        ? rawPass
+        : base.password;
+
+  return {
+    useEnvDatabaseUrl:
+      obj.useEnvDatabaseUrl !== undefined ? Boolean(obj.useEnvDatabaseUrl) : base.useEnvDatabaseUrl,
+    connectionString: nextConn,
+    host: cleanStr(obj.host, 255) || (obj.host !== undefined ? '' : base.host),
+    port: obj.port !== undefined ? normalizePort(obj.port) : base.port,
+    database: cleanStr(obj.database, 128) || (obj.database !== undefined ? '' : base.database),
+    user: cleanStr(obj.user, 128) || (obj.user !== undefined ? '' : base.user),
+    password: nextPass,
+    ssl: obj.ssl !== undefined ? Boolean(obj.ssl) : base.ssl,
+  };
+}
+
+export function maskConnectionString(raw: string): string {
+  const trimmed = cleanStr(raw, 1024);
+  if (!trimmed) return '';
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.password) parsed.password = MASK_SENTINEL;
+    return parsed.toString();
+  } catch {
+    return trimmed.replace(/(:\/\/[^:@/\s]+:)([^@/\s]+)(@)/g, `$1${MASK_SENTINEL}$3`);
+  }
+}
+
+export function getMaskedPostgresConfig(pg: PostgresConfig): MaskedPostgresConfig {
+  const hasEnv = Boolean(config.databaseUrl);
+  const effectiveConn = pg.useEnvDatabaseUrl ? config.databaseUrl : pg.connectionString;
+  return {
+    useEnvDatabaseUrl: Boolean(pg.useEnvDatabaseUrl),
+    hasEnvDatabaseUrl: hasEnv,
+    host: pg.host,
+    port: pg.port || 5432,
+    database: pg.database,
+    user: pg.user,
+    ssl: Boolean(pg.ssl),
+    hasConnectionString: Boolean(pg.connectionString),
+    maskedConnectionString: pg.connectionString ? maskConnectionString(pg.connectionString) : (hasEnv && pg.useEnvDatabaseUrl ? maskConnectionString(effectiveConn) : ''),
+    hasPassword: Boolean(pg.password),
+  };
+}
+
+export function getMaskedStorageSettings(): MaskedStorageSettings {
+  const full = loadStorageSettings();
+  return {
+    mode: full.mode,
+    useCustomFirebaseConfig: full.useCustomFirebaseConfig,
+    firebaseConfig: full.firebaseConfig,
+    postgresConfig: getMaskedPostgresConfig(full.postgresConfig),
+    updatedAt: full.updatedAt,
   };
 }
 
@@ -96,40 +223,69 @@ function getSettingsPath(): string {
   return path.join(config.dataDir, 'storage_settings.json');
 }
 
+function readDiskStorageSettings(): Partial<StorageSettings> | null {
+  const filePath = getSettingsPath();
+  if (!fs.existsSync(filePath)) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    return raw && typeof raw === 'object' ? (raw as Partial<StorageSettings>) : null;
+  } catch {
+    return null;
+  }
+}
+
+export function hasSavedStorageSettings(): boolean {
+  return fs.existsSync(getSettingsPath());
+}
+
 export function loadStorageSettings(): StorageSettings {
   const bundled = getBundledFirebaseConfig();
   const envCfg = getEnvFirebaseOverride();
   const defaultCfg = envCfg || bundled || emptyFirebaseConfig();
+  const defaultPg = emptyPostgresConfig();
   const envModeRaw = cleanStr(process.env.PQTV_STORAGE_MODE, 16).toLowerCase();
   const defaultMode: StorageMode =
     envModeRaw === 'local'
       ? 'local'
-      : envModeRaw === 'cloud'
-        ? 'cloud'
-        : defaultCfg.projectId && defaultCfg.apiKey
+      : envModeRaw === 'postgres'
+        ? 'postgres'
+        : envModeRaw === 'cloud'
           ? 'cloud'
-          : 'local';
+          : config.databaseUrl
+            ? 'postgres'
+            : defaultCfg.projectId && defaultCfg.apiKey
+              ? 'cloud'
+              : 'local';
 
-  const filePath = getSettingsPath();
-  const stored = readJsonSync<Partial<StorageSettings> | null>(filePath, null);
+  const stored = readDiskStorageSettings();
   if (!stored) {
     return {
       mode: defaultMode,
       useCustomFirebaseConfig: Boolean(envCfg),
       firebaseConfig: { ...defaultCfg },
+      postgresConfig: { ...defaultPg },
       updatedAt: 0,
     };
   }
 
   try {
     const raw = stored;
-    const mode: StorageMode = raw.mode === 'local' ? 'local' : raw.mode === 'cloud' ? 'cloud' : defaultMode;
+    const mode: StorageMode =
+      raw.mode === 'local'
+        ? 'local'
+        : raw.mode === 'postgres'
+          ? 'postgres'
+          : raw.mode === 'cloud'
+            ? 'cloud'
+            : defaultMode;
     const useCustom = Boolean(raw.useCustomFirebaseConfig);
     const fb = normalizeFirebaseConfig(raw.firebaseConfig, defaultCfg);
+    const pg = normalizePostgresConfig(raw.postgresConfig, defaultPg);
     return {
       mode,
       useCustomFirebaseConfig: useCustom,
       firebaseConfig: fb,
+      postgresConfig: pg,
       updatedAt: Number(raw.updatedAt) || 0,
     };
   } catch {
@@ -137,6 +293,7 @@ export function loadStorageSettings(): StorageSettings {
       mode: defaultMode,
       useCustomFirebaseConfig: Boolean(envCfg),
       firebaseConfig: { ...defaultCfg },
+      postgresConfig: { ...defaultPg },
       updatedAt: 0,
     };
   }
@@ -162,12 +319,33 @@ export function getActiveFirebaseConfig(): FirebaseWebConfig | null {
   return getBundledFirebaseConfig();
 }
 
+export function isPostgresConfigured(pg: PostgresConfig): boolean {
+  if (pg.useEnvDatabaseUrl) {
+    return Boolean(config.databaseUrl);
+  }
+  if (pg.connectionString) {
+    return /^postgres(ql)?:\/\//i.test(pg.connectionString);
+  }
+  return Boolean(pg.host && pg.database && pg.user);
+}
+
+export function resolvePostgresInputConfig(rawPg: unknown, fallback?: PostgresConfig): PostgresConfig {
+  return normalizePostgresConfig(rawPg, fallback || loadStorageSettings().postgresConfig);
+}
+
 export function getPublicStorageClientConfig(): PublicStorageClientConfig {
-  const mode = getStorageMode();
-  if (mode === 'local') {
+  const settings = loadStorageSettings();
+  if (settings.mode === 'local') {
     return {
       mode: 'local',
       configured: true,
+      firebaseConfig: null,
+    };
+  }
+  if (settings.mode === 'postgres') {
+    return {
+      mode: 'postgres',
+      configured: isPostgresConfigured(settings.postgresConfig),
       firebaseConfig: null,
     };
   }
@@ -183,11 +361,18 @@ export function saveStorageSettings(input: {
   mode?: unknown;
   useCustomFirebaseConfig?: unknown;
   firebaseConfig?: unknown;
+  postgresConfig?: unknown;
 }): { ok: boolean; settings?: StorageSettings; error?: string } {
   const current = loadStorageSettings();
   const bundled = getBundledFirebaseConfig();
   const nextMode: StorageMode =
-    input.mode === 'local' ? 'local' : input.mode === 'cloud' ? 'cloud' : current.mode;
+    input.mode === 'local'
+      ? 'local'
+      : input.mode === 'postgres'
+        ? 'postgres'
+        : input.mode === 'cloud'
+          ? 'cloud'
+          : current.mode;
   const nextUseCustom =
     input.useCustomFirebaseConfig !== undefined
       ? Boolean(input.useCustomFirebaseConfig)
@@ -210,6 +395,11 @@ export function saveStorageSettings(input: {
         measurementId: cleanStr(rawFb.measurementId, 64),
       }
     : current.firebaseConfig;
+
+  const nextPg: PostgresConfig =
+    input.postgresConfig && typeof input.postgresConfig === 'object'
+      ? normalizePostgresConfig(input.postgresConfig, current.postgresConfig)
+      : current.postgresConfig;
 
   if (nextMode === 'cloud') {
     if (nextUseCustom) {
@@ -237,14 +427,43 @@ export function saveStorageSettings(input: {
     }
   }
 
+  if (nextMode === 'postgres') {
+    if (nextPg.useEnvDatabaseUrl) {
+      if (!config.databaseUrl) {
+        return {
+          ok: false,
+          error: 'Переменная окружения DATABASE_URL не задана на сервере. Укажите параметры PostgreSQL вручную.',
+        };
+      }
+    } else if (nextPg.connectionString) {
+      if (!/^postgres(ql)?:\/\//i.test(nextPg.connectionString)) {
+        return {
+          ok: false,
+          error: 'Строка подключения PostgreSQL должна начинаться с postgres:// или postgresql://',
+        };
+      }
+    } else {
+      if (!nextPg.host) {
+        return { ok: false, error: 'Укажите хост (Host) сервера PostgreSQL или строку DATABASE_URL' };
+      }
+      if (!nextPg.database) {
+        return { ok: false, error: 'Укажите имя базы данных PostgreSQL' };
+      }
+      if (!nextPg.user) {
+        return { ok: false, error: 'Укажите имя пользователя PostgreSQL' };
+      }
+    }
+  }
+
   const nextSettings: StorageSettings = {
     mode: nextMode,
     useCustomFirebaseConfig: nextUseCustom,
     firebaseConfig: nextFb,
+    postgresConfig: nextPg,
     updatedAt: Math.floor(Date.now() / 1000),
   };
 
-  const writeRes = atomicWriteJsonSync(getSettingsPath(), nextSettings, 2);
+  const writeRes = atomicWriteFileSync(getSettingsPath(), JSON.stringify(nextSettings, null, 2));
   if (!writeRes.ok) {
     return { ok: false, error: writeRes.error || 'Не удалось сохранить storage_settings.json' };
   }

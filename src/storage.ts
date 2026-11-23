@@ -2,7 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { config } from './config.js';
 import { Channel, generateM3u, parseM3uContent } from './m3uParser.js';
-import { atomicWriteFileSync, atomicWriteJsonSync, readJsonSync, safeUnlinkSync } from './persistence.js';
+import {
+  atomicWriteFileSync,
+  atomicWriteJsonSync,
+  hasJsonStateSync,
+  isDatabasePersistenceActive,
+  readJsonSync,
+  safeUnlinkSync,
+} from './persistence.js';
 
 export interface PlaylistBackupInfo {
   filename: string;
@@ -27,8 +34,72 @@ export class Storage {
     return path.join(config.dataDir, 'playlist_meta.json');
   }
 
+  private get playlistsSnapshotFile(): string {
+    return path.join(config.dataDir, 'playlists_snapshot.json');
+  }
+
   private get maxBackups(): number {
     return config.maxBackups;
+  }
+
+  exportPlaylistsSnapshot(): Record<string, string> {
+    const out: Record<string, string> = {};
+    if (!fs.existsSync(this.playlistDir)) return out;
+    for (const pl of this.getPlaylists()) {
+      const filePath = this.getPlaylistPath(pl);
+      try {
+        out[pl] = fs.readFileSync(filePath, 'utf-8');
+      } catch {
+        // skip unreadable file
+      }
+    }
+    return out;
+  }
+
+  syncPlaylistsSnapshot(): boolean {
+    const snapshot = this.exportPlaylistsSnapshot();
+    const res = atomicWriteJsonSync(this.playlistsSnapshotFile, snapshot);
+    if (!res.ok) {
+      this.lastError = res.error || 'Ошибка синхронизации снимка плейлистов';
+      return false;
+    }
+    return true;
+  }
+
+  restorePlaylistsFromSnapshot(): number {
+    if (!hasJsonStateSync(this.playlistsSnapshotFile)) return 0;
+    const raw = readJsonSync<Record<string, unknown> | null>(this.playlistsSnapshotFile, null);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return 0;
+    try {
+      fs.mkdirSync(this.playlistDir, { recursive: true });
+    } catch {
+      return 0;
+    }
+    const validNames = new Set<string>();
+    let restored = 0;
+    for (const [name, content] of Object.entries(raw)) {
+      const clean = String(name || '').replace(/\.m3u$/i, '').trim();
+      if (!this.isValidFilename(clean) || typeof content !== 'string') continue;
+      validNames.add(clean);
+      const res = atomicWriteFileSync(this.getPlaylistPath(clean), content);
+      if (res.ok) restored++;
+    }
+    for (const existing of this.getPlaylists()) {
+      if (!validNames.has(existing)) {
+        try {
+          fs.unlinkSync(this.getPlaylistPath(existing));
+        } catch {
+          // ignore cleanup failure
+        }
+      }
+    }
+    return restored;
+  }
+
+  private maybeSyncSnapshot(): void {
+    if (isDatabasePersistenceActive()) {
+      this.syncPlaylistsSnapshot();
+    }
   }
 
   private readPlaylistMetaRaw(): Record<string, { enabled?: boolean }> {
@@ -173,6 +244,7 @@ export class Storage {
       safeUnlinkSync(filePath);
       return false;
     }
+    this.maybeSyncSnapshot();
     return true;
   }
 
@@ -234,6 +306,7 @@ export class Storage {
         // ignore backup dir scan error
       }
     }
+    this.maybeSyncSnapshot();
     return true;
   }
 
@@ -267,6 +340,7 @@ export class Storage {
       }
       this.writePlaylistMetaRaw(nextMeta);
     }
+    this.maybeSyncSnapshot();
     return true;
   }
 
@@ -290,6 +364,7 @@ export class Storage {
       this.lastError = res.error || 'Ошибка сохранения плейлиста';
       return false;
     }
+    this.maybeSyncSnapshot();
     return true;
   }
 

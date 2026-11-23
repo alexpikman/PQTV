@@ -136,7 +136,7 @@
 .tb-install svg { width: 16px; height: 16px; }
 .tb-install:hover, .tb-install:focus {
     transform: translateY(-1px);
-    box-shadow: 0 10px 24px -6px rgba(99,102,241,0.85);
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.55), 0 10px 24px -6px rgba(99,102,241,0.85);
     outline: none;
 }
 
@@ -154,7 +154,12 @@
     cursor: pointer;
     transition: var(--t);
 }
-.tb-profile:hover { background: var(--surface-2); border-color: var(--border-hi); }
+.tb-profile:hover, .tb-profile:focus {
+    background: var(--surface-2);
+    border-color: var(--primary-hi);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(99,102,241,0.45);
+}
 .tb-profile-icon {
     width: 32px; height: 32px;
     display: flex; align-items: center; justify-content: center;
@@ -705,15 +710,12 @@
     text-align: left;
 }
 .ch-menu-btn svg { width: 17px; height: 17px; flex-shrink: 0; }
-.ch-menu-btn:hover, .ch-menu-btn:focus {
+.ch-menu-btn:hover, .ch-menu-btn:focus, .ch-menu-btn:focus-visible {
     background: var(--surface-2);
     color: #fff;
-    border-color: var(--border-hi);
-    outline: none;
-}
-.ch-menu-btn:focus-visible {
+    border-color: var(--primary-hi);
     box-shadow: 0 0 0 3px rgba(99,102,241,0.5);
-    border-color: var(--primary);
+    outline: none;
 }
 .ch-menu-watch {
     background: linear-gradient(135deg, var(--primary), var(--violet));
@@ -1140,7 +1142,9 @@ html.is-tv .channel-grid.grid-mode .ch-name {
     padding: 8px 4px;
 }
 html.is-tv .categories-grid {
+    display: grid;
     grid-template-columns: 1fr 1fr;
+    align-content: start;
     gap: 6px;
 }
 html.is-tv .cat-btn {
